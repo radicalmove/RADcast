@@ -40,10 +40,26 @@ class ProjectAccessRevokeRequest(BaseModel):
 
 class SimpleEnhanceRequest(BaseModel):
     project_id: str = Field(min_length=2)
-    input_audio_b64: str = Field(min_length=32)
-    input_audio_filename: str = Field(min_length=1)
+    input_audio_b64: str | None = Field(default=None, min_length=32)
+    input_audio_filename: str | None = Field(default=None, min_length=1)
+    input_audio_hash: str | None = Field(default=None, min_length=16, max_length=128)
     output_name: str | None = None
     output_format: OutputFormat = OutputFormat.MP3
+
+    @model_validator(mode="after")
+    def validate_audio_source(self) -> "SimpleEnhanceRequest":
+        has_uploaded_audio = bool(self.input_audio_b64 and self.input_audio_filename)
+        has_saved_audio = bool(self.input_audio_hash)
+        if not has_uploaded_audio and not has_saved_audio:
+            raise ValueError("Provide either input_audio_b64+input_audio_filename or input_audio_hash")
+        if self.input_audio_b64 and not self.input_audio_filename:
+            raise ValueError("input_audio_filename is required when input_audio_b64 is provided")
+        return self
+
+
+class ProjectSourceAudioUploadRequest(BaseModel):
+    filename: str = Field(min_length=1)
+    audio_b64: str = Field(min_length=32)
 
 
 class OutputMetadata(BaseModel):

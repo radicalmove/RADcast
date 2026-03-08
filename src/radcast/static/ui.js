@@ -13,6 +13,9 @@ const audioDropzoneNode = document.getElementById("audio-dropzone");
 const audioFileInputNode = document.getElementById("input-audio-file");
 const audioDropzoneTitleNode = document.getElementById("audio-dropzone-title");
 const audioFileNameNode = document.getElementById("audio-file-name");
+const savedSourceAudioSelectNode = document.getElementById("saved-source-audio-select");
+const refreshSourceAudioBtn = document.getElementById("refresh-source-audio-btn");
+const savedSourceAudioStatusNode = document.getElementById("saved-source-audio-status");
 
 const outputFormatNode = document.getElementById("output-format");
 
@@ -44,6 +47,8 @@ const state = {
   activeProjectRef: null,
   activeProjectLabel: null,
   selectedAudioFile: null,
+  selectedAudioHash: null,
+  sourceAudioSamples: [],
   activeJobId: null,
   pollTimer: null,
   progressAnimator: null,
@@ -84,9 +89,32 @@ function setGenerateStatus(message, isError = false) {
   generateStatusNode.style.color = isError ? "#a73527" : "#444";
 }
 
+function setSavedSourceAudioStatus(message, isError = false) {
+  if (!savedSourceAudioStatusNode) return;
+  savedSourceAudioStatusNode.textContent = message || "";
+  savedSourceAudioStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function formatDurationSeconds(seconds) {
+  const totalSeconds = Math.max(0, Math.round(Number(seconds || 0)));
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function formatSavedSourceAudioLabel(sample) {
+  const name = sample.source_filename || "audio";
+  const duration = Number(sample.duration_seconds || 0);
+  const durationLabel = Number.isFinite(duration) && duration > 0 ? ` (${formatDurationSeconds(duration)})` : "";
+  const updated = sample.updated_at ? new Date(sample.updated_at).toLocaleString() : "Saved";
+  return `${name}${durationLabel} - ${updated}`;
+}
+
 function resetAudioSelection() {
   state.selectedAudioFile = null;
+  state.selectedAudioHash = null;
   if (audioFileInputNode) audioFileInputNode.value = "";
+  if (savedSourceAudioSelectNode) savedSourceAudioSelectNode.value = "";
   if (audioDropzoneTitleNode) audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
   if (audioFileNameNode) audioFileNameNode.textContent = "No file selected.";
 }
@@ -106,6 +134,7 @@ function markWorkspaceReady(projectRef, projectLabel) {
   resetAudioSelection();
   setGenerateStatus("Upload an audio file, then click Enhance audio.");
   refreshProjectAccessInfo();
+  void loadSourceAudioSamples();
   loadOutputs();
 }
 
@@ -165,6 +194,10 @@ async function fileToBase64(file) {
 
 function updateAudioSelection(file) {
   state.selectedAudioFile = file || null;
+  state.selectedAudioHash = null;
+  if (savedSourceAudioSelectNode) {
+    savedSourceAudioSelectNode.value = "";
+  }
   if (!file) {
     if (audioDropzoneTitleNode) audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
     if (audioFileNameNode) audioFileNameNode.textContent = "No file selected.";
@@ -178,6 +211,107 @@ function updateAudioSelection(file) {
     const mb = (file.size / (1024 * 1024)).toFixed(2);
     audioFileNameNode.textContent = `${file.name} (${mb} MB)`;
   }
+}
+
+function findSavedSourceAudioByHash(audioHash) {
+  if (!audioHash) return null;
+  for (const sample of state.sourceAudioSamples) {
+    if (sample && sample.audio_hash === audioHash) {
+      return sample;
+    }
+  }
+  return null;
+}
+
+function applySavedSourceAudioSelection(audioHash) {
+  const sample = findSavedSourceAudioByHash(audioHash);
+  if (!sample) {
+    setSavedSourceAudioStatus("Saved audio file not found. Refresh and try again.", true);
+    return;
+  }
+
+  state.selectedAudioFile = null;
+  state.selectedAudioHash = sample.audio_hash;
+  if (audioFileInputNode) {
+    audioFileInputNode.value = "";
+  }
+  if (audioDropzoneTitleNode) {
+    audioDropzoneTitleNode.textContent = "Saved project audio selected";
+  }
+  if (audioFileNameNode) {
+    const stamped = sample.updated_at ? new Date(sample.updated_at).toLocaleString() : "Saved in project";
+    const duration = Number(sample.duration_seconds || 0);
+    const durationHint = Number.isFinite(duration) && duration > 0 ? `, ${formatDurationSeconds(duration)}` : "";
+    audioFileNameNode.textContent = `${sample.source_filename || "saved-audio"} (${stamped}${durationHint})`;
+  }
+  setSavedSourceAudioStatus(`Using saved project audio: ${sample.source_filename || sample.audio_hash.slice(0, 8)}.`);
+}
+
+async function loadSourceAudioSamples(preferredHash = null) {
+  const projectId = state.activeProjectRef;
+  if (!projectId || !savedSourceAudioSelectNode) return;
+
+  savedSourceAudioSelectNode.innerHTML = '<option value="">Loading saved audio files...</option>';
+  savedSourceAudioSelectNode.disabled = true;
+  if (refreshSourceAudioBtn) refreshSourceAudioBtn.disabled = true;
+  setSavedSourceAudioStatus("Loading saved audio files...");
+
+  try {
+    const data = await requestJSON(`/projects/${encodeURIComponent(projectId)}/source-audio`, "GET");
+    const samples = Array.isArray(data.samples) ? data.samples : [];
+    state.sourceAudioSamples = samples;
+
+    savedSourceAudioSelectNode.innerHTML = "";
+    if (!samples.length) {
+      savedSourceAudioSelectNode.innerHTML = '<option value="">No saved audio files yet</option>';
+      savedSourceAudioSelectNode.value = "";
+      setSavedSourceAudioStatus("No saved audio files in this project yet.");
+      return;
+    }
+
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Choose saved project audio";
+    savedSourceAudioSelectNode.appendChild(placeholder);
+
+    for (const sample of samples) {
+      const option = document.createElement("option");
+      option.value = String(sample.audio_hash || "");
+      option.textContent = formatSavedSourceAudioLabel(sample);
+      savedSourceAudioSelectNode.appendChild(option);
+    }
+
+    const selectedHash = findSavedSourceAudioByHash(preferredHash || state.selectedAudioHash)?.audio_hash || "";
+    savedSourceAudioSelectNode.value = selectedHash;
+    if (selectedHash && !state.selectedAudioFile) {
+      applySavedSourceAudioSelection(selectedHash);
+    } else {
+      setSavedSourceAudioStatus(`Loaded ${samples.length} saved audio file${samples.length === 1 ? "" : "s"}.`);
+    }
+  } catch (err) {
+    savedSourceAudioSelectNode.innerHTML = '<option value="">Unable to load saved audio files</option>';
+    setSavedSourceAudioStatus(`Could not load saved audio files: ${String(err)}`, true);
+  } finally {
+    savedSourceAudioSelectNode.disabled = false;
+    if (refreshSourceAudioBtn) refreshSourceAudioBtn.disabled = false;
+  }
+}
+
+async function saveSelectedAudioFile(file) {
+  const projectId = state.activeProjectRef;
+  if (!projectId || !file) {
+    return null;
+  }
+
+  setSavedSourceAudioStatus("Saving uploaded audio to this project...");
+  const payload = {
+    filename: file.name,
+    audio_b64: await fileToBase64(file),
+  };
+  const data = await requestJSON(`/projects/${encodeURIComponent(projectId)}/source-audio`, "POST", payload);
+  const audioHash = String(data.audio_hash || "");
+  await loadSourceAudioSamples(audioHash);
+  return audioHash || null;
 }
 
 async function loadProjects(preferredProjectRef = null) {
@@ -457,19 +591,33 @@ async function handleGenerate() {
     setGenerateStatus("Open a project first.", true);
     return;
   }
-  if (!state.selectedAudioFile) {
+  if (!state.selectedAudioFile && !state.selectedAudioHash) {
     setGenerateStatus("Select an audio file first.", true);
     return;
   }
 
   try {
-    setGenerateStatus("Uploading and queueing enhancement...");
+    let selectedAudioHash = state.selectedAudioHash;
+    let selectedAudioFile = state.selectedAudioFile;
+
+    if (selectedAudioFile && !selectedAudioHash) {
+      selectedAudioHash = await saveSelectedAudioFile(selectedAudioFile);
+      state.selectedAudioHash = selectedAudioHash;
+      selectedAudioFile = null;
+      state.selectedAudioFile = null;
+    }
+
+    setGenerateStatus("Queueing enhancement...");
     const payload = {
       project_id: state.activeProjectRef,
-      input_audio_b64: await fileToBase64(state.selectedAudioFile),
-      input_audio_filename: state.selectedAudioFile.name,
       output_format: String(outputFormatNode?.value || "mp3"),
     };
+    if (selectedAudioHash) {
+      payload.input_audio_hash = selectedAudioHash;
+    } else if (selectedAudioFile) {
+      payload.input_audio_b64 = await fileToBase64(selectedAudioFile);
+      payload.input_audio_filename = selectedAudioFile.name;
+    }
 
     const data = await requestJSON("/enhance/simple", "POST", payload);
     startJobTracking(String(data.job_id));
@@ -600,12 +748,22 @@ function wireDragAndDrop() {
   audioDropzoneNode.addEventListener("drop", (event) => {
     const dt = event.dataTransfer;
     const file = dt && dt.files && dt.files.length ? dt.files[0] : null;
-    if (file) updateAudioSelection(file);
+    if (file) {
+      updateAudioSelection(file);
+      void saveSelectedAudioFile(file).catch((err) => {
+        setSavedSourceAudioStatus(`Could not save uploaded audio: ${String(err)}`, true);
+      });
+    }
   });
 
   audioFileInputNode.addEventListener("change", () => {
     const file = audioFileInputNode.files && audioFileInputNode.files.length ? audioFileInputNode.files[0] : null;
     updateAudioSelection(file || null);
+    if (file) {
+      void saveSelectedAudioFile(file).catch((err) => {
+        setSavedSourceAudioStatus(`Could not save uploaded audio: ${String(err)}`, true);
+      });
+    }
   });
 }
 
@@ -667,6 +825,28 @@ async function init() {
   if (shareProjectBtn) {
     shareProjectBtn.addEventListener("click", () => {
       void shareProjectPrompt();
+    });
+  }
+
+  if (refreshSourceAudioBtn) {
+    refreshSourceAudioBtn.addEventListener("click", () => {
+      void loadSourceAudioSamples(savedSourceAudioSelectNode ? savedSourceAudioSelectNode.value : null);
+    });
+  }
+
+  if (savedSourceAudioSelectNode) {
+    savedSourceAudioSelectNode.addEventListener("change", () => {
+      const audioHash = cleanOptional(savedSourceAudioSelectNode.value);
+      if (!audioHash) {
+        state.selectedAudioHash = null;
+        if (!state.selectedAudioFile) {
+          if (audioDropzoneTitleNode) audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
+          if (audioFileNameNode) audioFileNameNode.textContent = "No file selected.";
+        }
+        setSavedSourceAudioStatus("Uploaded audio files are saved to this project for reuse.");
+        return;
+      }
+      applySavedSourceAudioSelection(audioHash);
     });
   }
 

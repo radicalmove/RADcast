@@ -25,6 +25,7 @@ from radcast.models import (
     ProjectAccessGrantRequest,
     ProjectAccessRevokeRequest,
     ProjectCreateRequest,
+    ProjectSourceAudioUploadRequest,
     SimpleEnhanceRequest,
     now_utc_iso,
     touch_job_update,
@@ -398,6 +399,121 @@ def _append_output(paths: Path, metadata: OutputMetadata) -> Path:
     return metadata_path
 
 
+def _source_audio_manifest_path(paths) -> Path:
+    return paths.manifests / "source_audio.json"
+
+
+def _load_source_audio_index(paths) -> list[dict[str, object]]:
+    try:
+        payload = json.loads(_source_audio_manifest_path(paths).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [row for row in payload if isinstance(row, dict)]
+
+
+def _write_source_audio_index(paths, items: list[dict[str, object]]) -> None:
+    _source_audio_manifest_path(paths).write_text(json.dumps(items, indent=2), encoding="utf-8")
+
+
+def _upsert_source_audio(
+    *,
+    paths,
+    audio_hash: str,
+    audio_path: Path,
+    source_filename: str,
+) -> dict[str, object]:
+    items = _load_source_audio_index(paths)
+    now = datetime.now(timezone.utc).isoformat()
+    duration_seconds = None
+    try:
+        duration_seconds = round(probe_duration_seconds(audio_path), 3)
+    except Exception:
+        duration_seconds = None
+
+    next_entry = {
+        "audio_hash": audio_hash,
+        "audio_path": str(audio_path),
+        "source_filename": _safe_filename(source_filename),
+        "updated_at": now,
+        "duration_seconds": duration_seconds,
+    }
+
+    updated = False
+    next_items: list[dict[str, object]] = []
+    for item in items:
+        if str(item.get("audio_hash") or "") == audio_hash:
+            next_items.append(next_entry)
+            updated = True
+        else:
+            next_items.append(item)
+    if not updated:
+        next_items.append(next_entry)
+
+    next_items.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+    _write_source_audio_index(paths, next_items)
+    return next_entry
+
+
+def _list_source_audio_entries(request: Request, *, scoped_project_id: str) -> list[dict[str, object]]:
+    paths = project_manager.get_paths(scoped_project_id)
+    project_root = paths.root.resolve()
+    if not project_root.exists():
+        return []
+
+    visible_project_id = _display_project_id(scoped_project_id)
+    items: list[dict[str, object]] = []
+    for entry in _load_source_audio_index(paths):
+        audio_hash = str(entry.get("audio_hash") or "")
+        saved_path = str(entry.get("audio_path") or "")
+        if not audio_hash or not saved_path:
+            continue
+        audio_path = Path(saved_path)
+        try:
+            resolved = audio_path.resolve()
+        except FileNotFoundError:
+            continue
+        if not resolved.exists():
+            continue
+        try:
+            resolved.relative_to(project_root)
+        except ValueError:
+            continue
+
+        duration_seconds = entry.get("duration_seconds")
+        if duration_seconds is not None:
+            try:
+                duration_seconds = float(duration_seconds)
+            except (TypeError, ValueError):
+                duration_seconds = None
+
+        items.append(
+            {
+                "audio_hash": audio_hash,
+                "source_filename": str(entry.get("source_filename") or resolved.name),
+                "saved_path": str(resolved),
+                "updated_at": str(entry.get("updated_at") or ""),
+                "duration_seconds": duration_seconds,
+                "artifact_url": f"/projects/{visible_project_id}/artifact?path={quote(str(resolved), safe='')}&download=false",
+                "project_id": visible_project_id,
+            }
+        )
+
+    items.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
+    return items
+
+
+def _resolve_saved_source_audio(paths, audio_hash: str) -> tuple[Path, str]:
+    for entry in _load_source_audio_index(paths):
+        if str(entry.get("audio_hash") or "") != audio_hash:
+            continue
+        audio_path = Path(str(entry.get("audio_path") or ""))
+        if audio_path.exists():
+            return audio_path, str(entry.get("source_filename") or audio_path.name)
+    raise HTTPException(status_code=404, detail="saved source audio not found")
+
+
 def _update_job(
     paths: Path,
     *,
@@ -440,20 +556,13 @@ def _run_enhancement_job(
     scoped_project_id: str,
     visible_project_id: str,
     job_id: str,
-    input_audio_bytes: bytes,
+    input_audio_path: Path,
     input_audio_filename: str,
     output_name: str,
     output_format: OutputFormat,
 ) -> None:
     paths = project_manager.ensure_project(scoped_project_id)
     manifests_dir = paths.manifests
-
-    input_hash = hashlib.sha256(input_audio_bytes).hexdigest()
-    input_ext = _safe_audio_extension(input_audio_filename)
-    input_path = paths.assets_source_audio / f"{output_name}-{input_hash[:12]}{input_ext}"
-    input_path.parent.mkdir(parents=True, exist_ok=True)
-    if not input_path.exists():
-        input_path.write_bytes(input_audio_bytes)
 
     def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
         _update_job(
@@ -471,7 +580,7 @@ def _run_enhancement_job(
         output_base = paths.assets_enhanced_audio / output_name
         final_path = enhance_service.enhance(
             job_id=job_id,
-            input_audio_path=input_path,
+            input_audio_path=input_audio_path,
             output_format=output_format,
             output_base_path=output_base,
             on_stage=on_stage,
@@ -484,7 +593,7 @@ def _run_enhancement_job(
         duration_seconds = probe_duration_seconds(final_path)
         metadata = OutputMetadata(
             output_file=final_path,
-            input_file=input_path,
+            input_file=input_audio_path,
             duration_seconds=duration_seconds,
             output_format=output_format,
             project_id=scoped_project_id,
@@ -604,6 +713,52 @@ def create_project(request: Request, req: ProjectCreateRequest):
         "project_root": str(paths.root),
         "project_id": req.project_id,
         "project_ref": scoped_project_id,
+    }
+
+
+@app.post("/projects/{project_id}/source-audio")
+def upload_source_audio(request: Request, project_id: str, req: ProjectSourceAudioUploadRequest):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    paths = project_manager.ensure_project(scoped_project_id)
+
+    try:
+        audio_bytes = base64.b64decode(req.audio_b64.encode("utf-8"), validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="invalid audio_b64 payload") from exc
+
+    audio_hash = hashlib.sha256(audio_bytes).hexdigest()
+    ext = _safe_audio_extension(req.filename)
+    output_path = paths.assets_source_audio / f"source-{audio_hash[:16]}{ext}"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not output_path.exists():
+        output_path.write_bytes(audio_bytes)
+
+    entry = _upsert_source_audio(
+        paths=paths,
+        audio_hash=audio_hash,
+        audio_path=output_path,
+        source_filename=req.filename,
+    )
+
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "audio_hash": audio_hash,
+        "filename": output_path.name,
+        "saved_path": str(output_path),
+        "duration_seconds": entry.get("duration_seconds"),
+        "artifact_url": f"/projects/{_display_project_id(scoped_project_id)}/artifact?path={quote(str(output_path), safe='')}&download=false",
+    }
+
+
+@app.get("/projects/{project_id}/source-audio")
+def list_source_audio(request: Request, project_id: str):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    project_manager.ensure_project(scoped_project_id)
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "samples": _list_source_audio_entries(request, scoped_project_id=scoped_project_id),
     }
 
 
@@ -766,13 +921,31 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
     _require_auth(request)
     scoped_project_id = _resolve_project_id_for_request(request, req.project_id)
     paths = project_manager.ensure_project(scoped_project_id)
+    input_audio_path: Path
+    input_audio_filename: str
 
-    try:
-        input_audio = base64.b64decode(req.input_audio_b64.encode("utf-8"), validate=True)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail="invalid input_audio_b64 payload") from exc
+    if req.input_audio_hash:
+        input_audio_path, input_audio_filename = _resolve_saved_source_audio(paths, req.input_audio_hash)
+    else:
+        try:
+            input_audio = base64.b64decode((req.input_audio_b64 or "").encode("utf-8"), validate=True)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=422, detail="invalid input_audio_b64 payload") from exc
+        input_audio_filename = str(req.input_audio_filename or "audio.wav")
+        input_hash = hashlib.sha256(input_audio).hexdigest()
+        input_ext = _safe_audio_extension(input_audio_filename)
+        input_audio_path = paths.assets_source_audio / f"source-{input_hash[:16]}{input_ext}"
+        input_audio_path.parent.mkdir(parents=True, exist_ok=True)
+        if not input_audio_path.exists():
+            input_audio_path.write_bytes(input_audio)
+        _upsert_source_audio(
+            paths=paths,
+            audio_hash=input_hash,
+            audio_path=input_audio_path,
+            source_filename=input_audio_filename,
+        )
 
-    output_name = _build_output_name(req.input_audio_filename, req.output_name)
+    output_name = _build_output_name(input_audio_filename, req.output_name)
     job_id = f"job_{uuid.uuid4().hex[:12]}"
 
     with _job_update_lock:
@@ -793,8 +966,8 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
             scoped_project_id=scoped_project_id,
             visible_project_id=_display_project_id(scoped_project_id),
             job_id=job_id,
-            input_audio_bytes=input_audio,
-            input_audio_filename=req.input_audio_filename,
+            input_audio_path=input_audio_path,
+            input_audio_filename=input_audio_filename,
             output_name=output_name,
             output_format=req.output_format,
         ),

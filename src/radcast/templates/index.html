@@ -89,6 +89,16 @@
               <small>WAV, MP3, M4A, FLAC, OGG, WEBM</small>
             </label>
             <p id="audio-file-name" class="field-note">No file selected.</p>
+            <div class="saved-sample-block">
+              <label class="saved-sample-label" for="saved-source-audio-select">Or choose a saved project audio file</label>
+              <div class="saved-sample-row">
+                <select id="saved-source-audio-select">
+                  <option value="">No saved audio files yet</option>
+                </select>
+                <button id="refresh-source-audio-btn" type="button">Refresh</button>
+              </div>
+              <p id="saved-source-audio-status" class="field-note">Uploaded audio files are saved to this project for reuse.</p>
+            </div>
           </section>
 
           <section class="input-card">

@@ -510,6 +510,7 @@ body.modal-open {
 
 .saved-sample-row select {
   margin: 0;
+  min-width: 0;
 }
 
 .script-version-row select {
@@ -517,6 +518,10 @@ body.modal-open {
 }
 
 #refresh-samples-btn {
+  min-width: 92px;
+}
+
+#refresh-source-audio-btn {
   min-width: 92px;
 }
 
