@@ -36,7 +36,7 @@ Defaults:
 - nfe: `32`
 - lambd: `0.7`
 - tau: `0.5`
-- postfilter: `170Hz/320Hz body lift + 4.5kHz treble trim`
+- postfilter: `Adobe-like mastering chain (cleanup, body, de-ess, compression, loudness)`
 
 Environment variables:
 - `RADCAST_ENHANCE_COMMAND`
@@ -45,7 +45,7 @@ Environment variables:
 - `RADCAST_ENHANCE_LAMBD`
 - `RADCAST_ENHANCE_TAU`
 - `RADCAST_ENHANCE_POSTFILTER`
-  - default: `equalizer=f=145:t=q:w=1.2:g=4,equalizer=f=285:t=q:w=1.0:g=2,equalizer=f=4500:t=q:w=0.9:g=-1.6`
+  - default: `highpass=f=60,equalizer=f=140:t=q:w=1.15:g=3.5,equalizer=f=260:t=q:w=1.0:g=2.2,equalizer=f=3200:t=q:w=1.0:g=1.1,deesser=i=0.18:m=0.5:f=0.5:s=o,acompressor=threshold=-18dB:ratio=2.2:attack=20:release=180:makeup=2.5,loudnorm=I=-18:TP=-1.5:LRA=7`
 
 If `resemble-enhance` is not on PATH, install it or set `RADCAST_ENHANCE_COMMAND`.
 
