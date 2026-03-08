@@ -94,14 +94,20 @@ body {
   gap: 10px;
   align-items: center;
   justify-content: center;
-  margin-right: 6px;
+}
+
+.topbar-app-links-center {
+  margin-left: 14px;
+  flex-wrap: wrap;
 }
 
 .topbar-center {
   flex: 1 1 auto;
   display: flex;
+  align-items: center;
   justify-content: center;
   padding: 0 16px;
+  gap: 12px;
 }
 
 .chip {
@@ -174,17 +180,17 @@ body {
   min-width: 94px;
 }
 
-.topbar-btn.topbar-btn-psychek {
-  background: #145a46;
-  border-color: #145a46;
+.topbar-btn.topbar-btn-app-launch {
+  background: var(--uc-red);
+  border-color: var(--uc-red);
   color: var(--uc-white);
 }
 
-.topbar-btn.topbar-btn-psychek:hover,
-.topbar-btn.topbar-btn-psychek:active {
-  background: #0f4637;
-  border-color: #0f4637;
-  color: var(--uc-white);
+.topbar-btn.topbar-btn-app-launch:hover,
+.topbar-btn.topbar-btn-app-launch:active {
+  background: var(--uc-white);
+  border-color: var(--uc-red);
+  color: var(--uc-red);
 }
 
 .layout {
@@ -881,8 +887,14 @@ button.worker-mini-btn {
     flex-wrap: wrap;
   }
 
-  .topbar-app-links {
-    margin-right: 0;
+  .topbar-center {
+    justify-content: flex-start;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .topbar-app-links-center {
+    margin-left: 0;
   }
 
   .topbar h1 {
