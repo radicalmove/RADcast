@@ -95,6 +95,7 @@ const state = {
   workerSetupWindowsUrl: "",
   workerSetupMacosUrl: "",
   sourcePreviewObjectUrl: null,
+  jobPollErrorCount: 0,
 };
 
 function escapeHtml(value) {
@@ -183,6 +184,26 @@ function formatDurationSeconds(seconds) {
   const mins = Math.floor(totalSeconds / 60);
   const secs = totalSeconds % 60;
   return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function formatDisplayDateTime(value) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+
+  let formatted = new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(parsed);
+
+  formatted = formatted.replace(",", "");
+  formatted = formatted.replace(/\s+([AP]M)$/i, (_, meridiem) => meridiem.toLowerCase());
+  formatted = formatted.replace(/(\d)\s([ap]m)$/i, "$1$2");
+  return formatted;
 }
 
 function formatSavedSourceAudioLabel(sample) {
@@ -571,6 +592,7 @@ function resetRunningState({ clearProgress = false } = {}) {
   state.computeMode = "server";
   state.expectedRemoteWorker = false;
   state.workerFallbackTimeoutSeconds = 0;
+  state.jobPollErrorCount = 0;
 
   if (state.pollTimer) {
     clearInterval(state.pollTimer);
@@ -731,6 +753,7 @@ function startProgressAnimation() {
 
 function updateFromJob(job) {
   const nextStage = String(job.stage || state.currentStage || "queued");
+  state.jobPollErrorCount = 0;
   state.currentStage = nextStage;
   state.computeMode = inferComputeMode(nextStage, job.logs);
   state.latestDetail = latestLogMessage(job.logs) || stageLabels[state.currentStage] || "Processing";
@@ -808,8 +831,14 @@ async function pollJob() {
 
     updateProgressVisuals();
   } catch (err) {
+    const message = String(err || "");
+    if (/job not found/i.test(message) && state.jobPollErrorCount < 3) {
+      state.jobPollErrorCount += 1;
+      setGenerateStatus("Waiting for latest job status...");
+      return;
+    }
     resetRunningState({ clearProgress: false });
-    setGenerateStatus(`Job polling failed: ${String(err)}`, true);
+    setGenerateStatus(`Job polling failed: ${message}`, true);
   }
 }
 
@@ -835,6 +864,7 @@ function startJobTracking(payload) {
   state.workerOnlineWindowSeconds = Number.isFinite(Number(payload.worker_online_window_seconds))
     ? Number(payload.worker_online_window_seconds)
     : state.workerOnlineWindowSeconds;
+  state.jobPollErrorCount = 0;
   state.computeMode = state.expectedRemoteWorker ? "waiting_worker" : "server";
 
   if (generateBtn) generateBtn.disabled = true;
@@ -974,12 +1004,12 @@ function bindOutputPlayButtons() {
 function formatOutputMeta(item) {
   const parts = [];
   const duration = Number(item.duration_seconds || 0);
-  if (Number.isFinite(duration) && duration > 0) parts.push(formatDurationSeconds(duration));
+  if (Number.isFinite(duration) && duration > 0) parts.push(`Length: ${formatDurationSeconds(duration)}`);
   if (item.created_at) {
-    const created = new Date(item.created_at).toLocaleString();
-    if (created) parts.push(created);
+    const created = formatDisplayDateTime(item.created_at);
+    if (created) parts.push(`Created: ${created}`);
   }
-  return parts.join("  ");
+  return parts.join(" ");
 }
 
 async function shareProjectPrompt() {
