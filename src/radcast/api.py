@@ -1325,7 +1325,9 @@ def worker_bootstrap_macos_command(request: Request, invite_token: str = Query(.
         "echo \"Installing RADcast worker on this Mac...\"\n"
         "BREW_PREFIX=\"$(brew --prefix)\"\n"
         "brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg\n"
+        "brew list git-lfs >/dev/null 2>&1 || brew install git-lfs\n"
         "brew list python@3.11 >/dev/null 2>&1 || brew install python@3.11\n"
+        "git lfs install\n"
         "\"$BREW_PREFIX/bin/python3.11\" -m venv \"$HOME/.radcast/venv\"\n"
         "\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade pip\n"
         f"\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade \"{install_spec}\" resemble-enhance\n"
@@ -1357,7 +1359,9 @@ def _macos_worker_install_command(base_url: str, token: str) -> str:
         "/bin/bash -lc 'set -e; "
         'BREW_PREFIX="$(brew --prefix)"; '
         'brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg; '
+        'brew list git-lfs >/dev/null 2>&1 || brew install git-lfs; '
         'brew list python@3.11 >/dev/null 2>&1 || brew install python@3.11; '
+        'git lfs install; '
         '"$BREW_PREFIX/bin/python3.11" -m venv "$HOME/.radcast/venv"; '
         '"$HOME/.radcast/venv/bin/python" -m pip install --upgrade pip; '
         f'"$HOME/.radcast/venv/bin/python" -m pip install --upgrade "{install_spec}" resemble-enhance; '

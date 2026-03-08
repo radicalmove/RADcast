@@ -26,6 +26,7 @@ dev = ["pytest>=8.3", "httpx>=0.27,<1"]
 
 [project.scripts]
 radcast-api = "radcast.api:main"
+radcast-enhance = "radcast.enhance_cli:main"
 radcast-worker-install = "radcast.worker_setup:main"
 
 [tool.setuptools]

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from radcast.constants import DEFAULT_ENHANCE_COMMAND
 from radcast.models import OutputFormat, SimpleEnhanceRequest
 from radcast.services.enhance import (
     _estimate_progress,
@@ -42,6 +43,19 @@ def test_resolve_command_prefers_sibling_binary(monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setattr("radcast.services.enhance.sys.executable", str(fake_python))
 
     command = _resolve_command("resemble-enhance")
+
+    assert command[0] == str(fake_binary)
+
+
+def test_resolve_default_command_prefers_wrapper_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    fake_python = tmp_path / "python"
+    fake_python.write_text("")
+    fake_binary = tmp_path / DEFAULT_ENHANCE_COMMAND
+    fake_binary.write_text("")
+
+    monkeypatch.setattr("radcast.services.enhance.sys.executable", str(fake_python))
+
+    command = _resolve_command(DEFAULT_ENHANCE_COMMAND)
 
     assert command[0] == str(fake_binary)
 

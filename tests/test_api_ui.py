@@ -24,6 +24,7 @@ def test_worker_invite_and_status_endpoints_render():
     assert invite.status_code == 200
     payload = invite.json()
     assert "git+https://github.com/radicalmove/RADcast.git" in payload["install_command_macos"]
+    assert "git-lfs" in payload["install_command_macos"]
     assert "python@3.11" in payload["install_command_macos"]
     assert "resemble-enhance" in payload["install_command_macos"]
     assert "radcast.worker_setup" in payload["install_command_macos"]
