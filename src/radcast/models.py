@@ -17,6 +17,12 @@ class OutputFormat(str, Enum):
     MP3 = "mp3"
 
 
+class EnhancementModel(str, Enum):
+    RESEMBLE = "resemble"
+    DEEPFILTERNET = "deepfilternet"
+    SGMSE = "sgmse"
+
+
 class WorkerCapability(str, Enum):
     ENHANCE = "enhance"
 
@@ -51,6 +57,7 @@ class SimpleEnhanceRequest(BaseModel):
     input_audio_hash: str | None = Field(default=None, min_length=16, max_length=128)
     output_name: str | None = None
     output_format: OutputFormat = OutputFormat.MP3
+    enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
 
     @model_validator(mode="after")
     def validate_audio_source(self) -> "SimpleEnhanceRequest":
@@ -73,6 +80,7 @@ class OutputMetadata(BaseModel):
     input_file: Path
     duration_seconds: float
     output_format: OutputFormat
+    enhancement_model: EnhancementModel | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     project_id: str
     job_id: str
@@ -147,6 +155,7 @@ class WorkerEnhanceEnqueueRequest(BaseModel):
     input_audio_filename: str = Field(min_length=1)
     output_name: str | None = None
     output_format: OutputFormat = OutputFormat.MP3
+    enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
 
 
 class WorkerQueuedJob(BaseModel):

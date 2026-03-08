@@ -358,6 +358,7 @@ class WorkerManager:
             input_file=input_path,
             duration_seconds=req.duration_seconds,
             output_format=OutputFormat(req.output_format),
+            enhancement_model=payload.enhancement_model,
             project_id=payload.project_id,
             job_id=job_id,
         )

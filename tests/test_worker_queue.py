@@ -14,6 +14,10 @@ def test_worker_queue_round_trip_completes_job():
     client = TestClient(app)
     project_id = f"radcast-worker-{uuid.uuid4().hex[:8]}"
     sample_b64 = base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8")
+    from radcast import api as api_module
+
+    original_is_model_available = api_module.enhance_service.is_model_available
+    api_module.enhance_service.is_model_available = lambda _model: True
 
     try:
         created = client.post("/projects", json={"project_id": project_id})
@@ -42,6 +46,7 @@ def test_worker_queue_round_trip_completes_job():
                 "input_audio_b64": sample_b64,
                 "input_audio_filename": "lecture.wav",
                 "output_format": "mp3",
+                "enhancement_model": "deepfilternet",
             },
         )
         assert queued.status_code == 200
@@ -53,6 +58,7 @@ def test_worker_queue_round_trip_completes_job():
         job = pull.json()["job"]
         assert job["job_id"] == job_id
         assert job["type"] == "enhance"
+        assert job["payload"]["enhancement_model"] == "deepfilternet"
 
         progress = client.post(
             f"/workers/jobs/{job_id}/progress",
@@ -95,6 +101,7 @@ def test_worker_queue_round_trip_completes_job():
         assert payload["status"] == "completed"
         assert payload["outputs"]["audio_path"].endswith(".mp3")
     finally:
+        api_module.enhance_service.is_model_available = original_is_model_available
         for path in Path("projects").glob(f"*__{project_id}"):
             if path.exists():
                 shutil.rmtree(path)

@@ -1,4 +1,4 @@
-"""Resemble Enhance wrapper service."""
+"""Audio enhancement service with pluggable backend models."""
 
 from __future__ import annotations
 
@@ -14,22 +14,54 @@ from pathlib import Path
 from typing import Callable
 
 from radcast.constants import (
+    DEFAULT_DEEPFILTERNET_COMMAND,
+    DEFAULT_DEEPFILTERNET_MODEL,
+    DEFAULT_DEEPFILTERNET_POST_FILTER,
     DEFAULT_ENHANCE_COMMAND,
     DEFAULT_ENHANCE_DEVICE,
     DEFAULT_ENHANCE_LAMBD,
     DEFAULT_ENHANCE_NFE,
     DEFAULT_ENHANCE_POSTFILTER,
     DEFAULT_ENHANCE_TAU,
+    DEFAULT_ENHANCEMENT_MODEL,
+    DEFAULT_SGMSE_COMMAND_TEMPLATE,
 )
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
-from radcast.models import OutputFormat
+from radcast.models import EnhancementModel, OutputFormat
 from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
+
+MODEL_LABELS = {
+    EnhancementModel.RESEMBLE: "Resemble Enhance",
+    EnhancementModel.DEEPFILTERNET: "DeepFilterNet3",
+    EnhancementModel.SGMSE: "SGMSE",
+}
+
+MODEL_DESCRIPTIONS = {
+    EnhancementModel.RESEMBLE: "Current RADcast backend. Strong cleanup, but can sound more processed.",
+    EnhancementModel.DEEPFILTERNET: "Official DeepFilterNet3 speech enhancement. Usually more natural and less compressed.",
+    EnhancementModel.SGMSE: "Experimental dereverb-oriented backend. Requires separate server configuration.",
+}
 
 
 class EnhanceService:
     def __init__(self) -> None:
-        command_raw = os.environ.get("RADCAST_ENHANCE_COMMAND", DEFAULT_ENHANCE_COMMAND).strip()
-        self.command = _resolve_command(command_raw)
+        self.default_model = _parse_model(os.environ.get("RADCAST_DEFAULT_ENHANCEMENT_MODEL"), DEFAULT_ENHANCEMENT_MODEL)
+        self.resemble_command = _resolve_command(os.environ.get("RADCAST_ENHANCE_COMMAND", DEFAULT_ENHANCE_COMMAND).strip())
+        self.deepfilternet_command = _resolve_command(
+            os.environ.get("RADCAST_DEEPFILTERNET_COMMAND", DEFAULT_DEEPFILTERNET_COMMAND).strip()
+        )
+        self.deepfilternet_model = (
+            os.environ.get("RADCAST_DEEPFILTERNET_MODEL", DEFAULT_DEEPFILTERNET_MODEL).strip()
+            or DEFAULT_DEEPFILTERNET_MODEL
+        )
+        self.deepfilternet_post_filter = _safe_bool(
+            os.environ.get("RADCAST_DEEPFILTERNET_POST_FILTER"),
+            DEFAULT_DEEPFILTERNET_POST_FILTER,
+        )
+        self.sgmse_command_template = (
+            os.environ.get("RADCAST_SGMSE_COMMAND_TEMPLATE", DEFAULT_SGMSE_COMMAND_TEMPLATE).strip()
+        )
+
         self.device = os.environ.get("RADCAST_ENHANCE_DEVICE", DEFAULT_ENHANCE_DEVICE).strip() or DEFAULT_ENHANCE_DEVICE
         self.nfe = _safe_int(os.environ.get("RADCAST_ENHANCE_NFE"), DEFAULT_ENHANCE_NFE)
         self.lambd = _safe_float(os.environ.get("RADCAST_ENHANCE_LAMBD"), DEFAULT_ENHANCE_LAMBD)
@@ -37,6 +69,28 @@ class EnhanceService:
         self.postfilter = os.environ.get("RADCAST_ENHANCE_POSTFILTER", DEFAULT_ENHANCE_POSTFILTER).strip()
         self._processes: dict[str, subprocess.Popen[str]] = {}
         self._lock = threading.Lock()
+
+    def available_models(self) -> list[dict[str, object]]:
+        entries: list[dict[str, object]] = []
+        for model in EnhancementModel:
+            available, detail = self._availability_for_model(model)
+            entries.append(
+                {
+                    "id": model.value,
+                    "label": MODEL_LABELS[model],
+                    "description": MODEL_DESCRIPTIONS[model],
+                    "available": available,
+                    "detail": detail,
+                    "experimental": model == EnhancementModel.SGMSE,
+                    "default": model == self.default_model,
+                }
+            )
+        return entries
+
+    def is_model_available(self, model: EnhancementModel | str) -> bool:
+        normalized = EnhancementModel(model)
+        available, _detail = self._availability_for_model(normalized)
+        return available
 
     def cancel(self, job_id: str) -> None:
         with self._lock:
@@ -48,12 +102,18 @@ class EnhanceService:
         self,
         *,
         job_id: str,
+        enhancement_model: EnhancementModel,
         input_audio_path: Path,
         output_format: OutputFormat,
         output_base_path: Path,
         on_stage: Callable[[str, float, str, int | None], None],
         cancel_check: Callable[[], bool],
     ) -> Path:
+        model = EnhancementModel(enhancement_model)
+        available, detail = self._availability_for_model(model)
+        if not available:
+            raise EnhancementRuntimeError(f"{MODEL_LABELS[model]} is not available on this machine. {detail}".strip())
+
         if cancel_check():
             raise JobCancelledError("job cancelled")
 
@@ -64,7 +124,7 @@ class EnhanceService:
             in_dir.mkdir(parents=True, exist_ok=True)
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            on_stage("prepare", 0.12, "Preparing source audio")
+            on_stage("prepare", 0.12, f"Preparing source audio for {MODEL_LABELS[model]}")
             in_wav = in_dir / "input.wav"
             if input_audio_path.suffix.lower() == ".wav":
                 in_wav.write_bytes(input_audio_path.read_bytes())
@@ -75,44 +135,23 @@ class EnhanceService:
             if cancel_check():
                 raise JobCancelledError("job cancelled")
 
-            cmd = [
-                *self.command,
-                str(in_dir),
-                str(out_dir),
-                "--suffix",
-                ".wav",
-                "--device",
-                self.device,
-                "--nfe",
-                str(self.nfe),
-                "--lambd",
-                str(self.lambd),
-                "--tau",
-                str(self.tau),
-            ]
-
+            command, use_shell, initial_detail = self._build_backend_command(model=model, in_dir=in_dir, in_wav=in_wav, out_dir=out_dir)
             expected_runtime_seconds = _estimate_runtime_seconds(
                 input_duration_seconds,
                 device=self.device,
                 nfe=self.nfe,
+                enhancement_model=model,
             )
-            on_stage(
-                "enhance",
-                0.2,
-                "Loading the enhancement engine. First run on a server can take longer.",
-                None,
-            )
+            on_stage("enhance", 0.2, initial_detail, None)
             try:
                 proc = subprocess.Popen(
-                    cmd,
+                    ["/bin/bash", "-lc", command] if use_shell else command,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
                 )
             except FileNotFoundError as exc:
-                raise EnhancementRuntimeError(
-                    "Enhancement command not found. Install Resemble Enhance or set RADCAST_ENHANCE_COMMAND."
-                ) from exc
+                raise EnhancementRuntimeError(self._missing_command_message(model)) from exc
 
             with self._lock:
                 self._processes[job_id] = proc
@@ -126,13 +165,8 @@ class EnhanceService:
                     elapsed = time.monotonic() - started
                     progress = _estimate_progress(elapsed, expected_runtime_seconds)
                     eta_seconds = _estimate_remaining_seconds(elapsed, expected_runtime_seconds)
-                    if elapsed < min(10.0, expected_runtime_seconds * 0.18):
-                        detail = "Loading the enhancement engine. First run on a server can take longer."
-                    elif eta_seconds is None:
-                        detail = "Improving audio quality. Finishing soon."
-                    else:
-                        detail = "Improving audio quality."
-                    on_stage("enhance", progress, detail, eta_seconds)
+                    detail_text = _progress_detail_for_model(model, elapsed, expected_runtime_seconds, eta_seconds)
+                    on_stage("enhance", progress, detail_text, eta_seconds)
                     time.sleep(0.6)
 
                 stdout, stderr = proc.communicate()
@@ -146,10 +180,7 @@ class EnhanceService:
             if cancel_check():
                 raise JobCancelledError("job cancelled")
 
-            out_candidates = sorted(out_dir.glob("**/*.wav"))
-            if not out_candidates:
-                raise EnhancementRuntimeError("Enhancement did not produce output audio")
-            enhanced_wav = out_candidates[0]
+            enhanced_wav = self._collect_backend_output(model=model, out_dir=out_dir)
 
             on_stage("finalize", 0.96, "Saving the enhanced audio", 8)
             output_base_path.parent.mkdir(parents=True, exist_ok=True)
@@ -165,6 +196,94 @@ class EnhanceService:
             final_path = output_base_path.with_suffix(".mp3")
             run_ffmpeg_convert(enhanced_wav, final_path, audio_filters=self.postfilter)
             return final_path
+
+    def _availability_for_model(self, model: EnhancementModel) -> tuple[bool, str]:
+        if model == EnhancementModel.RESEMBLE:
+            available = _command_available(self.resemble_command)
+            return available, "Install resemble-enhance to enable it." if not available else "Installed."
+        if model == EnhancementModel.DEEPFILTERNET:
+            available = _command_available(self.deepfilternet_command)
+            detail = f"Uses official {self.deepfilternet_model} weights." if available else "Install deepfilternet to enable it."
+            return available, detail
+        available = bool(self.sgmse_command_template)
+        detail = (
+            "Configured via RADCAST_SGMSE_COMMAND_TEMPLATE."
+            if available
+            else "Set RADCAST_SGMSE_COMMAND_TEMPLATE to enable this experimental backend."
+        )
+        return available, detail
+
+    def _build_backend_command(self, *, model: EnhancementModel, in_dir: Path, in_wav: Path, out_dir: Path) -> tuple[list[str] | str, bool, str]:
+        if model == EnhancementModel.RESEMBLE:
+            return (
+                [
+                    *self.resemble_command,
+                    str(in_dir),
+                    str(out_dir),
+                    "--suffix",
+                    ".wav",
+                    "--device",
+                    self.device,
+                    "--nfe",
+                    str(self.nfe),
+                    "--lambd",
+                    str(self.lambd),
+                    "--tau",
+                    str(self.tau),
+                ],
+                False,
+                "Loading Resemble Enhance. First run can take longer.",
+            )
+        if model == EnhancementModel.DEEPFILTERNET:
+            command = [
+                *self.deepfilternet_command,
+                "--output-dir",
+                str(out_dir),
+                "--model-base-dir",
+                self.deepfilternet_model,
+                "--log-level",
+                "info",
+                "--no-suffix",
+            ]
+            if self.deepfilternet_post_filter:
+                command.append("--pf")
+            command.append(str(in_wav))
+            return command, False, f"Loading {MODEL_LABELS[model]}. First run can take longer while weights download."
+
+        rendered = self.sgmse_command_template.format(
+            input_dir=shlex.quote(str(in_dir)),
+            output_dir=shlex.quote(str(out_dir)),
+            input_file=shlex.quote(str(in_wav)),
+            input_name=shlex.quote(in_wav.name),
+        )
+        return rendered, True, "Loading SGMSE. First run can take longer while checkpoints warm up."
+
+    def _collect_backend_output(self, *, model: EnhancementModel, out_dir: Path) -> Path:
+        out_candidates = sorted(out_dir.glob("**/*.wav"))
+        if not out_candidates:
+            out_candidates = sorted(out_dir.glob("**/*"))
+        if not out_candidates:
+            raise EnhancementRuntimeError(f"{MODEL_LABELS[model]} did not produce output audio")
+        for candidate in out_candidates:
+            if candidate.is_file():
+                return candidate
+        raise EnhancementRuntimeError(f"{MODEL_LABELS[model]} did not produce a readable output file")
+
+    @staticmethod
+    def _missing_command_message(model: EnhancementModel) -> str:
+        if model == EnhancementModel.DEEPFILTERNET:
+            return "DeepFilterNet command not found. Install deepfilternet or set RADCAST_DEEPFILTERNET_COMMAND."
+        if model == EnhancementModel.SGMSE:
+            return "SGMSE command not found. Configure RADCAST_SGMSE_COMMAND_TEMPLATE."
+        return "Enhancement command not found. Install resemble-enhance or set RADCAST_ENHANCE_COMMAND."
+
+
+def _parse_model(raw: str | None, default: str) -> EnhancementModel:
+    value = (raw or default or DEFAULT_ENHANCEMENT_MODEL).strip().lower()
+    try:
+        return EnhancementModel(value)
+    except ValueError:
+        return EnhancementModel(DEFAULT_ENHANCEMENT_MODEL)
 
 
 def _safe_int(raw: str | None, default: int) -> int:
@@ -183,6 +302,12 @@ def _safe_float(raw: str | None, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _safe_bool(raw: str | None, default: bool) -> bool:
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _resolve_command(command_raw: str) -> list[str]:
@@ -205,12 +330,46 @@ def _resolve_command(command_raw: str) -> list[str]:
     return parts
 
 
-def _estimate_runtime_seconds(duration_seconds: float, *, device: str, nfe: int) -> int:
-    safe_duration = max(1.0, float(duration_seconds))
-    quality_factor = max(0.65, float(nfe) / float(DEFAULT_ENHANCE_NFE))
-    normalized_device = (device or DEFAULT_ENHANCE_DEVICE).strip().lower()
+def _command_available(command: list[str]) -> bool:
+    if not command:
+        return False
+    executable = command[0]
+    if "/" in executable:
+        return Path(executable).exists()
+    return shutil.which(executable) is not None
 
-    if normalized_device.startswith("cuda") or normalized_device == "mps":
+
+def _estimate_runtime_seconds(duration_seconds: float, *, device: str, nfe: int, enhancement_model: EnhancementModel) -> int:
+    safe_duration = max(1.0, float(duration_seconds))
+    normalized_device = (device or DEFAULT_ENHANCE_DEVICE).strip().lower()
+    accelerated = normalized_device.startswith("cuda") or normalized_device == "mps"
+
+    if enhancement_model == EnhancementModel.DEEPFILTERNET:
+        if accelerated:
+            base_seconds = 6.0
+            per_second = 0.6
+            minimum = 8
+        else:
+            base_seconds = 8.0
+            per_second = 0.9
+            minimum = 10
+        estimate = base_seconds + (safe_duration * per_second)
+        return max(minimum, min(int(round(estimate)), 20 * 60))
+
+    if enhancement_model == EnhancementModel.SGMSE:
+        if accelerated:
+            base_seconds = 18.0
+            per_second = 2.6
+            minimum = 24
+        else:
+            base_seconds = 45.0
+            per_second = 5.4
+            minimum = 60
+        estimate = base_seconds + (safe_duration * per_second)
+        return max(minimum, min(int(round(estimate)), 45 * 60))
+
+    quality_factor = max(0.65, float(nfe) / float(DEFAULT_ENHANCE_NFE))
+    if accelerated:
         base_seconds = 12.0
         per_second = 1.8
         minimum = 18
@@ -218,7 +377,6 @@ def _estimate_runtime_seconds(duration_seconds: float, *, device: str, nfe: int)
         base_seconds = 32.0
         per_second = 4.2
         minimum = 35
-
     estimate = (base_seconds + (safe_duration * per_second)) * quality_factor
     return max(minimum, min(int(round(estimate)), 30 * 60))
 
@@ -243,3 +401,18 @@ def _estimate_remaining_seconds(elapsed_seconds: float, expected_runtime_seconds
     if remaining <= 0:
         return None
     return remaining
+
+
+def _progress_detail_for_model(
+    model: EnhancementModel,
+    elapsed_seconds: float,
+    expected_runtime_seconds: int,
+    eta_seconds: int | None,
+) -> str:
+    label = MODEL_LABELS[model]
+    warmup_seconds = min(10.0, expected_runtime_seconds * 0.18)
+    if elapsed_seconds < warmup_seconds:
+        return f"Loading {label}. First run can take longer."
+    if eta_seconds is None:
+        return f"Improving audio with {label}. Finishing soon."
+    return f"Improving audio with {label}."

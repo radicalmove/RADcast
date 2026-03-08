@@ -24,6 +24,7 @@ def test_worker_invite_and_status_endpoints_render():
     assert invite.status_code == 200
     payload = invite.json()
     assert "git+https://github.com/radicalmove/RADcast.git" in payload["install_command_macos"]
+    assert "deepfilternet" in payload["install_command_macos"]
     assert "git-lfs" in payload["install_command_macos"]
     assert "python@3.11" in payload["install_command_macos"]
     assert "resemble-enhance" in payload["install_command_macos"]
@@ -35,6 +36,14 @@ def test_worker_invite_and_status_endpoints_render():
     status_payload = status.json()
     assert "worker_total_count" in status_payload
     assert "worker_online_count" in status_payload
+
+    models = client.get("/enhancement/models")
+    assert models.status_code == 200
+    models_payload = models.json()
+    assert models_payload["default_model"] in {"resemble", "deepfilternet", "sgmse"}
+    assert any(item["id"] == "resemble" for item in models_payload["models"])
+    assert any(item["id"] == "deepfilternet" for item in models_payload["models"])
+    assert any(item["id"] == "sgmse" for item in models_payload["models"])
 
 
 def test_project_create_and_list_roundtrip():
@@ -80,6 +89,7 @@ def test_source_audio_upload_list_and_enhance_by_hash(monkeypatch):
 
     monkeypatch.setattr("radcast.api.probe_duration_seconds", lambda path: 4.2)
     monkeypatch.setattr("radcast.api.enhance_service.enhance", fake_enhance)
+    monkeypatch.setattr("radcast.api.enhance_service.is_model_available", lambda _model: True)
 
     try:
         created = client.post("/projects", json={"project_id": project_id})
@@ -108,6 +118,7 @@ def test_source_audio_upload_list_and_enhance_by_hash(monkeypatch):
                 "project_id": project_id,
                 "input_audio_hash": uploaded_payload["audio_hash"],
                 "output_format": "mp3",
+                "enhancement_model": "resemble",
             },
         )
         assert started.status_code == 200

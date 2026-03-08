@@ -116,9 +116,10 @@ class WorkerClient:
             job_id = str(job["job_id"])
             payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
             LOG.info(
-                "claimed job job_id=%s project_id=%s output_format=%s filename=%s",
+                "claimed job job_id=%s project_id=%s enhancement_model=%s output_format=%s filename=%s",
                 job_id,
                 job.get("project_id"),
+                payload.get("enhancement_model"),
                 payload.get("output_format"),
                 payload.get("input_audio_filename"),
             )
@@ -211,6 +212,7 @@ class WorkerClient:
                 output_base = tmp_path / req.output_name
                 final_path = self.enhance_service.enhance(
                     job_id=job_id,
+                    enhancement_model=req.enhancement_model,
                     input_audio_path=input_path,
                     output_format=req.output_format,
                     output_base_path=output_base,

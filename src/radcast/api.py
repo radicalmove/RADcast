@@ -20,6 +20,7 @@ from radcast.constants import DEFAULT_WORKER_FALLBACK_TIMEOUT_SECONDS, DEFAULT_W
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
 from radcast.manifests import ManifestStore
 from radcast.models import (
+    EnhancementModel,
     JobRecord,
     JobStatus,
     OutputFormat,
@@ -622,6 +623,7 @@ def _run_enhancement_job(
     input_audio_filename: str,
     output_name: str,
     output_format: OutputFormat,
+    enhancement_model: EnhancementModel,
 ) -> None:
     paths = project_manager.ensure_project(scoped_project_id)
     manifests_dir = paths.manifests
@@ -638,10 +640,11 @@ def _run_enhancement_job(
         )
 
     try:
-        on_stage("prepare", 0.08, "Preparing enhancement")
+        on_stage("prepare", 0.08, f"Preparing enhancement with {enhancement_model.value}")
         output_base = paths.assets_enhanced_audio / output_name
         final_path = enhance_service.enhance(
             job_id=job_id,
+            enhancement_model=enhancement_model,
             input_audio_path=input_audio_path,
             output_format=output_format,
             output_base_path=output_base,
@@ -658,6 +661,7 @@ def _run_enhancement_job(
             input_file=input_audio_path,
             duration_seconds=duration_seconds,
             output_format=output_format,
+            enhancement_model=enhancement_model,
             project_id=scoped_project_id,
             job_id=job_id,
         )
@@ -744,6 +748,7 @@ def _run_local_enhancement_from_worker_payload(
         input_audio_filename=source_filename,
         output_name=str(worker_payload.output_name or _build_output_name(source_filename, None)),
         output_format=worker_payload.output_format,
+        enhancement_model=worker_payload.enhancement_model,
     )
 
 
@@ -1073,6 +1078,9 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
     _require_auth(request)
     scoped_project_id = _resolve_project_id_for_request(request, req.project_id)
     paths = project_manager.ensure_project(scoped_project_id)
+    selected_model = EnhancementModel(req.enhancement_model)
+    if not enhance_service.is_model_available(selected_model):
+        raise HTTPException(status_code=503, detail=f"{selected_model.value} is not available on this machine")
     input_audio_path: Path
     input_audio_filename: str
     input_audio_bytes: bytes
@@ -1107,6 +1115,7 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         input_audio_filename=input_audio_filename,
         output_name=output_name,
         output_format=req.output_format,
+        enhancement_model=selected_model,
     )
     job_id = worker_manager.enqueue_enhance_job(worker_req)
     worker_snapshot = _worker_availability_snapshot()
@@ -1119,6 +1128,7 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         "progress": 0.0,
         "project_id": _display_project_id(scoped_project_id),
         "output_name": output_name,
+        "enhancement_model": selected_model.value,
         "worker_mode": True,
         "worker_fallback_timeout_seconds": WORKER_FALLBACK_TIMEOUT_SECONDS if WORKER_FALLBACK_ENABLED else 0,
         **worker_snapshot,
@@ -1192,6 +1202,7 @@ def list_project_outputs(request: Request, project_id: str):
                     "output_path": output_path,
                     "created_at": str(item.get("created_at") or ""),
                     "duration_seconds": float(item.get("duration_seconds") or 0.0),
+                    "enhancement_model": str(item.get("enhancement_model") or ""),
                     "download_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=true",
                     "play_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=false",
                 }
@@ -1240,22 +1251,31 @@ def workers_status(request: Request):
     return _worker_availability_snapshot()
 
 
+@app.get("/enhancement/models")
+def enhancement_models(request: Request):
+    _require_auth(request)
+    return {
+        "default_model": enhance_service.default_model.value,
+        "models": enhance_service.available_models(),
+    }
+
+
 @app.post("/workers/invite", response_model=WorkerInviteResponse)
 def worker_invite(request: Request, req: WorkerInviteRequest):
     _require_auth(request)
     token = worker_manager.issue_invite_token(req.capabilities)
     base_url = str(request.base_url).rstrip("/")
     install_command = (
-        f'python3 -m pip install --upgrade "{WORKER_INSTALL_SPEC}" && '
+        f'python3 -m pip install --upgrade "{WORKER_INSTALL_SPEC}" deepfilternet && '
         f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token}"
     )
     install_command_windows = (
-        f"py -m pip install --upgrade {WORKER_INSTALL_SPEC} && "
+        f"py -m pip install --upgrade {WORKER_INSTALL_SPEC} deepfilternet && "
         f"py -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform windows"
     )
     install_command_macos = _macos_worker_install_command(base_url, token)
     install_command_linux = (
-        f'python3 -m pip install --upgrade "{WORKER_INSTALL_SPEC}" && '
+        f'python3 -m pip install --upgrade "{WORKER_INSTALL_SPEC}" deepfilternet && '
         f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform linux"
     )
     windows_installer_url = f"{base_url}/workers/bootstrap/windows.cmd?invite_token={quote(token)}"
@@ -1306,7 +1326,7 @@ def worker_bootstrap_windows_cmd(request: Request, invite_token: str = Query(...
         "@echo off\r\n"
         "echo Installing RADcast worker on this Windows device...\r\n"
         "py -m pip install --upgrade pip\r\n"
-        f"py -m pip install --upgrade {WORKER_INSTALL_SPEC}\r\n"
+        f"py -m pip install --upgrade {WORKER_INSTALL_SPEC} deepfilternet\r\n"
         f"py -m radcast.worker_setup --server-url {base_url} --invite-token {safe_token} --platform windows\r\n"
         "echo Setup complete. You can close this window.\r\n"
     )
@@ -1330,7 +1350,7 @@ def worker_bootstrap_macos_command(request: Request, invite_token: str = Query(.
         "git lfs install\n"
         "\"$BREW_PREFIX/bin/python3.11\" -m venv \"$HOME/.radcast/venv\"\n"
         "\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade pip\n"
-        f"\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade \"{install_spec}\" resemble-enhance\n"
+        f"\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade \"{install_spec}\" resemble-enhance deepfilternet\n"
         f"\"$HOME/.radcast/venv/bin/python\" -m radcast.worker_setup --server-url {base_url} --invite-token {quote(invite_token, safe='')} --platform macos\n"
         "echo \"Setup complete. You can close this window.\"\n"
     )
@@ -1364,7 +1384,7 @@ def _macos_worker_install_command(base_url: str, token: str) -> str:
         'git lfs install; '
         '"$BREW_PREFIX/bin/python3.11" -m venv "$HOME/.radcast/venv"; '
         '"$HOME/.radcast/venv/bin/python" -m pip install --upgrade pip; '
-        f'"$HOME/.radcast/venv/bin/python" -m pip install --upgrade "{install_spec}" resemble-enhance; '
+        f'"$HOME/.radcast/venv/bin/python" -m pip install --upgrade "{install_spec}" resemble-enhance deepfilternet; '
         f'"$HOME/.radcast/venv/bin/python" -m radcast.worker_setup --server-url {safe_base_url} --invite-token {safe_token} --platform macos'
         "'"
     )

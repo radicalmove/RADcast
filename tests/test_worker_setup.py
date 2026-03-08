@@ -42,6 +42,7 @@ def test_linux_service_unit_references_worker_module():
     assert "https://worker.example.com" in text
 
 
+
 def test_windows_task_command_references_worker_module_and_flags():
     command = windows_task_command(
         python_exe=Path(r"C:\Python\python.exe"),

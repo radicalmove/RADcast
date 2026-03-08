@@ -20,6 +20,8 @@ const sourcePreviewLabelNode = document.getElementById("source-preview-label");
 const sourceAudioPreviewNode = document.getElementById("source-audio-preview");
 
 const outputFormatNode = document.getElementById("output-format");
+const enhancementModelNode = document.getElementById("enhancement-model");
+const enhancementModelStatusNode = document.getElementById("enhancement-model-status");
 
 const workerStatusPillNode = document.getElementById("worker-status-pill");
 const workerStatusDetailNode = document.getElementById("worker-status-detail");
@@ -96,6 +98,7 @@ const state = {
   workerSetupMacosUrl: "",
   sourcePreviewObjectUrl: null,
   jobPollErrorCount: 0,
+  enhancementModels: [],
 };
 
 function escapeHtml(value) {
@@ -128,6 +131,12 @@ function setSavedSourceAudioStatus(message, isError = false) {
   if (!savedSourceAudioStatusNode) return;
   savedSourceAudioStatusNode.textContent = message || "";
   savedSourceAudioStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function setEnhancementModelStatus(message, isError = false) {
+  if (!enhancementModelStatusNode) return;
+  enhancementModelStatusNode.textContent = message || "";
+  enhancementModelStatusNode.style.color = isError ? "#a73527" : "#555";
 }
 
 function setWorkerStatus(connected, detailText = "") {
@@ -204,6 +213,72 @@ function formatDisplayDateTime(value) {
   formatted = formatted.replace(/\s+([AP]M)$/i, (_, meridiem) => meridiem.toLowerCase());
   formatted = formatted.replace(/(\d)\s([ap]m)$/i, "$1$2");
   return formatted;
+}
+
+function selectedEnhancementModelId() {
+  return cleanOptional(enhancementModelNode?.value) || "resemble";
+}
+
+function enhancementModelById(modelId) {
+  return state.enhancementModels.find((item) => item && item.id === modelId) || null;
+}
+
+function updateEnhancementModelStatusFromSelection() {
+  const item = enhancementModelById(selectedEnhancementModelId());
+  if (!item) {
+    setEnhancementModelStatus("Choose the enhancement backend to use.");
+    return;
+  }
+  const parts = [String(item.description || "").trim(), String(item.detail || "").trim()].filter(Boolean);
+  setEnhancementModelStatus(parts.join(" "));
+}
+
+async function loadEnhancementModels() {
+  if (!enhancementModelNode) return;
+  enhancementModelNode.disabled = true;
+  enhancementModelNode.innerHTML = '<option value="resemble">Loading models...</option>';
+  setEnhancementModelStatus("Checking available enhancement models...");
+
+  try {
+    const data = await requestJSON("/enhancement/models", "GET");
+    const models = Array.isArray(data.models) ? data.models : [];
+    state.enhancementModels = models;
+
+    enhancementModelNode.innerHTML = "";
+    for (const item of models) {
+      const option = document.createElement("option");
+      option.value = String(item.id || "");
+      const unavailable = item.available === false ? " (not available)" : "";
+      const experimental = item.experimental ? " [experimental]" : "";
+      option.textContent = `${String(item.label || item.id || "model")}${experimental}${unavailable}`;
+      option.disabled = item.available === false;
+      enhancementModelNode.appendChild(option);
+    }
+
+    const preferred = String(data.default_model || "resemble");
+    const availablePreferred = enhancementModelById(preferred);
+    if (availablePreferred && availablePreferred.available !== false) {
+      enhancementModelNode.value = preferred;
+    } else {
+      const firstEnabled = Array.from(enhancementModelNode.options).find((option) => !option.disabled);
+      if (firstEnabled) enhancementModelNode.value = firstEnabled.value;
+    }
+    updateEnhancementModelStatusFromSelection();
+  } catch (err) {
+    enhancementModelNode.innerHTML = '<option value="resemble">Resemble Enhance</option>';
+    state.enhancementModels = [
+      {
+        id: "resemble",
+        label: "Resemble Enhance",
+        description: "Fallback option when model discovery fails.",
+        detail: "",
+        available: true,
+      },
+    ];
+    setEnhancementModelStatus(`Could not load enhancement models: ${String(err)}`, true);
+  } finally {
+    enhancementModelNode.disabled = false;
+  }
 }
 
 function formatSavedSourceAudioLabel(sample) {
@@ -906,6 +981,7 @@ async function handleGenerate() {
     const payload = {
       project_id: state.activeProjectRef,
       output_format: String(outputFormatNode?.value || "mp3"),
+      enhancement_model: selectedEnhancementModelId(),
     };
     if (selectedAudioHash) {
       payload.input_audio_hash = selectedAudioHash;
@@ -1209,8 +1285,14 @@ async function init() {
 
   if (generateBtn) generateBtn.addEventListener("click", () => void handleGenerate());
   if (cancelBtn) cancelBtn.addEventListener("click", () => void handleCancel());
+  if (enhancementModelNode) {
+    enhancementModelNode.addEventListener("change", () => {
+      updateEnhancementModelStatusFromSelection();
+    });
+  }
 
   void fetchWorkerStatus();
+  void loadEnhancementModels();
   startWorkerStatusPolling();
   wireDragAndDrop();
 }
