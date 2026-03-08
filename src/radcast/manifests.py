@@ -1,0 +1,70 @@
+"""Manifest persistence for jobs and outputs."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from radcast.models import JobRecord, OutputMetadata
+
+
+class ManifestStore:
+    def __init__(self, manifests_dir: Path):
+        self.manifests_dir = manifests_dir
+        self.jobs_file = manifests_dir / "jobs.json"
+        self.outputs_file = manifests_dir / "outputs.json"
+        self.manifests_dir.mkdir(parents=True, exist_ok=True)
+        for path in (self.jobs_file, self.outputs_file):
+            if not path.exists():
+                self._write(path, [])
+
+    def list_jobs(self) -> list[dict[str, Any]]:
+        return self._read(self.jobs_file)
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        for item in self._read(self.jobs_file):
+            if item.get("id") == job_id:
+                return item
+        return None
+
+    def upsert_job(self, job: JobRecord) -> None:
+        jobs = self._read(self.jobs_file)
+        payload = job.model_dump(mode="json")
+        replaced = False
+        for idx, item in enumerate(jobs):
+            if item.get("id") == job.id:
+                jobs[idx] = payload
+                replaced = True
+                break
+        if not replaced:
+            jobs.append(payload)
+        self._write(self.jobs_file, jobs)
+
+    def append_output(self, metadata: OutputMetadata) -> None:
+        items = self._read(self.outputs_file)
+        items.append(metadata.model_dump(mode="json"))
+        self._write(self.outputs_file, items)
+
+    def list_outputs(self) -> list[dict[str, Any]]:
+        return self._read(self.outputs_file)
+
+    def write_output_file(self, path: Path, metadata: OutputMetadata) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(metadata.model_dump(mode="json"), indent=2),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _read(path: Path) -> list[dict[str, Any]]:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except json.JSONDecodeError:
+            return []
+
+    @staticmethod
+    def _write(path: Path, payload: object) -> None:
+        path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")

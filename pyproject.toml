@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "radcast"
+version = "0.1.0"
+description = "Local-first lecture audio enhancement studio"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "RADcast" }]
+license = { text = "MIT" }
+dependencies = [
+  "pydantic>=2.8,<3",
+  "itsdangerous>=2.2,<3",
+  "requests>=2.32,<3",
+  "fastapi>=0.135,<1",
+  "uvicorn>=0.30,<1",
+  "gunicorn>=23,<24",
+  "jinja2>=3.1,<4",
+  "python-multipart>=0.0.22,<0.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "httpx>=0.27,<1"]
+
+[project.scripts]
+radcast-api = "radcast.api:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+radcast = ["templates/*.html", "static/*.css", "static/*.js", "static/*.svg"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+addopts = "-q"

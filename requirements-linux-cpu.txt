@@ -1,0 +1,4 @@
+-r requirements.txt
+# Base app requirements only.
+# For a full Ubuntu CPU install, run:
+#   bash scripts/install-linux-cpu.sh

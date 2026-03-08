@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RADcast Studio</title>
+    <link rel="icon" href="/static/radcast-logo.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/ui.css" />
+  </head>
+  <body>
+    <div class="bg-grid"></div>
+    <header class="topbar">
+      <div class="topbar-brand">
+        <a class="topbar-logo-link" href="/" aria-label="Go to RADcast home">
+          <img src="/static/radcast-logo.svg" alt="RADcast logo" class="topbar-logo" width="32" height="32" />
+        </a>
+        <div>
+          <p class="eyebrow">Local-first audio enhancement</p>
+          <h1>RADcast Studio</h1>
+        </div>
+      </div>
+      <div class="topbar-center">
+        <div id="active-project-chip" class="chip chip-project" hidden>
+          <span class="chip-label">Project</span>
+          <span id="active-project-label"></span>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <button id="switch-project-btn" class="topbar-btn" type="button" hidden>Projects</button>
+        <button id="share-project-btn" class="topbar-btn" type="button" hidden>Share</button>
+        {% if current_user %}
+        <div class="topbar-app-links">
+        {% if radtts_app_url %}
+        <a class="topbar-btn topbar-btn-app" href="{{ radtts_app_url }}">RADTTS</a>
+        {% endif %}
+        {% if psychek_app_url %}
+        <a class="topbar-btn topbar-btn-app topbar-btn-psychek" href="{{ psychek_app_url }}">PsyCheck</a>
+        {% endif %}
+        </div>
+        {% if current_user.is_admin and psychek_admin_url %}
+        <a class="topbar-btn" href="{{ psychek_admin_url }}">Admin</a>
+        {% endif %}
+        <a class="topbar-btn topbar-btn-danger" href="/auth/logout">Log out</a>
+        {% else %}
+        <div class="chip">API + UI</div>
+        {% endif %}
+      </div>
+    </header>
+
+    <section id="project-gateway" class="gateway-wrap">
+      <section class="gateway-card">
+        <h2>Choose project</h2>
+        <p class="gateway-copy">Create a new project or open an existing one to continue.</p>
+        <div class="gateway-grid">
+          <form id="open-project-form" class="stack">
+            <h3>Open existing</h3>
+            <select id="existing-project-select" required>
+              <option value="">Loading projects...</option>
+            </select>
+            <button id="refresh-projects-btn" type="button">Refresh</button>
+            <p id="project-gateway-status" class="gateway-status"></p>
+          </form>
+
+          <form id="create-form" class="stack">
+            <h3>Create new</h3>
+            <input name="project_id" placeholder="Project ID (e.g., crju150-m9)" required />
+            <input name="course" placeholder="Course (optional)" />
+            <input name="module" placeholder="Module (optional)" />
+            <input name="lesson" placeholder="Lesson (optional)" />
+            <button type="submit">Create project</button>
+          </form>
+        </div>
+      </section>
+    </section>
+
+    <main id="workspace" class="layout workspace-hidden simple-layout">
+      <section class="panel input-grid-panel">
+        <div class="input-grid">
+          <section class="input-card">
+            <h3>1. Upload audio file</h3>
+            <label id="audio-dropzone" class="dropzone" for="input-audio-file">
+              <input id="input-audio-file" type="file" accept="audio/*" hidden />
+              <span id="audio-dropzone-title">Drop audio here or click to choose</span>
+              <small>WAV, MP3, M4A, FLAC, OGG, WEBM</small>
+            </label>
+            <p id="audio-file-name" class="field-note">No file selected.</p>
+          </section>
+
+          <section class="input-card">
+            <h3>2. Output settings</h3>
+            <div class="options-grid">
+              <label class="stack">
+                <span>Output format</span>
+                <select id="output-format">
+                  <option value="mp3">MP3</option>
+                  <option value="wav">WAV</option>
+                </select>
+              </label>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="panel action-panel">
+        <div class="action-buttons">
+          <button id="generate-btn" class="generate-btn" type="button">Enhance audio</button>
+          <button id="cancel-btn" class="cancel-btn" type="button" hidden>Cancel</button>
+        </div>
+        <p id="generate-status" class="generate-status"></p>
+
+        <div id="progress-wrap" class="progress-wrap" hidden>
+          <div class="progress-meta">
+            <span id="progress-stage">Queued</span>
+            <span id="progress-compute">Processing on: RADcast server</span>
+            <span id="progress-eta">Time left to process: --:--</span>
+            <span id="progress-percent">0%</span>
+          </div>
+          <div class="progress-track">
+            <div id="progress-fill" class="progress-fill"></div>
+          </div>
+          <p id="progress-detail" class="progress-detail">Preparing enhancement...</p>
+        </div>
+      </section>
+
+      <section class="panel output-panel">
+        <h2>Completed versions</h2>
+        <ul id="output-list" class="output-list"></ul>
+      </section>
+    </main>
+
+    <script src="/static/ui.js" defer></script>
+  </body>
+</html>

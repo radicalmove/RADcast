@@ -1,0 +1,2 @@
+[console_scripts]
+radcast-api = radcast.api:main

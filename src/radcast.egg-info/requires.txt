@@ -1,0 +1,12 @@
+pydantic<3,>=2.8
+itsdangerous<3,>=2.2
+requests<3,>=2.32
+fastapi<1,>=0.135
+uvicorn<1,>=0.30
+gunicorn<24,>=23
+jinja2<4,>=3.1
+python-multipart<0.1,>=0.0.22
+
+[dev]
+pytest>=8.3
+httpx<1,>=0.27

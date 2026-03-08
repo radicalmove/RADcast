@@ -1,0 +1,935 @@
+"""FastAPI service exposing RADcast endpoints."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import re
+import threading
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import quote, unquote, urlencode
+
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+
+from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
+from radcast.manifests import ManifestStore
+from radcast.models import (
+    JobRecord,
+    JobStatus,
+    OutputFormat,
+    OutputMetadata,
+    ProjectAccessGrantRequest,
+    ProjectAccessRevokeRequest,
+    ProjectCreateRequest,
+    SimpleEnhanceRequest,
+    now_utc_iso,
+    touch_job_update,
+)
+from radcast.project import ProjectManager
+from radcast.services.enhance import EnhanceService
+from radcast.utils.audio import probe_duration_seconds
+
+try:
+    from fastapi import FastAPI, HTTPException, Query, Request
+    from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.templating import Jinja2Templates
+    from starlette.middleware.sessions import SessionMiddleware
+except ImportError as exc:  # pragma: no cover
+    raise RuntimeError("FastAPI is not installed. Install with 'pip install -e .'.") from exc
+
+
+PROJECTS_ROOT = Path(os.environ.get("RADCAST_PROJECTS_ROOT", "projects"))
+MODULE_ROOT = Path(__file__).resolve().parent
+AUTH_REQUIRED = str(os.environ.get("RADCAST_AUTH_REQUIRED", "false")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+SESSION_SECRET = os.environ.get("RADCAST_SESSION_SECRET", "radcast-dev-session-secret")
+SESSION_SECURE = str(os.environ.get("RADCAST_SESSION_SECURE", "false")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+PSYCHEK_LOGIN_URL = os.environ.get("PSYCHEK_LOGIN_URL", "http://127.0.0.1:8000/login")
+BRIDGE_SECRET = os.environ.get("RADCAST_BRIDGE_SECRET", SESSION_SECRET)
+BRIDGE_MAX_AGE_SECONDS = int(os.environ.get("RADCAST_BRIDGE_MAX_AGE_SECONDS", "120"))
+SCOPE_PROJECTS_BY_USER = str(os.environ.get("RADCAST_SCOPE_PROJECTS_BY_USER", "true")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
+
+
+app = FastAPI(title="RADcast API", version="0.1.0")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    same_site="lax",
+    https_only=SESSION_SECURE,
+)
+app.mount("/static", StaticFiles(directory=MODULE_ROOT / "static"), name="static")
+templates = Jinja2Templates(directory=str(MODULE_ROOT / "templates"))
+
+project_manager = ProjectManager(PROJECTS_ROOT)
+enhance_service = EnhanceService()
+
+_job_update_lock = threading.Lock()
+_cancelled_jobs: set[str] = set()
+_UNSET = object()
+
+
+def _infer_psychek_admin_url(login_url: str) -> str:
+    cleaned = login_url.strip()
+    if cleaned.endswith("/login"):
+        return f"{cleaned[:-len('/login')]}/admin"
+    return f"{cleaned.rstrip('/')}/admin"
+
+
+def _infer_psychek_app_url(login_url: str) -> str:
+    cleaned = login_url.strip()
+    if cleaned.endswith("/login"):
+        return cleaned[:-len("/login")] or "/"
+    return cleaned.rstrip("/")
+
+
+PSYCHEK_ADMIN_URL = os.environ.get("PSYCHEK_ADMIN_URL", "").strip() or _infer_psychek_admin_url(PSYCHEK_LOGIN_URL)
+PSYCHEK_APP_URL = os.environ.get("PSYCHEK_APP_URL", "").strip() or _infer_psychek_app_url(PSYCHEK_LOGIN_URL)
+RADTTS_APP_URL = os.environ.get("RADTTS_APP_URL", "").strip()
+
+
+def _bridge_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(BRIDGE_SECRET, salt="app-bridge-radcast-v1")
+
+
+def _current_user(request: Request) -> dict | None:
+    user = request.session.get("user")
+    return user if isinstance(user, dict) else None
+
+
+def _require_auth(request: Request) -> None:
+    if AUTH_REQUIRED and _current_user(request) is None:
+        raise HTTPException(status_code=401, detail="authentication required")
+
+
+def _login_redirect() -> RedirectResponse:
+    query = urlencode({"target_app": "radcast"})
+    separator = "&" if "?" in PSYCHEK_LOGIN_URL else "?"
+    return RedirectResponse(f"{PSYCHEK_LOGIN_URL}{separator}{query}", status_code=302)
+
+
+def _scope_prefix(request: Request) -> str | None:
+    user = _current_user(request)
+    if not user:
+        return None
+    sub = str(user.get("sub") or "").strip()
+    email = str(user.get("email") or "").strip().lower()
+    identity = f"{sub}|{email}".strip("|")
+    if not identity:
+        return None
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+    return f"u{digest}"
+
+
+def _current_user_key_and_label(request: Request) -> tuple[str | None, str | None]:
+    user = _current_user(request)
+    if not user:
+        return None, None
+
+    user_key = _scope_prefix(request)
+    if not user_key:
+        return None, None
+
+    label = str(user.get("display_name") or user.get("email") or user.get("sub") or user_key).strip()
+    return user_key, label or user_key
+
+
+def _scope_project_id(request: Request, project_id: str) -> str:
+    if not SCOPE_PROJECTS_BY_USER:
+        return project_id
+    prefix = _scope_prefix(request)
+    if not prefix:
+        return project_id
+    if project_id.startswith(f"{prefix}__"):
+        return project_id
+    return f"{prefix}__{project_id}"
+
+
+def _looks_scoped_project_id(project_id: str) -> bool:
+    return bool(SCOPED_PROJECT_RE.match(project_id.strip()))
+
+
+def _display_project_id(project_id: str) -> str:
+    value = project_id.strip()
+    if _looks_scoped_project_id(value) and "__" in value:
+        return value.split("__", 1)[1]
+    return value
+
+
+def _inferred_owner_key_from_project_id(scoped_project_id: str) -> str:
+    if "__" not in scoped_project_id:
+        return ""
+    prefix, _ = scoped_project_id.split("__", 1)
+    return prefix if prefix.startswith("u") and len(prefix) == 13 else ""
+
+
+def _project_access_file(scoped_project_id: str) -> Path:
+    return project_manager.get_paths(scoped_project_id).manifests / "access.json"
+
+
+def _load_project_access(scoped_project_id: str) -> dict[str, object]:
+    access_path = _project_access_file(scoped_project_id)
+    try:
+        payload = json.loads(access_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        payload = {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    owner = payload.get("owner") if isinstance(payload.get("owner"), dict) else {}
+    owner_key = str(owner.get("user_key") or "").strip()
+    owner_email = str(owner.get("email") or "").strip().lower()
+    owner_label = str(owner.get("display_name") or owner.get("email") or owner.get("sub") or owner_key).strip()
+
+    inferred_owner_key = _inferred_owner_key_from_project_id(scoped_project_id)
+    if not owner_key and inferred_owner_key:
+        owner_key = inferred_owner_key
+        if not owner_label:
+            owner_label = owner_key
+
+    collaborators_raw = payload.get("collaborators") if isinstance(payload.get("collaborators"), list) else []
+    collaborators: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in collaborators_raw:
+        if not isinstance(row, dict):
+            continue
+        email = str(row.get("email") or "").strip().lower()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        collaborators.append(
+            {
+                "email": email,
+                "granted_at": str(row.get("granted_at") or ""),
+                "granted_by": str(row.get("granted_by") or ""),
+            }
+        )
+
+    return {
+        "owner": {
+            "user_key": owner_key,
+            "email": owner_email,
+            "display_name": owner_label,
+        },
+        "collaborators": collaborators,
+        "updated_at": str(payload.get("updated_at") or ""),
+    }
+
+
+def _write_project_access(scoped_project_id: str, access: dict[str, object]) -> None:
+    access_path = _project_access_file(scoped_project_id)
+    access_path.parent.mkdir(parents=True, exist_ok=True)
+    access_path.write_text(json.dumps(access, indent=2), encoding="utf-8")
+
+
+def _bootstrap_owner_access_if_missing(request: Request, scoped_project_id: str) -> None:
+    access_path = _project_access_file(scoped_project_id)
+    if access_path.exists():
+        return
+
+    user = _current_user(request) or {}
+    user_key, user_label = _current_user_key_and_label(request)
+    access = {
+        "owner": {
+            "user_key": user_key or _inferred_owner_key_from_project_id(scoped_project_id),
+            "email": str(user.get("email") or "").strip().lower(),
+            "display_name": user_label or "",
+        },
+        "collaborators": [],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_project_access(scoped_project_id, access)
+
+
+def _resolve_access_for_user(request: Request, scoped_project_id: str) -> dict[str, object]:
+    access = _load_project_access(scoped_project_id)
+    session_user = _current_user(request)
+    user = session_user or {}
+    has_user = session_user is not None
+    user_key, _ = _current_user_key_and_label(request)
+    user_email = str(user.get("email") or "").strip().lower()
+    is_admin = bool(user.get("is_admin", False)) if has_user else False
+
+    owner = access.get("owner") if isinstance(access.get("owner"), dict) else {}
+    owner_key = str(owner.get("user_key") or "")
+    owner_email = str(owner.get("email") or "").strip().lower()
+
+    collaborator_emails: set[str] = set()
+    for row in access.get("collaborators", []):
+        if isinstance(row, dict):
+            email = str(row.get("email") or "").strip().lower()
+            if email:
+                collaborator_emails.add(email)
+
+    is_owner = bool(
+        (user_key and owner_key and user_key == owner_key)
+        or (user_email and owner_email and user_email == owner_email)
+    )
+    is_collaborator = bool(user_email and user_email in collaborator_emails)
+    if has_user:
+        can_access = is_admin or is_owner or is_collaborator
+    else:
+        can_access = not AUTH_REQUIRED
+    can_manage = is_admin or is_owner
+
+    return {
+        "can_access": can_access,
+        "can_manage": can_manage,
+        "is_owner": is_owner,
+        "is_collaborator": is_collaborator,
+        "is_admin": is_admin,
+        "owner": owner,
+        "collaborators": access.get("collaborators", []),
+    }
+
+
+def _resolve_project_id_for_request(request: Request, project_id: str) -> str:
+    requested = project_id.strip()
+    if not requested:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    candidate_ids: list[str] = []
+    if not SCOPE_PROJECTS_BY_USER:
+        candidate_ids.append(requested)
+    else:
+        if _looks_scoped_project_id(requested):
+            candidate_ids.append(requested)
+        else:
+            candidate_ids.append(_scope_project_id(request, requested))
+            for candidate in project_manager.list_projects():
+                if _display_project_id(candidate) == requested:
+                    candidate_ids.append(candidate)
+
+    seen: set[str] = set()
+    existing: list[str] = []
+    for candidate in candidate_ids:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            project_manager.ensure_project(candidate)
+        except FileNotFoundError:
+            continue
+        existing.append(candidate)
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    for candidate in existing:
+        access = _resolve_access_for_user(request, candidate)
+        if bool(access.get("can_access")):
+            return candidate
+
+    raise HTTPException(status_code=403, detail="project access denied")
+
+
+def _safe_filename(filename: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", filename.strip())
+    cleaned = cleaned.strip("._")
+    return cleaned or "audio.wav"
+
+
+def _safe_audio_extension(filename: str) -> str:
+    suffix = Path(_safe_filename(filename)).suffix.lower()
+    if suffix in {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm"}:
+        return suffix
+    return ".wav"
+
+
+def _slug_text(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", value.strip().lower())
+    return slug.strip("-")
+
+
+def _build_output_name(input_filename: str, override: str | None) -> str:
+    if override and override.strip():
+        cleaned = _slug_text(override)
+        if cleaned:
+            return cleaned
+    stem = Path(_safe_filename(input_filename)).stem
+    base = _slug_text(stem)[:36] or "enhanced-audio"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"{base}-{stamp}"
+
+
+def _cancel_requested(job_id: str) -> bool:
+    return job_id in _cancelled_jobs
+
+
+def _read_job(paths: Path, job_id: str) -> JobRecord | None:
+    store = ManifestStore(paths)
+    payload = store.get_job(job_id)
+    if not payload:
+        return None
+    return JobRecord(**payload)
+
+
+def _upsert_job(paths: Path, job: JobRecord) -> None:
+    store = ManifestStore(paths)
+    touch_job_update(job)
+    store.upsert_job(job)
+
+
+def _append_output(paths: Path, metadata: OutputMetadata) -> Path:
+    store = ManifestStore(paths)
+    metadata_path = paths / f"{metadata.output_file.stem}.metadata.json"
+    store.write_output_file(metadata_path, metadata)
+    store.append_output(metadata)
+    return metadata_path
+
+
+def _update_job(
+    paths: Path,
+    *,
+    job_id: str,
+    status: JobStatus | None = None,
+    stage: str | None = None,
+    progress: float | None = None,
+    eta_seconds: int | None | object = _UNSET,
+    log: str | None = None,
+    error: str | None = None,
+    outputs: dict[str, str] | None = None,
+) -> None:
+    with _job_update_lock:
+        job = _read_job(paths, job_id)
+        if job is None:
+            return
+        if status is not None:
+            job.status = status
+        if stage is not None:
+            job.stage = stage
+        if progress is not None:
+            job.progress = max(0.0, min(1.0, progress))
+        if eta_seconds is not _UNSET:
+            job.eta_seconds = None if eta_seconds is None else max(0, int(eta_seconds))
+        if log:
+            previous = ""
+            if job.logs:
+                previous = job.logs[-1].split(" ", 1)[1] if " " in job.logs[-1] else job.logs[-1]
+            if log != previous:
+                job.logs.append(f"{now_utc_iso()} {log}")
+        if error is not None:
+            job.error = error
+        if outputs is not None:
+            job.outputs = outputs
+        _upsert_job(paths, job)
+
+
+def _run_enhancement_job(
+    *,
+    scoped_project_id: str,
+    visible_project_id: str,
+    job_id: str,
+    input_audio_bytes: bytes,
+    input_audio_filename: str,
+    output_name: str,
+    output_format: OutputFormat,
+) -> None:
+    paths = project_manager.ensure_project(scoped_project_id)
+    manifests_dir = paths.manifests
+
+    input_hash = hashlib.sha256(input_audio_bytes).hexdigest()
+    input_ext = _safe_audio_extension(input_audio_filename)
+    input_path = paths.assets_source_audio / f"{output_name}-{input_hash[:12]}{input_ext}"
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    if not input_path.exists():
+        input_path.write_bytes(input_audio_bytes)
+
+    def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
+        _update_job(
+            manifests_dir,
+            job_id=job_id,
+            status=JobStatus.RUNNING,
+            stage=stage,
+            progress=progress,
+            eta_seconds=eta_seconds,
+            log=detail,
+        )
+
+    try:
+        on_stage("prepare", 0.08, "Preparing enhancement")
+        output_base = paths.assets_enhanced_audio / output_name
+        final_path = enhance_service.enhance(
+            job_id=job_id,
+            input_audio_path=input_path,
+            output_format=output_format,
+            output_base_path=output_base,
+            on_stage=on_stage,
+            cancel_check=lambda: _cancel_requested(job_id),
+        )
+
+        if _cancel_requested(job_id):
+            raise JobCancelledError("job cancelled")
+
+        duration_seconds = probe_duration_seconds(final_path)
+        metadata = OutputMetadata(
+            output_file=final_path,
+            input_file=input_path,
+            duration_seconds=duration_seconds,
+            output_format=output_format,
+            project_id=scoped_project_id,
+            job_id=job_id,
+        )
+        metadata_path = _append_output(manifests_dir, metadata)
+
+        encoded_audio = quote(str(final_path), safe="")
+        outputs = {
+            "audio_path": str(final_path),
+            "metadata_path": str(metadata_path),
+            "audio_download_url": f"/projects/{visible_project_id}/artifact?path={encoded_audio}&download=true",
+            "audio_play_url": f"/projects/{visible_project_id}/artifact?path={encoded_audio}&download=false",
+        }
+        _update_job(
+            manifests_dir,
+            job_id=job_id,
+            status=JobStatus.COMPLETED,
+            stage="completed",
+            progress=1.0,
+            eta_seconds=None,
+            log="Enhancement completed",
+            outputs=outputs,
+        )
+    except JobCancelledError as exc:
+        _update_job(
+            manifests_dir,
+            job_id=job_id,
+            status=JobStatus.CANCELLED,
+            stage="cancelled",
+            progress=0.0,
+            eta_seconds=None,
+            error=str(exc),
+            log="Job cancelled",
+        )
+    except EnhancementRuntimeError as exc:
+        _update_job(
+            manifests_dir,
+            job_id=job_id,
+            status=JobStatus.FAILED,
+            stage="failed",
+            progress=1.0,
+            eta_seconds=None,
+            error=str(exc),
+            log="Enhancement failed",
+        )
+    except Exception as exc:  # noqa: BLE001
+        _update_job(
+            manifests_dir,
+            job_id=job_id,
+            status=JobStatus.FAILED,
+            stage="failed",
+            progress=1.0,
+            eta_seconds=None,
+            error=str(exc),
+            log="Unexpected enhancement failure",
+        )
+    finally:
+        _cancelled_jobs.discard(job_id)
+
+
+@app.get("/auth/bridge")
+def auth_bridge(request: Request, token: str):
+    try:
+        payload = _bridge_serializer().loads(token, max_age=BRIDGE_MAX_AGE_SECONDS)
+    except SignatureExpired as exc:
+        raise HTTPException(status_code=401, detail="bridge token expired") from exc
+    except BadSignature as exc:
+        raise HTTPException(status_code=401, detail="invalid bridge token") from exc
+
+    request.session["user"] = {
+        "sub": payload.get("sub"),
+        "email": payload.get("email"),
+        "display_name": payload.get("display_name"),
+        "is_admin": bool(payload.get("is_admin", False)),
+        "issuer": payload.get("issuer"),
+    }
+    return RedirectResponse(url="/", status_code=302)
+
+
+@app.get("/auth/logout")
+def auth_logout(request: Request):
+    request.session.clear()
+    return _login_redirect()
+
+
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    if AUTH_REQUIRED and _current_user(request) is None:
+        return _login_redirect()
+
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "auth_required": AUTH_REQUIRED,
+            "current_user": _current_user(request),
+            "psychek_app_url": PSYCHEK_APP_URL,
+            "psychek_admin_url": PSYCHEK_ADMIN_URL,
+            "radtts_app_url": RADTTS_APP_URL,
+        },
+    )
+
+
+@app.post("/projects")
+def create_project(request: Request, req: ProjectCreateRequest):
+    _require_auth(request)
+    scoped_project_id = _scope_project_id(request, req.project_id)
+    paths = project_manager.create_project(
+        scoped_project_id,
+        course=req.course,
+        module=req.module,
+        lesson=req.lesson,
+    )
+    _bootstrap_owner_access_if_missing(request, scoped_project_id)
+    return {
+        "project_root": str(paths.root),
+        "project_id": req.project_id,
+        "project_ref": scoped_project_id,
+    }
+
+
+@app.get("/projects")
+def list_projects(request: Request):
+    _require_auth(request)
+    projects: list[dict[str, object]] = []
+    for scoped_project_id in project_manager.list_projects():
+        access = _resolve_access_for_user(request, scoped_project_id)
+        if not bool(access.get("can_access")):
+            continue
+
+        visible_project_id = _display_project_id(scoped_project_id)
+        owner = access.get("owner") if isinstance(access.get("owner"), dict) else {}
+        owner_label = str(owner.get("display_name") or owner.get("email") or owner.get("user_key") or "")
+        projects.append(
+            {
+                "project_id": visible_project_id,
+                "project_ref": scoped_project_id,
+                "shared": not bool(access.get("is_owner")),
+                "owner_label": owner_label,
+            }
+        )
+
+    return {"projects": projects}
+
+
+@app.get("/projects/{project_id}/access")
+def get_project_access(request: Request, project_id: str):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    access = _resolve_access_for_user(request, scoped_project_id)
+    owner = access.get("owner") if isinstance(access.get("owner"), dict) else {}
+    collaborators = access.get("collaborators") if isinstance(access.get("collaborators"), list) else []
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "project_ref": scoped_project_id,
+        "can_manage": bool(access.get("can_manage")),
+        "owner": {
+            "display_name": str(owner.get("display_name") or ""),
+            "email": str(owner.get("email") or ""),
+        },
+        "collaborators": collaborators,
+    }
+
+
+@app.post("/projects/{project_id}/access/grant")
+def grant_project_access(request: Request, project_id: str, req: ProjectAccessGrantRequest):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    access = _resolve_access_for_user(request, scoped_project_id)
+    if not bool(access.get("can_manage")):
+        raise HTTPException(status_code=403, detail="project access denied")
+
+    email = req.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=422, detail="valid email is required")
+
+    access_doc = _load_project_access(scoped_project_id)
+    owner = access_doc.get("owner") if isinstance(access_doc.get("owner"), dict) else {}
+    owner_email = str(owner.get("email") or "").strip().lower()
+    if owner_email and email == owner_email:
+        return {
+            "project_id": _display_project_id(scoped_project_id),
+            "project_ref": scoped_project_id,
+            "collaborators": access_doc.get("collaborators", []),
+            "updated": False,
+        }
+
+    collaborators_raw = access_doc.get("collaborators") if isinstance(access_doc.get("collaborators"), list) else []
+    collaborators: list[dict[str, str]] = []
+    found = False
+    current_user = _current_user(request) or {}
+    granted_by = str(current_user.get("email") or current_user.get("sub") or "").strip()
+    for row in collaborators_raw:
+        if not isinstance(row, dict):
+            continue
+        existing_email = str(row.get("email") or "").strip().lower()
+        if not existing_email:
+            continue
+        if existing_email == email:
+            found = True
+            collaborators.append(
+                {
+                    "email": existing_email,
+                    "granted_at": str(row.get("granted_at") or datetime.now(timezone.utc).isoformat()),
+                    "granted_by": str(row.get("granted_by") or granted_by),
+                }
+            )
+        else:
+            collaborators.append(
+                {
+                    "email": existing_email,
+                    "granted_at": str(row.get("granted_at") or ""),
+                    "granted_by": str(row.get("granted_by") or ""),
+                }
+            )
+
+    if not found:
+        collaborators.append(
+            {
+                "email": email,
+                "granted_at": datetime.now(timezone.utc).isoformat(),
+                "granted_by": granted_by,
+            }
+        )
+
+    access_doc["collaborators"] = collaborators
+    access_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_project_access(scoped_project_id, access_doc)
+
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "project_ref": scoped_project_id,
+        "collaborators": collaborators,
+        "updated": not found,
+    }
+
+
+@app.post("/projects/{project_id}/access/revoke")
+def revoke_project_access(request: Request, project_id: str, req: ProjectAccessRevokeRequest):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    access = _resolve_access_for_user(request, scoped_project_id)
+    if not bool(access.get("can_manage")):
+        raise HTTPException(status_code=403, detail="project access denied")
+
+    email = req.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=422, detail="valid email is required")
+
+    access_doc = _load_project_access(scoped_project_id)
+    collaborators_raw = access_doc.get("collaborators") if isinstance(access_doc.get("collaborators"), list) else []
+    collaborators = [
+        {
+            "email": str(row.get("email") or "").strip().lower(),
+            "granted_at": str(row.get("granted_at") or ""),
+            "granted_by": str(row.get("granted_by") or ""),
+        }
+        for row in collaborators_raw
+        if isinstance(row, dict)
+        and str(row.get("email") or "").strip().lower()
+        and str(row.get("email") or "").strip().lower() != email
+    ]
+
+    access_doc["collaborators"] = collaborators
+    access_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_project_access(scoped_project_id, access_doc)
+
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "project_ref": scoped_project_id,
+        "collaborators": collaborators,
+        "updated": True,
+    }
+
+
+@app.post("/enhance/simple")
+def enhance_simple(request: Request, req: SimpleEnhanceRequest):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, req.project_id)
+    paths = project_manager.ensure_project(scoped_project_id)
+
+    try:
+        input_audio = base64.b64decode(req.input_audio_b64.encode("utf-8"), validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="invalid input_audio_b64 payload") from exc
+
+    output_name = _build_output_name(req.input_audio_filename, req.output_name)
+    job_id = f"job_{uuid.uuid4().hex[:12]}"
+
+    with _job_update_lock:
+        store = ManifestStore(paths.manifests)
+        store.upsert_job(
+            JobRecord(
+                id=job_id,
+                project_id=scoped_project_id,
+                status=JobStatus.QUEUED,
+                stage="queued",
+                progress=0.0,
+                logs=[f"{now_utc_iso()} queued for enhancement"],
+            )
+        )
+
+    thread = threading.Thread(
+        target=lambda: _run_enhancement_job(
+            scoped_project_id=scoped_project_id,
+            visible_project_id=_display_project_id(scoped_project_id),
+            job_id=job_id,
+            input_audio_bytes=input_audio,
+            input_audio_filename=req.input_audio_filename,
+            output_name=output_name,
+            output_format=req.output_format,
+        ),
+        name=f"radcast-job-{job_id}",
+        daemon=True,
+    )
+    thread.start()
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "stage": "queued",
+        "progress": 0.0,
+        "project_id": _display_project_id(scoped_project_id),
+        "output_name": output_name,
+    }
+
+
+@app.get("/jobs/{job_id}")
+def get_job(request: Request, job_id: str, project_id: str = Query(..., min_length=2)):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    paths = project_manager.ensure_project(scoped_project_id)
+    store = ManifestStore(paths.manifests)
+    payload = store.get_job(job_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    if str(payload.get("project_id") or "") != scoped_project_id:
+        raise HTTPException(status_code=404, detail="job not found")
+    return payload
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(request: Request, job_id: str, project_id: str = Query(..., min_length=2)):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    paths = project_manager.ensure_project(scoped_project_id)
+
+    _cancelled_jobs.add(job_id)
+    enhance_service.cancel(job_id)
+
+    _update_job(
+        paths.manifests,
+        job_id=job_id,
+        status=JobStatus.CANCELLED,
+        stage="cancelled",
+        progress=0.0,
+        log="Cancellation requested",
+        error="job cancelled",
+    )
+
+    return {
+        "job_id": job_id,
+        "project_id": _display_project_id(scoped_project_id),
+        "status": "cancel_requested",
+        "requested_at": now_utc_iso(),
+    }
+
+
+@app.get("/projects/{project_id}/outputs")
+def list_project_outputs(request: Request, project_id: str):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    paths = project_manager.ensure_project(scoped_project_id)
+    store = ManifestStore(paths.manifests)
+
+    outputs: list[dict[str, object]] = []
+    for item in reversed(store.list_outputs()):
+        try:
+            output_path = str(item.get("output_file") or "")
+            if not output_path:
+                continue
+            encoded_path = quote(output_path, safe="")
+            suffix = Path(output_path).suffix.lower().replace(".", "") or "wav"
+            outputs.append(
+                {
+                    "output_name": Path(output_path).name,
+                    "output_format": suffix,
+                    "output_path": output_path,
+                    "created_at": str(item.get("created_at") or ""),
+                    "duration_seconds": float(item.get("duration_seconds") or 0.0),
+                    "download_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=true",
+                    "play_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=false",
+                }
+            )
+        except Exception:  # noqa: BLE001
+            continue
+
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "outputs": outputs,
+    }
+
+
+@app.get("/projects/{project_id}/artifact")
+def project_artifact(request: Request, project_id: str, path: str = Query(...), download: bool = Query(False)):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    paths = project_manager.ensure_project(scoped_project_id)
+
+    try:
+        requested = Path(unquote(path)).resolve()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="invalid path") from exc
+
+    project_root = paths.root.resolve()
+    if project_root != requested and project_root not in requested.parents:
+        raise HTTPException(status_code=403, detail="artifact path outside project")
+    if not requested.exists() or not requested.is_file():
+        raise HTTPException(status_code=404, detail="artifact not found")
+
+    media_type = _media_type_for_suffix(requested.suffix.lower())
+    filename = requested.name if download else None
+    return FileResponse(path=requested, media_type=media_type, filename=filename)
+
+
+def _media_type_for_suffix(suffix: str) -> str:
+    if suffix == ".mp3":
+        return "audio/mpeg"
+    if suffix == ".wav":
+        return "audio/wav"
+    if suffix == ".m4a":
+        return "audio/mp4"
+    if suffix == ".flac":
+        return "audio/flac"
+    return "application/octet-stream"
+
+
+def main() -> None:
+    import uvicorn
+
+    host = os.environ.get("RADCAST_HOST", "127.0.0.1")
+    port = int(os.environ.get("RADCAST_PORT", "8012"))
+    uvicorn.run("radcast.api:app", host=host, port=port, reload=False)
+
+
+if __name__ == "__main__":
+    main()
