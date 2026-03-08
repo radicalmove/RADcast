@@ -45,7 +45,7 @@ Environment variables:
 - `RADCAST_ENHANCE_LAMBD`
 - `RADCAST_ENHANCE_TAU`
 - `RADCAST_ENHANCE_POSTFILTER`
-  - default: `highpass=f=60,equalizer=f=140:t=q:w=1.15:g=3.5,equalizer=f=260:t=q:w=1.0:g=2.2,equalizer=f=3200:t=q:w=1.0:g=1.1,deesser=i=0.18:m=0.5:f=0.5:s=o,acompressor=threshold=-18dB:ratio=2.2:attack=20:release=180:makeup=2.5,loudnorm=I=-18:TP=-1.5:LRA=7`
+  - default: `highpass=f=60,equalizer=f=135:t=q:w=1.15:g=4.2,equalizer=f=250:t=q:w=1.0:g=2.6,equalizer=f=3000:t=q:w=1.0:g=0.8,deesser=i=0.10:m=0.35:f=0.5:s=o,acompressor=threshold=-18dB:ratio=1.7:attack=25:release=140:makeup=1.6,loudnorm=I=-18:TP=-1.5:LRA=7`
 
 If `resemble-enhance` is not on PATH, install it or set `RADCAST_ENHANCE_COMMAND`.
 
