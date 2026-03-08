@@ -919,18 +919,20 @@ async function loadOutputs() {
 
     outputListNode.innerHTML = outputs
       .map((item, idx) => {
-        const created = item.created_at ? new Date(item.created_at).toLocaleString() : "";
+        const meta = formatOutputMeta(item);
         const playId = `play-${idx}`;
         const playerId = `player-${idx}`;
         return `
           <li class="output-item">
             <div class="output-header">
-              <strong>${escapeHtml(item.output_name || "enhanced-audio")}</strong>
-              <span>${escapeHtml(created)}</span>
-            </div>
-            <div class="output-actions">
-              <button type="button" class="output-play-btn" data-play-id="${playId}" data-player-id="${playerId}" data-src="${escapeHtml(item.play_url || "")}">Play audio</button>
-              <a href="${escapeHtml(item.download_url || "#")}" target="_blank" rel="noopener">Save audio as</a>
+              <div class="output-meta">
+                <strong class="output-name">${escapeHtml(item.output_name || "enhanced-audio")}</strong>
+                ${meta ? `<span class="output-date">${escapeHtml(meta)}</span>` : ""}
+              </div>
+              <div class="output-actions">
+                <button type="button" class="output-play-btn" data-play-id="${playId}" data-player-id="${playerId}" data-src="${escapeHtml(item.play_url || "")}">Play audio</button>
+                <a href="${escapeHtml(item.download_url || "#")}" target="_blank" rel="noopener">Save audio as</a>
+              </div>
             </div>
             <audio id="${playerId}" controls hidden></audio>
             <code>${escapeHtml(item.output_path || "")}</code>
@@ -967,6 +969,17 @@ function bindOutputPlayButtons() {
       }
     });
   });
+}
+
+function formatOutputMeta(item) {
+  const parts = [];
+  const duration = Number(item.duration_seconds || 0);
+  if (Number.isFinite(duration) && duration > 0) parts.push(formatDurationSeconds(duration));
+  if (item.created_at) {
+    const created = new Date(item.created_at).toLocaleString();
+    if (created) parts.push(created);
+  }
+  return parts.join("  ");
 }
 
 async function shareProjectPrompt() {

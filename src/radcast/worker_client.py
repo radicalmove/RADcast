@@ -201,9 +201,9 @@ class WorkerClient:
                 def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
                     mapped_progress = progress
                     if stage == "prepare":
-                        mapped_progress = min(0.33, max(0.24, progress))
+                        mapped_progress = min(0.22, max(0.14, progress))
                     elif stage == "enhance":
-                        mapped_progress = min(0.88, max(0.34, progress))
+                        mapped_progress = min(0.88, max(0.24, progress))
                     elif stage == "finalize":
                         mapped_progress = min(0.96, max(0.9, progress))
                     emit_progress(mapped_progress, stage=stage, detail=detail, eta_seconds=eta_seconds)

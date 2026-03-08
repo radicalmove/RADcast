@@ -837,12 +837,20 @@ button.worker-mini-btn {
   padding: 10px;
 }
 
+.output-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
 .output-meta {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .output-name {
@@ -854,12 +862,30 @@ button.worker-mini-btn {
   color: #666;
 }
 
-.folder-line {
+.output-header .output-actions {
+  flex-shrink: 0;
+}
+
+.output-header .output-actions a,
+.output-header .output-actions button {
+  white-space: nowrap;
+}
+
+.folder-line,
+.output-item code {
+  display: block;
   margin-top: 8px;
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.75rem;
   color: #4b4b4b;
   word-break: break-all;
+}
+
+@media (max-width: 760px) {
+  .output-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 .output-audio-player {
