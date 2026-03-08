@@ -175,6 +175,7 @@ class WorkerJobProgressRequest(BaseModel):
     progress: float = Field(ge=0.0, le=1.0)
     stage: str | None = None
     detail: str | None = None
+    eta_seconds: int | None = Field(default=None, ge=0)
 
 
 class WorkerJobFailRequest(BaseModel):

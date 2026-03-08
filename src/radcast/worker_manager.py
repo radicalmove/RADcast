@@ -48,6 +48,9 @@ def _slugify_filename(name: str) -> str:
     return safe or "source_audio.wav"
 
 
+_UNSET = object()
+
+
 class WorkerManager:
     def __init__(
         self,
@@ -398,6 +401,7 @@ class WorkerManager:
             status=JobStatus.RUNNING,
             stage=stage,
             progress=req.progress,
+            eta_seconds=req.eta_seconds if req.eta_seconds is not None else _UNSET,
             log=detail,
         )
         return "running"
@@ -450,6 +454,7 @@ class WorkerManager:
         status: JobStatus,
         stage: str,
         progress: float,
+        eta_seconds: int | None | object = _UNSET,
         error: str | None = None,
         outputs: dict[str, Any] | None = None,
         log: str | None = None,
@@ -464,6 +469,8 @@ class WorkerManager:
         job.status = status
         job.stage = stage
         job.progress = max(0.0, min(1.0, progress))
+        if eta_seconds is not _UNSET:
+            job.eta_seconds = None if eta_seconds is None else max(0, int(eta_seconds))
         if error is not None:
             job.error = error
         if outputs is not None:

@@ -137,13 +137,23 @@ class WorkerClient:
             if once:
                 return
 
-    def _post_progress_update(self, job_id: str, *, progress: float, stage: str | None = None, detail: str | None = None) -> None:
+    def _post_progress_update(
+        self,
+        job_id: str,
+        *,
+        progress: float,
+        stage: str | None = None,
+        detail: str | None = None,
+        eta_seconds: int | None = None,
+    ) -> None:
         assert self.worker_id and self.api_key
         payload = {"worker_id": self.worker_id, "api_key": self.api_key, "progress": max(0.0, min(1.0, float(progress)))}
         if stage:
             payload["stage"] = stage
         if detail:
             payload["detail"] = detail
+        if eta_seconds is not None:
+            payload["eta_seconds"] = max(0, int(eta_seconds))
         try:
             self._post_json(f"/workers/jobs/{job_id}/progress", payload, timeout=60)
         except Exception:
@@ -157,23 +167,31 @@ class WorkerClient:
             input_path.write_bytes(base64.b64decode(req.input_audio_b64.encode("utf-8")))
 
             stage_durations_seconds: dict[str, float] = {}
-            progress_state = {"progress": 0.18, "stage": "worker_running", "detail": None}
+            progress_state = {"progress": 0.18, "stage": "worker_running", "detail": None, "eta_seconds": None}
             progress_lock = threading.Lock()
             stop_heartbeat = threading.Event()
 
-            def emit_progress(progress: float, *, stage: str | None = None, detail: str | None = None) -> None:
+            def emit_progress(
+                progress: float,
+                *,
+                stage: str | None = None,
+                detail: str | None = None,
+                eta_seconds: int | None = None,
+            ) -> None:
                 with progress_lock:
                     progress_state["progress"] = max(0.0, min(1.0, float(progress)))
                     progress_state["stage"] = stage or progress_state["stage"]
                     progress_state["detail"] = detail
-                self._post_progress_update(job_id, progress=progress, stage=stage, detail=detail)
+                    progress_state["eta_seconds"] = None if eta_seconds is None else max(0, int(eta_seconds))
+                self._post_progress_update(job_id, progress=progress, stage=stage, detail=detail, eta_seconds=eta_seconds)
 
             def heartbeat_worker() -> None:
                 while not stop_heartbeat.wait(10):
                     with progress_lock:
                         progress = float(progress_state["progress"])
                         stage = str(progress_state["stage"] or "worker_running")
-                    self._post_progress_update(job_id, progress=progress, stage=stage)
+                        eta_seconds = progress_state["eta_seconds"]
+                    self._post_progress_update(job_id, progress=progress, stage=stage, eta_seconds=eta_seconds)
 
             heartbeat_thread = threading.Thread(target=heartbeat_worker, name="radcast-worker-heartbeat", daemon=True)
             heartbeat_thread.start()
@@ -188,7 +206,7 @@ class WorkerClient:
                         mapped_progress = min(0.88, max(0.34, progress))
                     elif stage == "finalize":
                         mapped_progress = min(0.96, max(0.9, progress))
-                    emit_progress(mapped_progress, stage=stage, detail=detail)
+                    emit_progress(mapped_progress, stage=stage, detail=detail, eta_seconds=eta_seconds)
 
                 output_base = tmp_path / req.output_name
                 final_path = self.enhance_service.enhance(
@@ -200,7 +218,7 @@ class WorkerClient:
                     cancel_check=lambda: False,
                 )
                 stage_durations_seconds["total"] = round(time.monotonic() - started_at, 3)
-                emit_progress(0.97, stage="finalize", detail="Saving enhanced audio")
+                emit_progress(0.97, stage="finalize", detail="Saving enhanced audio", eta_seconds=8)
                 return {
                     "output_audio_b64": base64.b64encode(final_path.read_bytes()).decode("utf-8"),
                     "output_format": OutputFormat(req.output_format).value,

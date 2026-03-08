@@ -62,10 +62,18 @@ def test_worker_queue_round_trip_completes_job():
                 "progress": 0.62,
                 "stage": "enhance",
                 "detail": "Enhancing audio",
+                "eta_seconds": 24,
             },
         )
         assert progress.status_code == 200
         assert progress.json()["status"] == "running"
+
+        running = client.get(f"/jobs/{job_id}", params={"project_id": project_id})
+        assert running.status_code == 200
+        running_payload = running.json()
+        assert running_payload["status"] == "running"
+        assert running_payload["stage"] == "enhance"
+        assert running_payload["eta_seconds"] == 24
 
         complete = client.post(
             f"/workers/jobs/{job_id}/complete",

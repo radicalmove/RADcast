@@ -662,6 +662,25 @@ function renderEtaText() {
   progressEtaNode.textContent = `Time left to process: ${formatEta(remaining)}`;
 }
 
+function runningStatusText() {
+  if (state.currentStage === "queued_remote" && state.computeMode === "waiting_worker") {
+    return `Waiting for helper pickup (${workerAvailabilitySummary()}).`;
+  }
+  if (state.computeMode === "worker") {
+    if (state.currentStage === "prepare") return "Helper connected. Preparing enhancement on your local helper device.";
+    if (state.currentStage === "enhance") return "Helper connected. Improving audio on your local helper device.";
+    if (state.currentStage === "finalize") return "Helper connected. Saving enhanced audio from your local helper device.";
+    return "Helper connected. Processing on your local helper device.";
+  }
+  if (state.currentStage === "fallback_local") {
+    return "No helper pulled this job in time. Running on the RADcast server (Mac mini).";
+  }
+  if (state.computeMode === "server" && state.activeJobId) {
+    return "Processing on the RADcast server (Mac mini).";
+  }
+  return "";
+}
+
 function inferComputeMode(stage, logs) {
   const joinedLogs = Array.isArray(logs) ? logs.map((entry) => String(entry || "").toLowerCase()).join(" ") : "";
   const normalizedStage = String(stage || "").toLowerCase();
@@ -727,6 +746,8 @@ function updateFromJob(job) {
     state.actualProgress = Math.max(state.actualProgress, Number(job.progress) * 100);
   }
   syncEtaFromJob(nextStage, Number(job.eta_seconds));
+  const statusText = runningStatusText();
+  if (statusText) setGenerateStatus(statusText);
 }
 
 function latestLogMessage(logs) {
@@ -753,6 +774,7 @@ async function pollJob() {
     const status = String(data.status || "").toLowerCase();
     if (status === "completed") {
       state.actualProgress = 100;
+      state.displayProgress = 100;
       state.currentStage = "completed";
       state.latestDetail = "Enhancement finished.";
       updateProgressVisuals();
@@ -765,6 +787,7 @@ async function pollJob() {
     if (status === "failed") {
       state.currentStage = "failed";
       state.actualProgress = 100;
+      state.displayProgress = 100;
       state.latestDetail = String(data.error || "Enhancement failed.");
       updateProgressVisuals();
       resetRunningState({ clearProgress: false });
@@ -775,6 +798,7 @@ async function pollJob() {
     if (status === "cancelled") {
       state.currentStage = "cancelled";
       state.actualProgress = 0;
+      state.displayProgress = 0;
       state.latestDetail = "Enhancement cancelled.";
       updateProgressVisuals();
       resetRunningState({ clearProgress: false });
