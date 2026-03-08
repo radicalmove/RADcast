@@ -31,9 +31,11 @@ radcast-api
 RADcast calls an external enhancement command.
 
 Defaults:
-- command: `resemble-enhance`
+- command: `radcast-enhance`
 - device: `cpu`
-- nfe: `32`
+- nfe: `48`
+- lambd: `0.6`
+- tau: `0.35`
 
 Environment variables:
 - `RADCAST_ENHANCE_COMMAND`
