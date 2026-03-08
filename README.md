@@ -45,6 +45,7 @@ Environment variables:
 - `RADCAST_ENHANCE_LAMBD`
 - `RADCAST_ENHANCE_TAU`
 - `RADCAST_ENHANCE_POSTFILTER`
+  - default: `equalizer=f=145:t=q:w=1.2:g=4,equalizer=f=285:t=q:w=1.0:g=2,equalizer=f=4500:t=q:w=0.9:g=-1.6`
 
 If `resemble-enhance` is not on PATH, install it or set `RADCAST_ENHANCE_COMMAND`.
 
