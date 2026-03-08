@@ -1253,10 +1253,7 @@ def worker_invite(request: Request, req: WorkerInviteRequest):
         f"py -m pip install --upgrade {WORKER_INSTALL_SPEC} && "
         f"py -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform windows"
     )
-    install_command_macos = (
-        f'python3 -m pip install --upgrade "{WORKER_INSTALL_SPEC}" && '
-        f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform macos"
-    )
+    install_command_macos = _macos_worker_install_command(base_url, token)
     install_command_linux = (
         f'python3 -m pip install --upgrade "{WORKER_INSTALL_SPEC}" && '
         f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform linux"
@@ -1321,14 +1318,18 @@ def worker_bootstrap_windows_cmd(request: Request, invite_token: str = Query(...
 @app.get("/workers/bootstrap/macos.command")
 def worker_bootstrap_macos_command(request: Request, invite_token: str = Query(..., min_length=10)):
     base_url = str(request.base_url).rstrip("/")
-    safe_token = quote(invite_token, safe="")
+    install_spec = WORKER_INSTALL_SPEC.replace('"', '\\"')
     body = (
         "#!/bin/bash\n"
         "set -e\n"
         "echo \"Installing RADcast worker on this Mac...\"\n"
-        "python3 -m pip install --upgrade pip\n"
-        f"python3 -m pip install --upgrade \"{WORKER_INSTALL_SPEC}\"\n"
-        f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {safe_token} --platform macos\n"
+        "BREW_PREFIX=\"$(brew --prefix)\"\n"
+        "brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg\n"
+        "brew list python@3.11 >/dev/null 2>&1 || brew install python@3.11\n"
+        "\"$BREW_PREFIX/bin/python3.11\" -m venv \"$HOME/.radcast/venv\"\n"
+        "\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade pip\n"
+        f"\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade \"{install_spec}\" resemble-enhance\n"
+        f"\"$HOME/.radcast/venv/bin/python\" -m radcast.worker_setup --server-url {base_url} --invite-token {quote(invite_token, safe='')} --platform macos\n"
         "echo \"Setup complete. You can close this window.\"\n"
     )
     response = PlainTextResponse(body, media_type="text/plain; charset=utf-8")
@@ -1346,6 +1347,23 @@ def _media_type_for_suffix(suffix: str) -> str:
     if suffix == ".flac":
         return "audio/flac"
     return "application/octet-stream"
+
+
+def _macos_worker_install_command(base_url: str, token: str) -> str:
+    safe_base_url = base_url.rstrip("/")
+    safe_token = quote(token, safe="")
+    install_spec = WORKER_INSTALL_SPEC.replace('"', '\\"')
+    return (
+        "/bin/bash -lc 'set -e; "
+        'BREW_PREFIX="$(brew --prefix)"; '
+        'brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg; '
+        'brew list python@3.11 >/dev/null 2>&1 || brew install python@3.11; '
+        '"$BREW_PREFIX/bin/python3.11" -m venv "$HOME/.radcast/venv"; '
+        '"$HOME/.radcast/venv/bin/python" -m pip install --upgrade pip; '
+        f'"$HOME/.radcast/venv/bin/python" -m pip install --upgrade "{install_spec}" resemble-enhance; '
+        f'"$HOME/.radcast/venv/bin/python" -m radcast.worker_setup --server-url {safe_base_url} --invite-token {safe_token} --platform macos'
+        "'"
+    )
 
 
 def main() -> None:

@@ -188,7 +188,7 @@ def _resolve_command(command_raw: str) -> list[str]:
     if "/" in executable:
         return parts
 
-    venv_candidate = Path(sys.executable).resolve().with_name(executable)
+    venv_candidate = Path(sys.executable).with_name(executable)
     if venv_candidate.exists():
         parts[0] = str(venv_candidate)
         return parts

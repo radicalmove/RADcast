@@ -16,11 +16,11 @@ from pathlib import Path
 import requests
 
 
-def default_worker_path() -> str:
+def default_worker_path(extra_paths: list[str] | None = None) -> str:
     preferred = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
     existing = [segment for segment in os.environ.get("PATH", "").split(":") if segment]
     merged: list[str] = []
-    for segment in preferred + existing:
+    for segment in (extra_paths or []) + preferred + existing:
         if segment not in merged:
             merged.append(segment)
     return ":".join(merged)
@@ -70,6 +70,7 @@ def linux_service_unit_text(*, python_exe: Path, server_url: str, config_path: P
         "Wants=network-online.target\n\n"
         "[Service]\n"
         "Type=simple\n"
+        f"Environment=PATH={default_worker_path([str(python_exe.parent)])}\n"
         f"ExecStart={command}\n"
         "Restart=always\n"
         "RestartSec=5\n\n"
@@ -89,7 +90,7 @@ def macos_launch_agent_payload(*, label: str, python_exe: Path, server_url: str,
             config_path=config_path,
             poll_seconds=poll_seconds,
         ),
-        "EnvironmentVariables": {"PATH": default_worker_path()},
+        "EnvironmentVariables": {"PATH": default_worker_path([str(python_exe.parent)])},
         "RunAtLoad": True,
         "KeepAlive": True,
         "StandardOutPath": str(logs_dir / "worker.log"),
@@ -106,6 +107,11 @@ def windows_task_command(*, python_exe: Path, server_url: str, config_path: Path
             poll_seconds=poll_seconds,
         )
     )
+
+
+def current_python_executable() -> Path:
+    # Preserve the venv launcher path instead of resolving the symlink target.
+    return Path(sys.executable)
 
 
 def _run_command(cmd: list[str], *, required: bool) -> bool:
@@ -215,7 +221,7 @@ def _install_windows_autostart(*, python_exe: Path, server_url: str, config_path
 
 def run_setup(*, server_url: str, invite_token: str | None, worker_name: str, config_path: Path, platform_name: str, poll_seconds: int) -> list[str]:
     normalized_platform = normalize_platform(platform_name)
-    python_exe = Path(sys.executable).resolve()
+    python_exe = current_python_executable()
     messages = [
         _register_worker_if_needed(
             server_url=server_url,
