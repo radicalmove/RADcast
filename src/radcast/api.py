@@ -1275,8 +1275,11 @@ def worker_invite(request: Request, req: WorkerInviteRequest):
     )
     install_command_macos = _macos_worker_install_command(base_url, token)
     install_command_linux = (
+        'sh -lc \'if [ ! -x "$HOME/.cargo/bin/cargo" ]; then curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal; fi; '
+        '. "$HOME/.cargo/env"; '
         f'python3 -m pip install --upgrade "{WORKER_INSTALL_SPEC}" deepfilternet && '
         f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform linux"
+        "'"
     )
     windows_installer_url = f"{base_url}/workers/bootstrap/windows.cmd?invite_token={quote(token)}"
     macos_installer_url = f"{base_url}/workers/bootstrap/macos.command?invite_token={quote(token)}"
@@ -1347,6 +1350,7 @@ def worker_bootstrap_macos_command(request: Request, invite_token: str = Query(.
         "brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg\n"
         "brew list git-lfs >/dev/null 2>&1 || brew install git-lfs\n"
         "brew list python@3.11 >/dev/null 2>&1 || brew install python@3.11\n"
+        "brew list rust >/dev/null 2>&1 || brew install rust\n"
         "git lfs install\n"
         "\"$BREW_PREFIX/bin/python3.11\" -m venv \"$HOME/.radcast/venv\"\n"
         "\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade pip\n"
@@ -1381,6 +1385,7 @@ def _macos_worker_install_command(base_url: str, token: str) -> str:
         'brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg; '
         'brew list git-lfs >/dev/null 2>&1 || brew install git-lfs; '
         'brew list python@3.11 >/dev/null 2>&1 || brew install python@3.11; '
+        'brew list rust >/dev/null 2>&1 || brew install rust; '
         'git lfs install; '
         '"$BREW_PREFIX/bin/python3.11" -m venv "$HOME/.radcast/venv"; '
         '"$HOME/.radcast/venv/bin/python" -m pip install --upgrade pip; '
