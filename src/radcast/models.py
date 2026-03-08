@@ -7,12 +7,18 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from typing_extensions import Literal
+
 from pydantic import BaseModel, Field, model_validator
 
 
 class OutputFormat(str, Enum):
     WAV = "wav"
     MP3 = "mp3"
+
+
+class WorkerCapability(str, Enum):
+    ENHANCE = "enhance"
 
 
 class JobStatus(str, Enum):
@@ -100,6 +106,89 @@ class ProjectArtifactResponse(BaseModel):
     output_path: str
     download_url: str
     play_url: str
+    created_at: str
+
+
+class WorkerInviteResponse(BaseModel):
+    invite_token: str
+    expires_in_seconds: int
+    install_command: str
+    install_command_windows: str | None = None
+    install_command_macos: str | None = None
+    install_command_linux: str | None = None
+    windows_installer_url: str | None = None
+    macos_installer_url: str | None = None
+
+
+class WorkerInviteRequest(BaseModel):
+    capabilities: list[WorkerCapability] = Field(default_factory=lambda: [WorkerCapability.ENHANCE])
+
+
+class WorkerRegisterRequest(BaseModel):
+    invite_token: str = Field(min_length=10)
+    worker_name: str = Field(min_length=2)
+    capabilities: list[WorkerCapability] = Field(default_factory=lambda: [WorkerCapability.ENHANCE])
+
+
+class WorkerRegisterResponse(BaseModel):
+    worker_id: str
+    api_key: str
+    poll_interval_seconds: int = 5
+
+
+class WorkerPullRequest(BaseModel):
+    worker_id: str
+    api_key: str
+
+
+class WorkerEnhanceEnqueueRequest(BaseModel):
+    project_id: str = Field(min_length=2)
+    input_audio_b64: str = Field(min_length=32)
+    input_audio_filename: str = Field(min_length=1)
+    output_name: str | None = None
+    output_format: OutputFormat = OutputFormat.MP3
+
+
+class WorkerQueuedJob(BaseModel):
+    job_id: str
+    project_id: str
+    type: Literal["enhance"]
+    payload: dict[str, Any]
+
+
+class WorkerPullResponse(BaseModel):
+    job: WorkerQueuedJob | None = None
+
+
+class WorkerJobCompleteRequest(BaseModel):
+    worker_id: str
+    api_key: str
+    output_audio_b64: str = Field(min_length=32)
+    output_format: OutputFormat
+    duration_seconds: float = Field(gt=0)
+    stage_durations_seconds: dict[str, float] = Field(default_factory=dict)
+
+
+class WorkerJobProgressRequest(BaseModel):
+    worker_id: str
+    api_key: str
+    progress: float = Field(ge=0.0, le=1.0)
+    stage: str | None = None
+    detail: str | None = None
+
+
+class WorkerJobFailRequest(BaseModel):
+    worker_id: str
+    api_key: str
+    error: str = Field(min_length=1)
+
+
+class WorkerSummary(BaseModel):
+    worker_id: str
+    worker_name: str
+    capabilities: list[WorkerCapability]
+    status: str
+    last_seen_at: str | None = None
     created_at: str
 
 

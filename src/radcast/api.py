@@ -14,7 +14,9 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlencode
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from starlette.responses import PlainTextResponse
 
+from radcast.constants import DEFAULT_WORKER_FALLBACK_TIMEOUT_SECONDS, DEFAULT_WORKER_ONLINE_WINDOW_SECONDS
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
 from radcast.manifests import ManifestStore
 from radcast.models import (
@@ -27,12 +29,22 @@ from radcast.models import (
     ProjectCreateRequest,
     ProjectSourceAudioUploadRequest,
     SimpleEnhanceRequest,
+    WorkerEnhanceEnqueueRequest,
+    WorkerInviteRequest,
+    WorkerInviteResponse,
+    WorkerJobCompleteRequest,
+    WorkerJobFailRequest,
+    WorkerJobProgressRequest,
+    WorkerPullRequest,
+    WorkerPullResponse,
+    WorkerRegisterRequest,
     now_utc_iso,
     touch_job_update,
 )
 from radcast.project import ProjectManager
 from radcast.services.enhance import EnhanceService
 from radcast.utils.audio import probe_duration_seconds
+from radcast.worker_manager import WorkerManager
 
 try:
     from fastapi import FastAPI, HTTPException, Query, Request
@@ -69,6 +81,19 @@ SCOPE_PROJECTS_BY_USER = str(os.environ.get("RADCAST_SCOPE_PROJECTS_BY_USER", "t
     "on",
 }
 SCOPED_PROJECT_RE = re.compile(r"^u[0-9a-f]{12}__.+$")
+WORKER_SECRET = os.environ.get("RADCAST_WORKER_SECRET", SESSION_SECRET)
+WORKER_FALLBACK_ENABLED = str(os.environ.get("RADCAST_WORKER_FALLBACK_ENABLED", "true")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+WORKER_FALLBACK_TIMEOUT_SECONDS = max(
+    5, int(os.environ.get("RADCAST_WORKER_FALLBACK_TIMEOUT_SECONDS", str(DEFAULT_WORKER_FALLBACK_TIMEOUT_SECONDS)))
+)
+WORKER_ONLINE_WINDOW_SECONDS = max(
+    5, int(os.environ.get("RADCAST_WORKER_ONLINE_WINDOW_SECONDS", str(DEFAULT_WORKER_ONLINE_WINDOW_SECONDS)))
+)
 
 
 app = FastAPI(title="RADcast API", version="0.1.0")
@@ -83,6 +108,7 @@ templates = Jinja2Templates(directory=str(MODULE_ROOT / "templates"))
 
 project_manager = ProjectManager(PROJECTS_ROOT)
 enhance_service = EnhanceService()
+worker_manager = WorkerManager(projects_root=PROJECTS_ROOT, worker_secret=WORKER_SECRET)
 
 _job_update_lock = threading.Lock()
 _cancelled_jobs: set[str] = set()
@@ -514,6 +540,38 @@ def _resolve_saved_source_audio(paths, audio_hash: str) -> tuple[Path, str]:
     raise HTTPException(status_code=404, detail="saved source audio not found")
 
 
+def _worker_availability_snapshot() -> dict[str, int | str | None]:
+    workers = worker_manager.list_workers()
+    online = 0
+    latest_live_seen_at: datetime | None = None
+    now = datetime.now(timezone.utc)
+    for worker in workers:
+        raw_seen = worker.last_seen_at
+        if not raw_seen:
+            continue
+        try:
+            seen_at = datetime.fromisoformat(raw_seen)
+        except ValueError:
+            continue
+        if seen_at.tzinfo is None:
+            seen_at = seen_at.replace(tzinfo=timezone.utc)
+        age_seconds = max(0.0, (now - seen_at).total_seconds())
+        if age_seconds <= WORKER_ONLINE_WINDOW_SECONDS:
+            online += 1
+            if latest_live_seen_at is None or seen_at > latest_live_seen_at:
+                latest_live_seen_at = seen_at
+    stale = max(0, len(workers) - online)
+    return {
+        "worker_total_count": len(workers),
+        "worker_online_count": online,
+        "worker_live_count": online,
+        "worker_registered_count": len(workers),
+        "worker_stale_count": stale,
+        "worker_online_window_seconds": WORKER_ONLINE_WINDOW_SECONDS,
+        "worker_last_live_seen_at": latest_live_seen_at.isoformat() if latest_live_seen_at else None,
+    }
+
+
 def _update_job(
     paths: Path,
     *,
@@ -653,6 +711,96 @@ def _run_enhancement_job(
         )
     finally:
         _cancelled_jobs.discard(job_id)
+
+
+def _run_local_enhancement_from_worker_payload(
+    *,
+    worker_payload: WorkerEnhanceEnqueueRequest,
+    job_id: str,
+) -> None:
+    paths = project_manager.ensure_project(worker_payload.project_id)
+    source_filename = _safe_filename(worker_payload.input_audio_filename)
+    source_ext = _safe_audio_extension(source_filename)
+    input_hash = hashlib.sha256(worker_payload.input_audio_b64.encode("utf-8")).hexdigest()
+    input_audio_path = paths.assets_source_audio / f"source-{input_hash[:16]}{source_ext}"
+    input_audio_path.parent.mkdir(parents=True, exist_ok=True)
+    if not input_audio_path.exists():
+        input_audio_path.write_bytes(base64.b64decode(worker_payload.input_audio_b64.encode("utf-8")))
+    _upsert_source_audio(
+        paths=paths,
+        audio_hash=input_hash,
+        audio_path=input_audio_path,
+        source_filename=source_filename,
+    )
+    _run_enhancement_job(
+        scoped_project_id=worker_payload.project_id,
+        visible_project_id=_display_project_id(worker_payload.project_id),
+        job_id=job_id,
+        input_audio_path=input_audio_path,
+        input_audio_filename=source_filename,
+        output_name=str(worker_payload.output_name or _build_output_name(source_filename, None)),
+        output_format=worker_payload.output_format,
+    )
+
+
+def _run_claimed_fallback_job(job_id: str, *, reason: str, allowed_statuses: set[str] | None = None) -> bool:
+    worker_payload = worker_manager.claim_job_for_local_fallback(
+        job_id,
+        reason=reason,
+        allowed_statuses=allowed_statuses,
+    )
+    if worker_payload is None:
+        return False
+    thread = threading.Thread(
+        target=lambda: _run_local_enhancement_from_worker_payload(worker_payload=worker_payload, job_id=job_id),
+        name=f"radcast-fallback-{job_id}",
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
+def _schedule_worker_fallback_watch(job_id: str) -> None:
+    if not WORKER_FALLBACK_ENABLED:
+        return
+
+    def watcher() -> None:
+        time.sleep(WORKER_FALLBACK_TIMEOUT_SECONDS)
+        _run_claimed_fallback_job(
+            job_id,
+            reason=f"No worker accepted this job after {WORKER_FALLBACK_TIMEOUT_SECONDS}s. Switching to local server fallback.",
+            allowed_statuses={"queued"},
+        )
+
+    import time
+
+    threading.Thread(target=watcher, name=f"radcast-worker-watch-{job_id}", daemon=True).start()
+
+
+def _maybe_trigger_worker_fallback(job: dict[str, object]) -> bool:
+    if not WORKER_FALLBACK_ENABLED:
+        return False
+    job_id = str(job.get("id") or "")
+    status = str(job.get("status") or "").lower()
+    stage = str(job.get("stage") or "").lower()
+    if not job_id:
+        return False
+    if status == "queued" and stage == "queued_remote":
+        created_raw = str(job.get("created_at") or "")
+        try:
+            created_at = datetime.fromisoformat(created_raw)
+        except ValueError:
+            return False
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age_seconds = max(0.0, (datetime.now(timezone.utc) - created_at).total_seconds())
+        if age_seconds >= WORKER_FALLBACK_TIMEOUT_SECONDS:
+            return _run_claimed_fallback_job(
+                job_id,
+                reason=f"No worker accepted this job after {WORKER_FALLBACK_TIMEOUT_SECONDS}s. Switching to local server fallback.",
+                allowed_statuses={"queued"},
+            )
+    return False
 
 
 @app.get("/auth/bridge")
@@ -923,21 +1071,23 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
     paths = project_manager.ensure_project(scoped_project_id)
     input_audio_path: Path
     input_audio_filename: str
+    input_audio_bytes: bytes
 
     if req.input_audio_hash:
         input_audio_path, input_audio_filename = _resolve_saved_source_audio(paths, req.input_audio_hash)
+        input_audio_bytes = input_audio_path.read_bytes()
     else:
         try:
-            input_audio = base64.b64decode((req.input_audio_b64 or "").encode("utf-8"), validate=True)
+            input_audio_bytes = base64.b64decode((req.input_audio_b64 or "").encode("utf-8"), validate=True)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=422, detail="invalid input_audio_b64 payload") from exc
         input_audio_filename = str(req.input_audio_filename or "audio.wav")
-        input_hash = hashlib.sha256(input_audio).hexdigest()
+        input_hash = hashlib.sha256(input_audio_bytes).hexdigest()
         input_ext = _safe_audio_extension(input_audio_filename)
         input_audio_path = paths.assets_source_audio / f"source-{input_hash[:16]}{input_ext}"
         input_audio_path.parent.mkdir(parents=True, exist_ok=True)
         if not input_audio_path.exists():
-            input_audio_path.write_bytes(input_audio)
+            input_audio_path.write_bytes(input_audio_bytes)
         _upsert_source_audio(
             paths=paths,
             audio_hash=input_hash,
@@ -946,43 +1096,28 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         )
 
     output_name = _build_output_name(input_audio_filename, req.output_name)
-    job_id = f"job_{uuid.uuid4().hex[:12]}"
-
-    with _job_update_lock:
-        store = ManifestStore(paths.manifests)
-        store.upsert_job(
-            JobRecord(
-                id=job_id,
-                project_id=scoped_project_id,
-                status=JobStatus.QUEUED,
-                stage="queued",
-                progress=0.0,
-                logs=[f"{now_utc_iso()} queued for enhancement"],
-            )
-        )
-
-    thread = threading.Thread(
-        target=lambda: _run_enhancement_job(
-            scoped_project_id=scoped_project_id,
-            visible_project_id=_display_project_id(scoped_project_id),
-            job_id=job_id,
-            input_audio_path=input_audio_path,
-            input_audio_filename=input_audio_filename,
-            output_name=output_name,
-            output_format=req.output_format,
-        ),
-        name=f"radcast-job-{job_id}",
-        daemon=True,
+    worker_manager.cancel_project_jobs(scoped_project_id, reason="superseded by a newer request")
+    worker_req = WorkerEnhanceEnqueueRequest(
+        project_id=scoped_project_id,
+        input_audio_b64=base64.b64encode(input_audio_bytes).decode("utf-8"),
+        input_audio_filename=input_audio_filename,
+        output_name=output_name,
+        output_format=req.output_format,
     )
-    thread.start()
-
+    job_id = worker_manager.enqueue_enhance_job(worker_req)
+    worker_snapshot = _worker_availability_snapshot()
+    if WORKER_FALLBACK_ENABLED:
+        _schedule_worker_fallback_watch(job_id)
     return {
         "job_id": job_id,
         "status": "queued",
-        "stage": "queued",
+        "stage": "queued_remote",
         "progress": 0.0,
         "project_id": _display_project_id(scoped_project_id),
         "output_name": output_name,
+        "worker_mode": True,
+        "worker_fallback_timeout_seconds": WORKER_FALLBACK_TIMEOUT_SECONDS if WORKER_FALLBACK_ENABLED else 0,
+        **worker_snapshot,
     }
 
 
@@ -997,6 +1132,9 @@ def get_job(request: Request, job_id: str, project_id: str = Query(..., min_leng
         raise HTTPException(status_code=404, detail="job not found")
     if str(payload.get("project_id") or "") != scoped_project_id:
         raise HTTPException(status_code=404, detail="job not found")
+    if isinstance(payload, dict):
+        _maybe_trigger_worker_fallback(payload)
+        payload = store.get_job(job_id) or payload
     return payload
 
 
@@ -1008,6 +1146,7 @@ def cancel_job(request: Request, job_id: str, project_id: str = Query(..., min_l
 
     _cancelled_jobs.add(job_id)
     enhance_service.cancel(job_id)
+    worker_manager.cancel_queued_job(job_id, reason="Cancellation requested before worker pickup.")
 
     _update_job(
         paths.manifests,
@@ -1082,6 +1221,103 @@ def project_artifact(request: Request, project_id: str, path: str = Query(...), 
     media_type = _media_type_for_suffix(requested.suffix.lower())
     filename = requested.name if download else None
     return FileResponse(path=requested, media_type=media_type, filename=filename)
+
+
+@app.get("/workers")
+def list_workers(request: Request):
+    _require_auth(request)
+    workers = worker_manager.list_workers()
+    return {"workers": [worker.model_dump(mode="json") for worker in workers]}
+
+
+@app.get("/workers/status")
+def workers_status(request: Request):
+    _require_auth(request)
+    return _worker_availability_snapshot()
+
+
+@app.post("/workers/invite", response_model=WorkerInviteResponse)
+def worker_invite(request: Request, req: WorkerInviteRequest):
+    _require_auth(request)
+    token = worker_manager.issue_invite_token(req.capabilities)
+    base_url = str(request.base_url).rstrip("/")
+    install_command = f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token}"
+    install_command_windows = f"py -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform windows"
+    install_command_macos = f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform macos"
+    install_command_linux = f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform linux"
+    windows_installer_url = f"{base_url}/workers/bootstrap/windows.cmd?invite_token={quote(token)}"
+    macos_installer_url = f"{base_url}/workers/bootstrap/macos.command?invite_token={quote(token)}"
+    return WorkerInviteResponse(
+        invite_token=token,
+        expires_in_seconds=86400,
+        install_command=install_command,
+        install_command_windows=install_command_windows,
+        install_command_macos=install_command_macos,
+        install_command_linux=install_command_linux,
+        windows_installer_url=windows_installer_url,
+        macos_installer_url=macos_installer_url,
+    )
+
+
+@app.post("/workers/register")
+def worker_register(req: WorkerRegisterRequest):
+    return worker_manager.register_worker(req).model_dump(mode="json")
+
+
+@app.post("/workers/pull", response_model=WorkerPullResponse)
+def worker_pull(req: WorkerPullRequest):
+    job = worker_manager.pull_job(req)
+    return {"job": job.model_dump(mode="json") if job else None}
+
+
+@app.post("/workers/jobs/{job_id}/complete")
+def worker_complete(job_id: str, req: WorkerJobCompleteRequest):
+    return {"status": worker_manager.complete_job(job_id, req)}
+
+
+@app.post("/workers/jobs/{job_id}/progress")
+def worker_progress(job_id: str, req: WorkerJobProgressRequest):
+    return {"status": worker_manager.progress_job(job_id, req)}
+
+
+@app.post("/workers/jobs/{job_id}/fail")
+def worker_fail(job_id: str, req: WorkerJobFailRequest):
+    return {"status": worker_manager.fail_job(job_id, req)}
+
+
+@app.get("/workers/bootstrap/windows.cmd")
+def worker_bootstrap_windows_cmd(request: Request, invite_token: str = Query(..., min_length=10)):
+    base_url = str(request.base_url).rstrip("/")
+    safe_token = quote(invite_token, safe="")
+    body = (
+        "@echo off\r\n"
+        "echo Installing RADcast worker on this Windows device...\r\n"
+        "py -m pip install --upgrade pip\r\n"
+        "py -m pip install --upgrade radcast\r\n"
+        f"py -m radcast.worker_setup --server-url {base_url} --invite-token {safe_token} --platform windows\r\n"
+        "echo Setup complete. You can close this window.\r\n"
+    )
+    response = PlainTextResponse(body, media_type="text/plain; charset=utf-8")
+    response.headers["Content-Disposition"] = 'attachment; filename="radcast-worker-setup.cmd"'
+    return response
+
+
+@app.get("/workers/bootstrap/macos.command")
+def worker_bootstrap_macos_command(request: Request, invite_token: str = Query(..., min_length=10)):
+    base_url = str(request.base_url).rstrip("/")
+    safe_token = quote(invite_token, safe="")
+    body = (
+        "#!/bin/bash\n"
+        "set -e\n"
+        "echo \"Installing RADcast worker on this Mac...\"\n"
+        "python3 -m pip install --upgrade pip\n"
+        "python3 -m pip install --upgrade radcast\n"
+        f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {safe_token} --platform macos\n"
+        "echo \"Setup complete. You can close this window.\"\n"
+    )
+    response = PlainTextResponse(body, media_type="text/plain; charset=utf-8")
+    response.headers["Content-Disposition"] = 'attachment; filename="radcast-worker-setup.command"'
+    return response
 
 
 def _media_type_for_suffix(suffix: str) -> str:

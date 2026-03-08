@@ -16,8 +16,23 @@ const audioFileNameNode = document.getElementById("audio-file-name");
 const savedSourceAudioSelectNode = document.getElementById("saved-source-audio-select");
 const refreshSourceAudioBtn = document.getElementById("refresh-source-audio-btn");
 const savedSourceAudioStatusNode = document.getElementById("saved-source-audio-status");
+const sourcePreviewLabelNode = document.getElementById("source-preview-label");
+const sourceAudioPreviewNode = document.getElementById("source-audio-preview");
 
 const outputFormatNode = document.getElementById("output-format");
+
+const workerStatusPillNode = document.getElementById("worker-status-pill");
+const workerStatusDetailNode = document.getElementById("worker-status-detail");
+const workerRefreshBtn = document.getElementById("worker-refresh-btn");
+const workerSetupBtn = document.getElementById("worker-setup-btn");
+const workerSetupLinksNode = document.getElementById("worker-setup-links");
+const workerSetupWindowsLinkNode = document.getElementById("worker-setup-windows-link");
+const workerSetupMacosLinkNode = document.getElementById("worker-setup-macos-link");
+const workerCopyMacosBtn = document.getElementById("worker-copy-macos-btn");
+const workerCopyLinuxBtn = document.getElementById("worker-copy-linux-btn");
+const workerSetupModalNode = document.getElementById("worker-setup-modal");
+const workerSetupCloseBtn = document.getElementById("worker-setup-close-btn");
+const workerSetupModalStatusNode = document.getElementById("worker-setup-modal-status");
 
 const generateBtn = document.getElementById("generate-btn");
 const cancelBtn = document.getElementById("cancel-btn");
@@ -35,6 +50,9 @@ const outputListNode = document.getElementById("output-list");
 
 const stageLabels = {
   queued: "Queued",
+  queued_remote: "Waiting for helper",
+  worker_running: "Helper device processing",
+  fallback_local: "Switching to server",
   prepare: "Preparing audio",
   enhance: "Improving audio",
   finalize: "Saving audio",
@@ -61,6 +79,22 @@ const state = {
   etaUpdatedAtMs: null,
   etaStage: null,
   canManageActiveProject: false,
+  computeMode: "server",
+  expectedRemoteWorker: false,
+  workerFallbackTimeoutSeconds: 0,
+  workerLiveCount: null,
+  workerRegisteredCount: null,
+  workerStaleCount: null,
+  workerLastLiveSeenAt: null,
+  workerOnlineCount: null,
+  workerTotalCount: null,
+  workerOnlineWindowSeconds: null,
+  workerStatusPollTimer: null,
+  workerSetupLinuxCommand: "",
+  workerSetupMacosCommand: "",
+  workerSetupWindowsUrl: "",
+  workerSetupMacosUrl: "",
+  sourcePreviewObjectUrl: null,
 };
 
 function escapeHtml(value) {
@@ -95,6 +129,55 @@ function setSavedSourceAudioStatus(message, isError = false) {
   savedSourceAudioStatusNode.style.color = isError ? "#a73527" : "#555";
 }
 
+function setWorkerStatus(connected, detailText = "") {
+  if (workerStatusPillNode) {
+    workerStatusPillNode.classList.remove("worker-pill-online", "worker-pill-offline", "worker-pill-unknown");
+    if (connected === true) {
+      workerStatusPillNode.classList.add("worker-pill-online");
+      workerStatusPillNode.textContent = "Helper status: connected";
+    } else if (connected === false) {
+      workerStatusPillNode.classList.add("worker-pill-offline");
+      workerStatusPillNode.textContent = "Helper status: not connected";
+    } else {
+      workerStatusPillNode.classList.add("worker-pill-unknown");
+      workerStatusPillNode.textContent = "Helper status: checking";
+    }
+  }
+  if (workerStatusDetailNode) {
+    workerStatusDetailNode.textContent = detailText || "";
+  }
+}
+
+function setWorkerSetupStatus(message, isError = false) {
+  if (!workerSetupModalStatusNode) return;
+  workerSetupModalStatusNode.textContent = message || "";
+  workerSetupModalStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function workerAvailabilitySummary() {
+  if (!Number.isFinite(state.workerLiveCount)) return "checking helper availability";
+  const live = Math.max(0, Number(state.workerLiveCount));
+  const stale = Number.isFinite(state.workerStaleCount) ? Math.max(0, Number(state.workerStaleCount)) : 0;
+  const parts = [`${live} live helper device${live === 1 ? "" : "s"}`];
+  if (stale > 0) parts.push(`${stale} stale registration${stale === 1 ? "" : "s"}`);
+  if (state.workerLastLiveSeenAt) {
+    parts.push(`last live helper seen ${new Date(state.workerLastLiveSeenAt).toLocaleTimeString()}`);
+  }
+  return parts.join(", ");
+}
+
+function openWorkerSetupModal() {
+  if (!workerSetupModalNode) return;
+  workerSetupModalNode.hidden = false;
+  document.body.classList.add("modal-open");
+}
+
+function closeWorkerSetupModal() {
+  if (!workerSetupModalNode) return;
+  workerSetupModalNode.hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
 function formatDurationSeconds(seconds) {
   const totalSeconds = Math.max(0, Math.round(Number(seconds || 0)));
   const mins = Math.floor(totalSeconds / 60);
@@ -110,9 +193,42 @@ function formatSavedSourceAudioLabel(sample) {
   return `${name}${durationLabel} - ${updated}`;
 }
 
+function clearSourcePreview() {
+  if (state.sourcePreviewObjectUrl) {
+    URL.revokeObjectURL(state.sourcePreviewObjectUrl);
+    state.sourcePreviewObjectUrl = null;
+  }
+  if (sourceAudioPreviewNode) {
+    sourceAudioPreviewNode.pause();
+    sourceAudioPreviewNode.removeAttribute("src");
+    sourceAudioPreviewNode.hidden = true;
+    sourceAudioPreviewNode.load();
+  }
+  if (sourcePreviewLabelNode) sourcePreviewLabelNode.hidden = true;
+}
+
+function setSourcePreviewUrl(url) {
+  if (!sourceAudioPreviewNode || !url) {
+    clearSourcePreview();
+    return;
+  }
+  sourceAudioPreviewNode.pause();
+  sourceAudioPreviewNode.src = url;
+  sourceAudioPreviewNode.hidden = false;
+  if (sourcePreviewLabelNode) sourcePreviewLabelNode.hidden = false;
+}
+
+function setSourcePreviewFile(file) {
+  clearSourcePreview();
+  if (!file) return;
+  state.sourcePreviewObjectUrl = URL.createObjectURL(file);
+  setSourcePreviewUrl(state.sourcePreviewObjectUrl);
+}
+
 function resetAudioSelection() {
   state.selectedAudioFile = null;
   state.selectedAudioHash = null;
+  clearSourcePreview();
   if (audioFileInputNode) audioFileInputNode.value = "";
   if (savedSourceAudioSelectNode) savedSourceAudioSelectNode.value = "";
   if (audioDropzoneTitleNode) audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
@@ -136,6 +252,8 @@ function markWorkspaceReady(projectRef, projectLabel) {
   refreshProjectAccessInfo();
   void loadSourceAudioSamples();
   loadOutputs();
+  void fetchWorkerStatus();
+  startWorkerStatusPolling();
 }
 
 function showProjectGateway() {
@@ -150,6 +268,7 @@ function showProjectGateway() {
   if (activeProjectChip) activeProjectChip.hidden = true;
 
   resetRunningState({ clearProgress: true });
+  stopWorkerStatusPolling();
 }
 
 async function requestJSON(url, method = "GET", body = undefined) {
@@ -172,6 +291,69 @@ async function requestJSON(url, method = "GET", body = undefined) {
     throw new Error(detail);
   }
   return data;
+}
+
+function stopWorkerStatusPolling() {
+  if (state.workerStatusPollTimer) {
+    clearInterval(state.workerStatusPollTimer);
+    state.workerStatusPollTimer = null;
+  }
+}
+
+function startWorkerStatusPolling() {
+  stopWorkerStatusPolling();
+  state.workerStatusPollTimer = setInterval(() => {
+    void fetchWorkerStatus();
+  }, 15000);
+}
+
+async function fetchWorkerStatus() {
+  if (workerRefreshBtn) workerRefreshBtn.disabled = true;
+  try {
+    const data = await requestJSON("/workers/status", "GET");
+    const online = Math.max(0, Number(data.worker_online_count || 0));
+    const total = Math.max(0, Number(data.worker_total_count || 0));
+    const live = Math.max(0, Number(data.worker_live_count || online));
+    const registered = Math.max(live, Number(data.worker_registered_count || total));
+    const stale = Math.max(0, Number(data.worker_stale_count || Math.max(0, registered - live)));
+    const lastSeenAt = String(data.worker_last_live_seen_at || "").trim() || null;
+    state.workerLiveCount = live;
+    state.workerRegisteredCount = registered;
+    state.workerStaleCount = stale;
+    state.workerLastLiveSeenAt = lastSeenAt;
+    state.workerOnlineCount = online;
+    state.workerTotalCount = total;
+    state.workerOnlineWindowSeconds = Math.max(0, Number(data.worker_online_window_seconds || 0));
+    setWorkerStatus(live > 0, workerAvailabilitySummary());
+    if (workerSetupBtn) workerSetupBtn.hidden = false;
+  } catch (err) {
+    setWorkerStatus(null, `Could not check helper status: ${String(err)}`);
+    if (workerSetupBtn) workerSetupBtn.hidden = false;
+  } finally {
+    if (workerRefreshBtn) workerRefreshBtn.disabled = false;
+  }
+}
+
+async function fetchWorkerSetupOptions() {
+  openWorkerSetupModal();
+  setWorkerSetupStatus("Preparing setup options...");
+  if (workerSetupLinksNode) workerSetupLinksNode.hidden = true;
+  if (workerSetupBtn) workerSetupBtn.disabled = true;
+  try {
+    const data = await requestJSON("/workers/invite", "POST", { capabilities: ["enhance"] });
+    state.workerSetupWindowsUrl = String(data.windows_installer_url || "").trim();
+    state.workerSetupMacosUrl = String(data.macos_installer_url || "").trim();
+    state.workerSetupMacosCommand = String(data.install_command_macos || data.install_command || "").trim();
+    state.workerSetupLinuxCommand = String(data.install_command_linux || data.install_command || "").trim();
+    if (workerSetupWindowsLinkNode && state.workerSetupWindowsUrl) workerSetupWindowsLinkNode.href = state.workerSetupWindowsUrl;
+    if (workerSetupMacosLinkNode && state.workerSetupMacosUrl) workerSetupMacosLinkNode.href = state.workerSetupMacosUrl;
+    if (workerSetupLinksNode) workerSetupLinksNode.hidden = false;
+    setWorkerSetupStatus("Helper setup options are ready.");
+  } catch (err) {
+    setWorkerSetupStatus(`Could not prepare helper setup: ${String(err)}`, true);
+  } finally {
+    if (workerSetupBtn) workerSetupBtn.disabled = false;
+  }
 }
 
 async function fileToBase64(file) {
@@ -198,6 +380,7 @@ function updateAudioSelection(file) {
   if (savedSourceAudioSelectNode) {
     savedSourceAudioSelectNode.value = "";
   }
+  setSourcePreviewFile(file || null);
   if (!file) {
     if (audioDropzoneTitleNode) audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
     if (audioFileNameNode) audioFileNameNode.textContent = "No file selected.";
@@ -238,6 +421,7 @@ function applySavedSourceAudioSelection(audioHash) {
   if (audioDropzoneTitleNode) {
     audioDropzoneTitleNode.textContent = "Saved project audio selected";
   }
+  setSourcePreviewUrl(String(sample.artifact_url || ""));
   if (audioFileNameNode) {
     const stamped = sample.updated_at ? new Date(sample.updated_at).toLocaleString() : "Saved in project";
     const duration = Number(sample.duration_seconds || 0);
@@ -384,6 +568,9 @@ function resetRunningState({ clearProgress = false } = {}) {
   state.etaSeconds = null;
   state.etaUpdatedAtMs = null;
   state.etaStage = null;
+  state.computeMode = "server";
+  state.expectedRemoteWorker = false;
+  state.workerFallbackTimeoutSeconds = 0;
 
   if (state.pollTimer) {
     clearInterval(state.pollTimer);
@@ -454,6 +641,14 @@ function renderEtaText() {
 
   const remaining = currentEtaRemainingSeconds();
   if (remaining === null) {
+    if (state.currentStage === "queued_remote" && state.workerFallbackTimeoutSeconds > 0 && state.jobStartedAtMs) {
+      const fallbackRemaining = Math.max(
+        0,
+        Math.round(state.workerFallbackTimeoutSeconds - (Date.now() - state.jobStartedAtMs) / 1000)
+      );
+      progressEtaNode.textContent = `Time left to process: ${formatEta(fallbackRemaining)}`;
+      return;
+    }
     const label = state.currentStage === "queued" ? "waiting to start..." : "estimating...";
     progressEtaNode.textContent = `Time left to process: ${label}`;
     return;
@@ -467,13 +662,32 @@ function renderEtaText() {
   progressEtaNode.textContent = `Time left to process: ${formatEta(remaining)}`;
 }
 
+function inferComputeMode(stage, logs) {
+  const joinedLogs = Array.isArray(logs) ? logs.map((entry) => String(entry || "").toLowerCase()).join(" ") : "";
+  const normalizedStage = String(stage || "").toLowerCase();
+  if (normalizedStage === "queued_remote") return "waiting_worker";
+  if (normalizedStage === "worker_running") return "worker";
+  if (joinedLogs.includes("worker ") && joinedLogs.includes("started processing")) return "worker";
+  if (joinedLogs.includes("local server fallback") || normalizedStage === "fallback_local") return "server";
+  if (state.expectedRemoteWorker && !["completed", "failed", "cancelled"].includes(normalizedStage) && state.computeMode !== "server") {
+    return "waiting_worker";
+  }
+  return "server";
+}
+
+function computeLabelForMode() {
+  if (state.computeMode === "worker") return "Processing on: local helper device";
+  if (state.computeMode === "waiting_worker") return "Processing on: waiting for local helper";
+  return "Processing on: RADcast server (Mac mini)";
+}
+
 function updateProgressVisuals() {
   const clamped = Math.max(0, Math.min(100, state.displayProgress));
   if (progressWrapNode) progressWrapNode.hidden = false;
   if (progressFillNode) progressFillNode.style.width = `${clamped}%`;
   if (progressPercentNode) progressPercentNode.textContent = `${Math.round(clamped)}%`;
   if (progressStageNode) progressStageNode.textContent = stageLabels[state.currentStage] || "Processing";
-  if (progressComputeNode) progressComputeNode.textContent = "Processing on: RADcast server";
+  if (progressComputeNode) progressComputeNode.textContent = computeLabelForMode();
 
   renderEtaText();
 
@@ -499,7 +713,16 @@ function startProgressAnimation() {
 function updateFromJob(job) {
   const nextStage = String(job.stage || state.currentStage || "queued");
   state.currentStage = nextStage;
+  state.computeMode = inferComputeMode(nextStage, job.logs);
   state.latestDetail = latestLogMessage(job.logs) || stageLabels[state.currentStage] || "Processing";
+  if (state.currentStage === "queued_remote" && state.computeMode === "waiting_worker") {
+    const availability = workerAvailabilitySummary();
+    state.latestDetail = `Waiting up to ${Math.round(state.workerFallbackTimeoutSeconds || 0)}s for a live helper to pull this job (${availability}).`;
+  } else if (state.currentStage === "prepare" && state.computeMode === "worker") {
+    state.latestDetail = state.latestDetail || "Loading enhancement runtime on helper device";
+  } else if (state.currentStage === "enhance" && state.computeMode === "worker" && !state.latestDetail) {
+    state.latestDetail = "Enhancing audio on helper device";
+  }
   if (Number.isFinite(Number(job.progress))) {
     state.actualProgress = Math.max(state.actualProgress, Number(job.progress) * 100);
   }
@@ -566,21 +789,39 @@ async function pollJob() {
   }
 }
 
-function startJobTracking(jobId) {
+function startJobTracking(payload) {
   resetRunningState({ clearProgress: false });
-  state.activeJobId = jobId;
+  state.activeJobId = String(payload.job_id || "");
   state.jobStartedAtMs = Date.now();
-  state.currentStage = "queued";
+  state.currentStage = String(payload.stage || "queued");
   state.actualProgress = 0;
   state.displayProgress = 0;
-  state.latestDetail = "Queued for enhancement";
-  state.etaStage = "queued";
+  state.latestDetail = state.currentStage === "queued_remote" ? "Queued for helper execution" : "Queued for enhancement";
+  state.etaStage = state.currentStage;
+  state.expectedRemoteWorker = Boolean(payload.worker_mode);
+  state.workerFallbackTimeoutSeconds = Number(payload.worker_fallback_timeout_seconds || 0);
+  state.workerOnlineCount = Number.isFinite(Number(payload.worker_online_count)) ? Number(payload.worker_online_count) : state.workerOnlineCount;
+  state.workerTotalCount = Number.isFinite(Number(payload.worker_total_count)) ? Number(payload.worker_total_count) : state.workerTotalCount;
+  state.workerLiveCount = Number.isFinite(Number(payload.worker_live_count)) ? Number(payload.worker_live_count) : state.workerLiveCount;
+  state.workerRegisteredCount = Number.isFinite(Number(payload.worker_registered_count))
+    ? Number(payload.worker_registered_count)
+    : state.workerRegisteredCount;
+  state.workerStaleCount = Number.isFinite(Number(payload.worker_stale_count)) ? Number(payload.worker_stale_count) : state.workerStaleCount;
+  state.workerLastLiveSeenAt = String(payload.worker_last_live_seen_at || "").trim() || state.workerLastLiveSeenAt;
+  state.workerOnlineWindowSeconds = Number.isFinite(Number(payload.worker_online_window_seconds))
+    ? Number(payload.worker_online_window_seconds)
+    : state.workerOnlineWindowSeconds;
+  state.computeMode = state.expectedRemoteWorker ? "waiting_worker" : "server";
 
   if (generateBtn) generateBtn.disabled = true;
   if (cancelBtn) cancelBtn.hidden = false;
   if (progressWrapNode) progressWrapNode.hidden = false;
 
-  setGenerateStatus("Enhancement started. First run on a server can take longer while the model loads.");
+  if (state.expectedRemoteWorker) {
+    setGenerateStatus(`Waiting for helper pickup (${workerAvailabilitySummary()}).`);
+  } else {
+    setGenerateStatus("Enhancement started. First run on a server can take longer while the model loads.");
+  }
   startProgressAnimation();
   state.pollTimer = setInterval(pollJob, 2000);
   void pollJob();
@@ -620,7 +861,7 @@ async function handleGenerate() {
     }
 
     const data = await requestJSON("/enhance/simple", "POST", payload);
-    startJobTracking(String(data.job_id));
+    startJobTracking(data);
   } catch (err) {
     setGenerateStatus(`Enhancement failed to start: ${String(err)}`, true);
   }
@@ -834,12 +1075,61 @@ async function init() {
     });
   }
 
+  if (workerRefreshBtn) {
+    workerRefreshBtn.addEventListener("click", () => {
+      void fetchWorkerStatus();
+    });
+  }
+
+  if (workerSetupBtn) {
+    workerSetupBtn.addEventListener("click", () => {
+      void fetchWorkerSetupOptions();
+    });
+  }
+
+  if (workerSetupCloseBtn) {
+    workerSetupCloseBtn.addEventListener("click", () => {
+      closeWorkerSetupModal();
+    });
+  }
+
+  if (workerSetupModalNode) {
+    workerSetupModalNode.addEventListener("click", (event) => {
+      if (event.target === workerSetupModalNode) closeWorkerSetupModal();
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && workerSetupModalNode && !workerSetupModalNode.hidden) {
+      closeWorkerSetupModal();
+    }
+  });
+
+  if (workerCopyMacosBtn) {
+    workerCopyMacosBtn.addEventListener("click", async () => {
+      if (!state.workerSetupMacosCommand) await fetchWorkerSetupOptions();
+      if (!state.workerSetupMacosCommand) return;
+      await navigator.clipboard.writeText(state.workerSetupMacosCommand);
+      setWorkerSetupStatus("Copied Mac setup command.");
+    });
+  }
+
+  if (workerCopyLinuxBtn) {
+    workerCopyLinuxBtn.addEventListener("click", async () => {
+      if (!state.workerSetupLinuxCommand) await fetchWorkerSetupOptions();
+      if (!state.workerSetupLinuxCommand) return;
+      await navigator.clipboard.writeText(state.workerSetupLinuxCommand);
+      setWorkerSetupStatus("Copied Linux setup command.");
+    });
+  }
+
   if (savedSourceAudioSelectNode) {
     savedSourceAudioSelectNode.addEventListener("change", () => {
       const audioHash = cleanOptional(savedSourceAudioSelectNode.value);
       if (!audioHash) {
         state.selectedAudioHash = null;
         if (!state.selectedAudioFile) {
+          clearSourcePreview();
           if (audioDropzoneTitleNode) audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
           if (audioFileNameNode) audioFileNameNode.textContent = "No file selected.";
         }
@@ -853,6 +1143,8 @@ async function init() {
   if (generateBtn) generateBtn.addEventListener("click", () => void handleGenerate());
   if (cancelBtn) cancelBtn.addEventListener("click", () => void handleCancel());
 
+  void fetchWorkerStatus();
+  startWorkerStatusPolling();
   wireDragAndDrop();
 }
 

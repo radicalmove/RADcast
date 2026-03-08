@@ -18,6 +18,21 @@ def test_ui_homepage_renders():
     assert "Create project" in response.text
 
 
+def test_worker_invite_and_status_endpoints_render():
+    client = TestClient(app)
+    invite = client.post("/workers/invite", json={"capabilities": ["enhance"]})
+    assert invite.status_code == 200
+    payload = invite.json()
+    assert "radcast.worker_setup" in payload["install_command_macos"]
+    assert payload["windows_installer_url"].startswith("http://testserver/workers/bootstrap/windows.cmd?")
+
+    status = client.get("/workers/status")
+    assert status.status_code == 200
+    status_payload = status.json()
+    assert "worker_total_count" in status_payload
+    assert "worker_online_count" in status_payload
+
+
 def test_project_create_and_list_roundtrip():
     client = TestClient(app)
     project_id = f"radcast-{uuid.uuid4().hex[:8]}"
@@ -94,17 +109,9 @@ def test_source_audio_upload_list_and_enhance_by_hash(monkeypatch):
         assert started.status_code == 200
         job_id = started.json()["job_id"]
 
-        final_payload = None
-        for _ in range(30):
-            polled = client.get(f"/jobs/{job_id}", params={"project_id": project_id})
-            assert polled.status_code == 200
-            final_payload = polled.json()
-            if final_payload["status"] == "completed":
-                break
-
-        assert final_payload is not None
-        assert final_payload["status"] == "completed"
-        assert final_payload["outputs"]["audio_play_url"]
+        final_payload = client.get(f"/jobs/{job_id}", params={"project_id": project_id}).json()
+        assert final_payload["status"] in {"queued", "running"}
+        assert final_payload["stage"] in {"queued_remote", "worker_running"}
     finally:
         for path in Path("projects").glob(f"*__{project_id}"):
             if path.exists():

@@ -52,6 +52,17 @@
       </div>
     </header>
 
+    {% if current_user %}
+    <section class="workspace-intro">
+      <div class="worker-status-row">
+        <span id="worker-status-pill" class="worker-pill worker-pill-unknown">Helper status: checking</span>
+        <span id="worker-status-detail" class="worker-status-detail"></span>
+        <button id="worker-refresh-btn" type="button" class="worker-mini-btn">Refresh helper status</button>
+        <button id="worker-setup-btn" type="button" class="worker-mini-btn">Set up helper app</button>
+      </div>
+    </section>
+    {% endif %}
+
     <section id="project-gateway" class="gateway-wrap">
       <section class="gateway-card">
         <h2>Choose project</h2>
@@ -98,6 +109,8 @@
                 <button id="refresh-source-audio-btn" type="button">Refresh</button>
               </div>
               <p id="saved-source-audio-status" class="field-note">Uploaded audio files are saved to this project for reuse.</p>
+              <span id="source-preview-label" class="preview-label" hidden>Preview selected audio</span>
+              <audio id="source-audio-preview" controls hidden></audio>
             </div>
           </section>
 
@@ -142,6 +155,31 @@
         <ul id="output-list" class="output-list"></ul>
       </section>
     </main>
+
+    <div id="worker-setup-modal" class="modal-overlay" hidden>
+      <section class="modal-card worker-setup-modal-card" role="dialog" aria-modal="true" aria-labelledby="worker-setup-modal-title">
+        <header class="modal-header">
+          <h2 id="worker-setup-modal-title">Set up helper app</h2>
+          <button id="worker-setup-close-btn" type="button" class="worker-mini-btn">Close</button>
+        </header>
+        <p class="modal-copy">Install the RADcast helper on another machine or on this one to offload enhancement jobs.</p>
+        <p id="worker-setup-modal-status" class="modal-status">Preparing setup options...</p>
+        <div id="worker-setup-links" class="worker-setup-links worker-setup-links-modal" hidden>
+          <a id="worker-setup-windows-link" class="worker-mini-btn" href="#" target="_blank" rel="noopener">Windows installer</a>
+          <a id="worker-setup-macos-link" class="worker-mini-btn" href="#" target="_blank" rel="noopener">Mac installer</a>
+          <button id="worker-copy-macos-btn" type="button" class="worker-mini-btn">Copy Mac setup command</button>
+          <button id="worker-copy-linux-btn" type="button" class="worker-mini-btn">Copy Linux setup command</button>
+        </div>
+        <section class="worker-setup-guide">
+          <h3>How it works</h3>
+          <ol>
+            <li>Install the RADcast helper on the helper device.</li>
+            <li>Leave the helper app running so it can poll for enhancement jobs.</li>
+            <li>RADcast will fall back to the server if no helper picks up the job in time.</li>
+          </ol>
+        </section>
+      </section>
+    </div>
 
     <script src="/static/ui.js" defer></script>
   </body>
