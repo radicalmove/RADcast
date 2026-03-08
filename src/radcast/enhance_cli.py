@@ -12,6 +12,7 @@ import argparse
 import time
 from pathlib import Path
 
+import resemble_enhance
 import torchaudio
 from resemble_enhance.enhancer.inference import denoise, enhance
 
@@ -37,8 +38,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _default_run_dir() -> Path | None:
+    package_root = Path(resemble_enhance.__file__).resolve().parent
+    run_dir = package_root / "model_repo" / "enhancer_stage2"
+    weights = run_dir / "ds" / "G" / "default" / "mp_rank_00_model_states.pt"
+    return run_dir if weights.exists() else None
+
+
 def main() -> None:
     args = build_parser().parse_args()
+    run_dir = args.run_dir or _default_run_dir()
     input_paths = sorted(args.in_dir.glob(f"**/*{args.suffix}"))
     if not input_paths:
         raise SystemExit(f"No {args.suffix} files found in {args.in_dir}")
@@ -51,7 +60,7 @@ def main() -> None:
         dwav, sr = torchaudio.load(str(input_path))
         dwav = dwav.mean(0)
         if args.denoise_only:
-            hwav, sr = denoise(dwav=dwav, sr=sr, device=args.device, run_dir=args.run_dir)
+            hwav, sr = denoise(dwav=dwav, sr=sr, device=args.device, run_dir=run_dir)
         else:
             hwav, sr = enhance(
                 dwav=dwav,
@@ -61,7 +70,7 @@ def main() -> None:
                 solver=args.solver,
                 lambd=args.lambd,
                 tau=args.tau,
-                run_dir=args.run_dir,
+                run_dir=run_dir,
             )
         torchaudio.save(str(output_path), hwav[None], sr)
 
