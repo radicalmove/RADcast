@@ -23,6 +23,7 @@ def test_worker_invite_and_status_endpoints_render():
     invite = client.post("/workers/invite", json={"capabilities": ["enhance"]})
     assert invite.status_code == 200
     payload = invite.json()
+    assert "git+https://github.com/radicalmove/RADcast.git" in payload["install_command_macos"]
     assert "radcast.worker_setup" in payload["install_command_macos"]
     assert payload["windows_installer_url"].startswith("http://testserver/workers/bootstrap/windows.cmd?")
 

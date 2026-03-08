@@ -94,6 +94,10 @@ WORKER_FALLBACK_TIMEOUT_SECONDS = max(
 WORKER_ONLINE_WINDOW_SECONDS = max(
     5, int(os.environ.get("RADCAST_WORKER_ONLINE_WINDOW_SECONDS", str(DEFAULT_WORKER_ONLINE_WINDOW_SECONDS)))
 )
+WORKER_INSTALL_SPEC = (
+    os.environ.get("RADCAST_WORKER_INSTALL_SPEC", "git+https://github.com/radicalmove/RADcast.git").strip()
+    or "git+https://github.com/radicalmove/RADcast.git"
+)
 
 
 app = FastAPI(title="RADcast API", version="0.1.0")
@@ -1241,10 +1245,22 @@ def worker_invite(request: Request, req: WorkerInviteRequest):
     _require_auth(request)
     token = worker_manager.issue_invite_token(req.capabilities)
     base_url = str(request.base_url).rstrip("/")
-    install_command = f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token}"
-    install_command_windows = f"py -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform windows"
-    install_command_macos = f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform macos"
-    install_command_linux = f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform linux"
+    install_command = (
+        f'python3 -m pip install --upgrade "{WORKER_INSTALL_SPEC}" && '
+        f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token}"
+    )
+    install_command_windows = (
+        f"py -m pip install --upgrade {WORKER_INSTALL_SPEC} && "
+        f"py -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform windows"
+    )
+    install_command_macos = (
+        f'python3 -m pip install --upgrade "{WORKER_INSTALL_SPEC}" && '
+        f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform macos"
+    )
+    install_command_linux = (
+        f'python3 -m pip install --upgrade "{WORKER_INSTALL_SPEC}" && '
+        f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {token} --platform linux"
+    )
     windows_installer_url = f"{base_url}/workers/bootstrap/windows.cmd?invite_token={quote(token)}"
     macos_installer_url = f"{base_url}/workers/bootstrap/macos.command?invite_token={quote(token)}"
     return WorkerInviteResponse(
@@ -1293,7 +1309,7 @@ def worker_bootstrap_windows_cmd(request: Request, invite_token: str = Query(...
         "@echo off\r\n"
         "echo Installing RADcast worker on this Windows device...\r\n"
         "py -m pip install --upgrade pip\r\n"
-        "py -m pip install --upgrade radcast\r\n"
+        f"py -m pip install --upgrade {WORKER_INSTALL_SPEC}\r\n"
         f"py -m radcast.worker_setup --server-url {base_url} --invite-token {safe_token} --platform windows\r\n"
         "echo Setup complete. You can close this window.\r\n"
     )
@@ -1311,7 +1327,7 @@ def worker_bootstrap_macos_command(request: Request, invite_token: str = Query(.
         "set -e\n"
         "echo \"Installing RADcast worker on this Mac...\"\n"
         "python3 -m pip install --upgrade pip\n"
-        "python3 -m pip install --upgrade radcast\n"
+        f"python3 -m pip install --upgrade \"{WORKER_INSTALL_SPEC}\"\n"
         f"python3 -m radcast.worker_setup --server-url {base_url} --invite-token {safe_token} --platform macos\n"
         "echo \"Setup complete. You can close this window.\"\n"
     )

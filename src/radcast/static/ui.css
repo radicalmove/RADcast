@@ -263,9 +263,9 @@ body {
   padding: 14px;
 }
 
-.workspace-intro {
-  padding-top: 12px;
-  padding-bottom: 12px;
+.helper-panel {
+  padding-top: 10px;
+  padding-bottom: 10px;
 }
 
 .worker-status-row {
