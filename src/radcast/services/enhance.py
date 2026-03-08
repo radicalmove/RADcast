@@ -18,6 +18,7 @@ from radcast.constants import (
     DEFAULT_ENHANCE_DEVICE,
     DEFAULT_ENHANCE_LAMBD,
     DEFAULT_ENHANCE_NFE,
+    DEFAULT_ENHANCE_POSTFILTER,
     DEFAULT_ENHANCE_TAU,
 )
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
@@ -33,6 +34,7 @@ class EnhanceService:
         self.nfe = _safe_int(os.environ.get("RADCAST_ENHANCE_NFE"), DEFAULT_ENHANCE_NFE)
         self.lambd = _safe_float(os.environ.get("RADCAST_ENHANCE_LAMBD"), DEFAULT_ENHANCE_LAMBD)
         self.tau = _safe_float(os.environ.get("RADCAST_ENHANCE_TAU"), DEFAULT_ENHANCE_TAU)
+        self.postfilter = os.environ.get("RADCAST_ENHANCE_POSTFILTER", DEFAULT_ENHANCE_POSTFILTER).strip()
         self._processes: dict[str, subprocess.Popen[str]] = {}
         self._lock = threading.Lock()
 
@@ -154,11 +156,14 @@ class EnhanceService:
 
             if output_format == OutputFormat.WAV:
                 final_path = output_base_path.with_suffix(".wav")
-                final_path.write_bytes(enhanced_wav.read_bytes())
+                if self.postfilter:
+                    run_ffmpeg_convert(enhanced_wav, final_path, audio_filters=self.postfilter)
+                else:
+                    final_path.write_bytes(enhanced_wav.read_bytes())
                 return final_path
 
             final_path = output_base_path.with_suffix(".mp3")
-            run_ffmpeg_convert(enhanced_wav, final_path)
+            run_ffmpeg_convert(enhanced_wav, final_path, audio_filters=self.postfilter)
             return final_path
 
 

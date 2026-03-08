@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 
-def run_ffmpeg_convert(src: Path, dst: Path) -> None:
+def run_ffmpeg_convert(src: Path, dst: Path, *, audio_filters: str | None = None) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "ffmpeg",
@@ -16,8 +16,10 @@ def run_ffmpeg_convert(src: Path, dst: Path) -> None:
         "error",
         "-i",
         str(src),
-        str(dst),
     ]
+    if audio_filters and audio_filters.strip():
+        cmd.extend(["-af", audio_filters.strip()])
+    cmd.append(str(dst))
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "ffmpeg failed").strip()

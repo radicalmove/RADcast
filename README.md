@@ -33,9 +33,10 @@ RADcast calls an external enhancement command.
 Defaults:
 - command: `radcast-enhance`
 - device: `cpu`
-- nfe: `48`
-- lambd: `0.6`
-- tau: `0.35`
+- nfe: `32`
+- lambd: `0.7`
+- tau: `0.5`
+- postfilter: `170Hz/320Hz body lift + 4.5kHz treble trim`
 
 Environment variables:
 - `RADCAST_ENHANCE_COMMAND`
@@ -43,6 +44,7 @@ Environment variables:
 - `RADCAST_ENHANCE_NFE`
 - `RADCAST_ENHANCE_LAMBD`
 - `RADCAST_ENHANCE_TAU`
+- `RADCAST_ENHANCE_POSTFILTER`
 
 If `resemble-enhance` is not on PATH, install it or set `RADCAST_ENHANCE_COMMAND`.
 
