@@ -15,9 +15,10 @@ DEFAULT_DEEPFILTERNET_POST_FILTER = False
 DEFAULT_SGMSE_COMMAND_TEMPLATE = ""
 DEFAULT_ENHANCE_PREFILTER = (
     "highpass=f=85,"
-    "agate=threshold=0.024:ratio=1.22:attack=10:release=240:range=0.5:knee=4,"
+    "agate=threshold=0.027:ratio=1.26:attack=8:release=280:range=0.56:knee=4,"
+    "afftdn=nr=4:nf=-48:tn=1,"
     "equalizer=f=380:t=q:w=1.0:g=-1.0,"
-    "equalizer=f=6800:t=q:w=1.2:g=-1.4"
+    "equalizer=f=6800:t=q:w=1.2:g=-1.3"
 )
 DEFAULT_ENHANCE_POSTFILTER = (
     "highpass=f=65,"
@@ -30,6 +31,6 @@ DEFAULT_ENHANCE_POSTFILTER = (
     "equalizer=f=6200:t=q:w=1.2:g=-2.5,"
     "lowpass=f=6800"
 )
-DEFAULT_AUDIO_TUNING_LABEL = "Version 6"
+DEFAULT_AUDIO_TUNING_LABEL = "Version 7"
 DEFAULT_WORKER_FALLBACK_TIMEOUT_SECONDS = 40
 DEFAULT_WORKER_ONLINE_WINDOW_SECONDS = 45
