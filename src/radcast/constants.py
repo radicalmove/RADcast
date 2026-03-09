@@ -26,8 +26,10 @@ DEFAULT_ENHANCE_POSTFILTER = (
     "equalizer=f=520:t=q:w=1.0:g=-0.9,"
     "equalizer=f=2800:t=q:w=1.0:g=0.4,"
     "deesser=i=0.06:m=0.25:f=0.5:s=o,"
-    "loudnorm=I=-20.5:TP=-1.5:LRA=8"
+    "loudnorm=I=-20.5:TP=-1.5:LRA=8,"
+    "equalizer=f=6200:t=q:w=1.2:g=-2.5,"
+    "lowpass=f=6800"
 )
-DEFAULT_AUDIO_TUNING_LABEL = "Version 5"
+DEFAULT_AUDIO_TUNING_LABEL = "Version 6"
 DEFAULT_WORKER_FALLBACK_TIMEOUT_SECONDS = 40
 DEFAULT_WORKER_ONLINE_WINDOW_SECONDS = 45

@@ -161,7 +161,7 @@ def test_project_outputs_endpoint_includes_tuning_label():
             duration_seconds=4.2,
             output_format=OutputFormat.MP3,
             enhancement_model=EnhancementModel.RESEMBLE,
-            audio_tuning_label="Version 5",
+            audio_tuning_label="Version 6",
             project_id=project_id,
             job_id="job_test",
         )
@@ -171,7 +171,7 @@ def test_project_outputs_endpoint_includes_tuning_label():
         assert outputs.status_code == 200
         payload = outputs.json()
         assert len(payload["outputs"]) == 1
-        assert payload["outputs"][0]["audio_tuning_label"] == "Version 5"
+        assert payload["outputs"][0]["audio_tuning_label"] == "Version 6"
     finally:
         for path in Path("projects").glob(f"*__{project_id}"):
             if path.exists():
