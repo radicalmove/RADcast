@@ -37,6 +37,7 @@ Defaults:
 - nfe: `32`
 - lambd: `0.7`
 - tau: `0.5`
+- prefilter: `highpass=f=80,agate=threshold=0.02:ratio=1.2:attack=8:release=220:range=0.5:knee=4,equalizer=f=6500:t=q:w=1.2:g=-1.2`
 - postfilter: `Adobe-like mastering chain (cleanup, body, de-ess, compression, loudness)`
 
 Environment variables:
@@ -46,6 +47,9 @@ Environment variables:
 - `RADCAST_ENHANCE_NFE`
 - `RADCAST_ENHANCE_LAMBD`
 - `RADCAST_ENHANCE_TAU`
+- `RADCAST_ENHANCE_PREFILTER`
+  - default: `highpass=f=80,agate=threshold=0.02:ratio=1.2:attack=8:release=220:range=0.5:knee=4,equalizer=f=6500:t=q:w=1.2:g=-1.2`
+  - applies before enhancement to trim room tail and slightly tame sibilance before the model reconstructs speech
 - `RADCAST_ENHANCE_POSTFILTER`
   - default: `highpass=f=60,equalizer=f=135:t=q:w=1.15:g=4.0,equalizer=f=245:t=q:w=1.0:g=2.4,equalizer=f=3000:t=q:w=1.0:g=0.9,acompressor=threshold=-20dB:ratio=1.3:attack=35:release=120:makeup=1.0,loudnorm=I=-18:TP=-1.5:LRA=7`
 - `RADCAST_DEEPFILTERNET_COMMAND`

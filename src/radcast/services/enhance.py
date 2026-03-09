@@ -21,6 +21,7 @@ from radcast.constants import (
     DEFAULT_ENHANCE_DEVICE,
     DEFAULT_ENHANCE_LAMBD,
     DEFAULT_ENHANCE_NFE,
+    DEFAULT_ENHANCE_PREFILTER,
     DEFAULT_ENHANCE_POSTFILTER,
     DEFAULT_ENHANCE_TAU,
     DEFAULT_ENHANCEMENT_MODEL,
@@ -66,6 +67,7 @@ class EnhanceService:
         self.nfe = _safe_int(os.environ.get("RADCAST_ENHANCE_NFE"), DEFAULT_ENHANCE_NFE)
         self.lambd = _safe_float(os.environ.get("RADCAST_ENHANCE_LAMBD"), DEFAULT_ENHANCE_LAMBD)
         self.tau = _safe_float(os.environ.get("RADCAST_ENHANCE_TAU"), DEFAULT_ENHANCE_TAU)
+        self.prefilter = os.environ.get("RADCAST_ENHANCE_PREFILTER", DEFAULT_ENHANCE_PREFILTER).strip()
         self.postfilter = os.environ.get("RADCAST_ENHANCE_POSTFILTER", DEFAULT_ENHANCE_POSTFILTER).strip()
         self._processes: dict[str, subprocess.Popen[str]] = {}
         self._lock = threading.Lock()
@@ -126,10 +128,10 @@ class EnhanceService:
 
             on_stage("prepare", 0.12, f"Preparing source audio for {MODEL_LABELS[model]}")
             in_wav = in_dir / "input.wav"
-            if input_audio_path.suffix.lower() == ".wav":
+            if input_audio_path.suffix.lower() == ".wav" and not self.prefilter:
                 in_wav.write_bytes(input_audio_path.read_bytes())
             else:
-                run_ffmpeg_convert(input_audio_path, in_wav)
+                run_ffmpeg_convert(input_audio_path, in_wav, audio_filters=self.prefilter)
             input_duration_seconds = probe_duration_seconds(in_wav)
 
             if cancel_check():

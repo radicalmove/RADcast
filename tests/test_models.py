@@ -6,8 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from radcast.constants import DEFAULT_ENHANCE_COMMAND
-from radcast.models import OutputFormat, SimpleEnhanceRequest
+from radcast.models import EnhancementModel, OutputFormat, SimpleEnhanceRequest
 from radcast.services.enhance import (
+    EnhanceService,
     _estimate_progress,
     _estimate_remaining_seconds,
     _estimate_runtime_seconds,
@@ -61,8 +62,8 @@ def test_resolve_default_command_prefers_wrapper_binary(monkeypatch: pytest.Monk
 
 
 def test_estimate_runtime_seconds_scales_with_duration():
-    short_runtime = _estimate_runtime_seconds(5, device="cpu", nfe=32)
-    long_runtime = _estimate_runtime_seconds(30, device="cpu", nfe=32)
+    short_runtime = _estimate_runtime_seconds(5, device="cpu", nfe=32, enhancement_model=EnhancementModel.RESEMBLE)
+    long_runtime = _estimate_runtime_seconds(30, device="cpu", nfe=32, enhancement_model=EnhancementModel.RESEMBLE)
 
     assert short_runtime >= 35
     assert long_runtime > short_runtime
@@ -80,3 +81,50 @@ def test_estimate_remaining_seconds_hides_unstable_early_estimate():
     assert _estimate_remaining_seconds(4, 60) is None
     assert _estimate_remaining_seconds(25, 60) == 35
     assert _estimate_remaining_seconds(80, 60) is None
+
+
+def test_enhance_service_applies_prefilter_before_enhancement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    service = EnhanceService()
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"fake-wav")
+    calls: list[str | None] = []
+
+    monkeypatch.setattr("radcast.services.enhance._command_available", lambda _cmd: True)
+    monkeypatch.setattr("radcast.services.enhance.probe_duration_seconds", lambda _path: 5.0)
+
+    def fake_convert(src: Path, dst: Path, *, audio_filters: str | None = None) -> None:
+        calls.append(audio_filters)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"converted")
+
+    class FakeProc:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def communicate(self):
+            return ("", "")
+
+        def terminate(self):
+            return None
+
+    monkeypatch.setattr("radcast.services.enhance.run_ffmpeg_convert", fake_convert)
+    monkeypatch.setattr("radcast.services.enhance.subprocess.Popen", lambda *args, **kwargs: FakeProc())
+    monkeypatch.setattr(EnhanceService, "_collect_backend_output", lambda self, *, model, out_dir: source)
+
+    final_path = service.enhance(
+        job_id="job1",
+        enhancement_model="resemble",
+        input_audio_path=source,
+        output_format=OutputFormat.WAV,
+        output_base_path=tmp_path / "out" / "result",
+        on_stage=lambda *args: None,
+        cancel_check=lambda: False,
+    )
+
+    assert final_path.suffix == ".wav"
+    assert calls[0] == service.prefilter

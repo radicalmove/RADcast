@@ -13,6 +13,11 @@ DEFAULT_DEEPFILTERNET_COMMAND = "deepFilter"
 DEFAULT_DEEPFILTERNET_MODEL = "DeepFilterNet3"
 DEFAULT_DEEPFILTERNET_POST_FILTER = False
 DEFAULT_SGMSE_COMMAND_TEMPLATE = ""
+DEFAULT_ENHANCE_PREFILTER = (
+    "highpass=f=80,"
+    "agate=threshold=0.02:ratio=1.2:attack=8:release=220:range=0.5:knee=4,"
+    "equalizer=f=6500:t=q:w=1.2:g=-1.2"
+)
 DEFAULT_ENHANCE_POSTFILTER = (
     "highpass=f=60,"
     "equalizer=f=135:t=q:w=1.15:g=4.0,"
