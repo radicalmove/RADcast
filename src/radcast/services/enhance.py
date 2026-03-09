@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Callable
 
@@ -26,7 +27,16 @@ from radcast.constants import (
     DEFAULT_ENHANCE_POSTFILTER,
     DEFAULT_ENHANCE_TAU,
     DEFAULT_ENHANCEMENT_MODEL,
-    DEFAULT_SGMSE_COMMAND_TEMPLATE,
+    DEFAULT_STUDIO_POSTFILTER,
+    DEFAULT_STUDIO_COMMAND,
+    DEFAULT_STUDIO_V18_LAMBD,
+    DEFAULT_STUDIO_V18_NFE,
+    DEFAULT_STUDIO_V18_POSTFILTER,
+    DEFAULT_STUDIO_V18_TAU,
+    DEFAULT_STUDIO_V18_TUNING_LABEL,
+    DEFAULT_STUDIO_V18_WPE_DELAY,
+    DEFAULT_STUDIO_V18_WPE_ITERATIONS,
+    DEFAULT_STUDIO_V18_WPE_TAPS,
 )
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
 from radcast.models import EnhancementModel, OutputFormat
@@ -35,17 +45,22 @@ from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
 MODEL_LABELS = {
     EnhancementModel.RESEMBLE: "Resemble Enhance",
     EnhancementModel.DEEPFILTERNET: "DeepFilterNet3",
-    EnhancementModel.SGMSE: "SGMSE",
+    EnhancementModel.STUDIO: "Studio Cleanup",
+    EnhancementModel.STUDIO_V18: "Studio v18",
 }
 
 MODEL_DESCRIPTIONS = {
     EnhancementModel.RESEMBLE: "Current RADcast backend. Strong cleanup, but can sound more processed.",
     EnhancementModel.DEEPFILTERNET: "Official DeepFilterNet3 speech enhancement. Usually more natural and less compressed.",
-    EnhancementModel.SGMSE: "Experimental dereverb-oriented backend. Requires separate server configuration.",
+    EnhancementModel.STUDIO: "Custom late-reverb suppression plus Resemble Enhance. Built to chase a drier studio-mic sound.",
+    EnhancementModel.STUDIO_V18: "Current best local Studio candidate. Stronger dereverb plus lighter restoration tuned toward a close-mic podcast sound.",
 }
 
 
-def current_audio_tuning_label() -> str:
+def current_audio_tuning_label(model: EnhancementModel | None = None) -> str:
+    if model == EnhancementModel.STUDIO_V18:
+        raw = str(os.environ.get("RADCAST_STUDIO_V18_TUNING_LABEL", DEFAULT_STUDIO_V18_TUNING_LABEL)).strip()
+        return raw or DEFAULT_STUDIO_V18_TUNING_LABEL
     raw = str(os.environ.get("RADCAST_AUDIO_TUNING_LABEL", DEFAULT_AUDIO_TUNING_LABEL)).strip()
     return raw or DEFAULT_AUDIO_TUNING_LABEL
 
@@ -54,6 +69,7 @@ class EnhanceService:
     def __init__(self) -> None:
         self.default_model = _parse_model(os.environ.get("RADCAST_DEFAULT_ENHANCEMENT_MODEL"), DEFAULT_ENHANCEMENT_MODEL)
         self.resemble_command = _resolve_command(os.environ.get("RADCAST_ENHANCE_COMMAND", DEFAULT_ENHANCE_COMMAND).strip())
+        self.studio_command = _resolve_command(os.environ.get("RADCAST_STUDIO_COMMAND", DEFAULT_STUDIO_COMMAND).strip())
         self.deepfilternet_command = _resolve_command(
             os.environ.get("RADCAST_DEEPFILTERNET_COMMAND", DEFAULT_DEEPFILTERNET_COMMAND).strip()
         )
@@ -65,16 +81,23 @@ class EnhanceService:
             os.environ.get("RADCAST_DEEPFILTERNET_POST_FILTER"),
             DEFAULT_DEEPFILTERNET_POST_FILTER,
         )
-        self.sgmse_command_template = (
-            os.environ.get("RADCAST_SGMSE_COMMAND_TEMPLATE", DEFAULT_SGMSE_COMMAND_TEMPLATE).strip()
-        )
-
         self.device = os.environ.get("RADCAST_ENHANCE_DEVICE", DEFAULT_ENHANCE_DEVICE).strip() or DEFAULT_ENHANCE_DEVICE
         self.nfe = _safe_int(os.environ.get("RADCAST_ENHANCE_NFE"), DEFAULT_ENHANCE_NFE)
         self.lambd = _safe_float(os.environ.get("RADCAST_ENHANCE_LAMBD"), DEFAULT_ENHANCE_LAMBD)
         self.tau = _safe_float(os.environ.get("RADCAST_ENHANCE_TAU"), DEFAULT_ENHANCE_TAU)
         self.prefilter = os.environ.get("RADCAST_ENHANCE_PREFILTER", DEFAULT_ENHANCE_PREFILTER).strip()
         self.postfilter = os.environ.get("RADCAST_ENHANCE_POSTFILTER", DEFAULT_ENHANCE_POSTFILTER).strip()
+        self.studio_postfilter = os.environ.get("RADCAST_STUDIO_POSTFILTER", DEFAULT_STUDIO_POSTFILTER).strip()
+        self.studio_v18_postfilter = os.environ.get("RADCAST_STUDIO_V18_POSTFILTER", DEFAULT_STUDIO_V18_POSTFILTER).strip()
+        self.studio_v18_nfe = _safe_int(os.environ.get("RADCAST_STUDIO_V18_NFE"), DEFAULT_STUDIO_V18_NFE)
+        self.studio_v18_lambd = _safe_float(os.environ.get("RADCAST_STUDIO_V18_LAMBD"), DEFAULT_STUDIO_V18_LAMBD)
+        self.studio_v18_tau = _safe_float(os.environ.get("RADCAST_STUDIO_V18_TAU"), DEFAULT_STUDIO_V18_TAU)
+        self.studio_v18_wpe_taps = _safe_int(os.environ.get("RADCAST_STUDIO_V18_WPE_TAPS"), DEFAULT_STUDIO_V18_WPE_TAPS)
+        self.studio_v18_wpe_delay = _safe_int(os.environ.get("RADCAST_STUDIO_V18_WPE_DELAY"), DEFAULT_STUDIO_V18_WPE_DELAY)
+        self.studio_v18_wpe_iterations = _safe_int(
+            os.environ.get("RADCAST_STUDIO_V18_WPE_ITERATIONS"),
+            DEFAULT_STUDIO_V18_WPE_ITERATIONS,
+        )
         self.audio_tuning_label = current_audio_tuning_label()
         self._processes: dict[str, subprocess.Popen[str]] = {}
         self._lock = threading.Lock()
@@ -90,7 +113,7 @@ class EnhanceService:
                     "description": MODEL_DESCRIPTIONS[model],
                     "available": available,
                     "detail": detail,
-                    "experimental": model == EnhancementModel.SGMSE,
+                    "experimental": model in {EnhancementModel.STUDIO, EnhancementModel.STUDIO_V18},
                     "default": model == self.default_model,
                 }
             )
@@ -193,34 +216,49 @@ class EnhanceService:
 
             on_stage("finalize", 0.96, "Saving the enhanced audio", 8)
             output_base_path.parent.mkdir(parents=True, exist_ok=True)
+            output_filter = self._output_filter_for_model(model)
 
             if output_format == OutputFormat.WAV:
                 final_path = output_base_path.with_suffix(".wav")
-                if self.postfilter:
-                    run_ffmpeg_convert(enhanced_wav, final_path, audio_filters=self.postfilter)
+                if output_filter:
+                    run_ffmpeg_convert(enhanced_wav, final_path, audio_filters=output_filter)
                 else:
                     final_path.write_bytes(enhanced_wav.read_bytes())
                 return final_path
 
             final_path = output_base_path.with_suffix(".mp3")
-            run_ffmpeg_convert(enhanced_wav, final_path, audio_filters=self.postfilter)
+            run_ffmpeg_convert(enhanced_wav, final_path, audio_filters=output_filter)
             return final_path
 
     def _availability_for_model(self, model: EnhancementModel) -> tuple[bool, str]:
         if model == EnhancementModel.RESEMBLE:
             available = _command_available(self.resemble_command)
             return available, "Install resemble-enhance to enable it." if not available else "Installed."
+        if model == EnhancementModel.STUDIO:
+            available = _command_available(self.studio_command) and _python_modules_available(
+                ["numpy", "scipy", "soundfile", "resemble_enhance", "torchaudio"]
+            )
+            detail = (
+                "Custom dereverb plus Resemble Enhance is installed."
+                if available
+                else "Install the RADcast package with Studio dependencies to enable this backend."
+            )
+            return available, detail
+        if model == EnhancementModel.STUDIO_V18:
+            available = _command_available(self.studio_command) and _python_modules_available(
+                ["numpy", "scipy", "soundfile", "resemble_enhance", "torchaudio"]
+            )
+            detail = (
+                "Version 18 Studio path is installed."
+                if available
+                else "Install the RADcast package with Studio dependencies to enable this backend."
+            )
+            return available, detail
         if model == EnhancementModel.DEEPFILTERNET:
             available = _command_available(self.deepfilternet_command)
             detail = f"Uses official {self.deepfilternet_model} weights." if available else "Install deepfilternet to enable it."
             return available, detail
-        available = bool(self.sgmse_command_template)
-        detail = (
-            "Configured via RADCAST_SGMSE_COMMAND_TEMPLATE."
-            if available
-            else "Set RADCAST_SGMSE_COMMAND_TEMPLATE to enable this experimental backend."
-        )
-        return available, detail
+        return False, "This backend is not configured."
 
     def _build_backend_command(self, *, model: EnhancementModel, in_dir: Path, in_wav: Path, out_dir: Path) -> tuple[list[str] | str, bool, str]:
         if model == EnhancementModel.RESEMBLE:
@@ -243,6 +281,52 @@ class EnhanceService:
                 False,
                 "Loading Resemble Enhance. First run can take longer.",
             )
+        if model == EnhancementModel.STUDIO:
+            return (
+                [
+                    *self.studio_command,
+                    str(in_dir),
+                    str(out_dir),
+                    "--suffix",
+                    ".wav",
+                    "--device",
+                    self.device,
+                    "--nfe",
+                    str(self.nfe),
+                    "--lambd",
+                    str(self.lambd),
+                    "--tau",
+                    str(self.tau),
+                ],
+                False,
+                "Loading Studio Cleanup. First run can take longer.",
+            )
+        if model == EnhancementModel.STUDIO_V18:
+            return (
+                [
+                    *self.studio_command,
+                    str(in_dir),
+                    str(out_dir),
+                    "--suffix",
+                    ".wav",
+                    "--device",
+                    self.device,
+                    "--nfe",
+                    str(self.studio_v18_nfe),
+                    "--lambd",
+                    str(self.studio_v18_lambd),
+                    "--tau",
+                    str(self.studio_v18_tau),
+                    "--wpe-taps",
+                    str(self.studio_v18_wpe_taps),
+                    "--wpe-delay",
+                    str(self.studio_v18_wpe_delay),
+                    "--wpe-iterations",
+                    str(self.studio_v18_wpe_iterations),
+                ],
+                False,
+                "Loading Studio v18. First run can take longer.",
+            )
         if model == EnhancementModel.DEEPFILTERNET:
             command = [
                 *self.deepfilternet_command,
@@ -258,14 +342,7 @@ class EnhanceService:
                 command.append("--pf")
             command.append(str(in_wav))
             return command, False, f"Loading {MODEL_LABELS[model]}. First run can take longer while weights download."
-
-        rendered = self.sgmse_command_template.format(
-            input_dir=shlex.quote(str(in_dir)),
-            output_dir=shlex.quote(str(out_dir)),
-            input_file=shlex.quote(str(in_wav)),
-            input_name=shlex.quote(in_wav.name),
-        )
-        return rendered, True, "Loading SGMSE. First run can take longer while checkpoints warm up."
+        raise EnhancementRuntimeError(f"{MODEL_LABELS.get(model, str(model))} is not configured")
 
     def _collect_backend_output(self, *, model: EnhancementModel, out_dir: Path) -> Path:
         out_candidates = sorted(out_dir.glob("**/*.wav"))
@@ -280,11 +357,21 @@ class EnhanceService:
 
     @staticmethod
     def _missing_command_message(model: EnhancementModel) -> str:
+        if model in {EnhancementModel.STUDIO, EnhancementModel.STUDIO_V18}:
+            return "Studio Cleanup command not found. Reinstall RADcast or set RADCAST_STUDIO_COMMAND."
         if model == EnhancementModel.DEEPFILTERNET:
             return "DeepFilterNet command not found. Install deepfilternet or set RADCAST_DEEPFILTERNET_COMMAND."
-        if model == EnhancementModel.SGMSE:
-            return "SGMSE command not found. Configure RADCAST_SGMSE_COMMAND_TEMPLATE."
         return "Enhancement command not found. Install resemble-enhance or set RADCAST_ENHANCE_COMMAND."
+
+    def output_tuning_label_for_model(self, model: EnhancementModel) -> str:
+        return current_audio_tuning_label(model)
+
+    def _output_filter_for_model(self, model: EnhancementModel) -> str:
+        if model == EnhancementModel.STUDIO:
+            return self.studio_postfilter
+        if model == EnhancementModel.STUDIO_V18:
+            return self.studio_v18_postfilter
+        return self.postfilter
 
 
 def _parse_model(raw: str | None, default: str) -> EnhancementModel:
@@ -348,6 +435,10 @@ def _command_available(command: list[str]) -> bool:
     return shutil.which(executable) is not None
 
 
+def _python_modules_available(module_names: list[str]) -> bool:
+    return all(find_spec(name) is not None for name in module_names)
+
+
 def _estimate_runtime_seconds(duration_seconds: float, *, device: str, nfe: int, enhancement_model: EnhancementModel) -> int:
     safe_duration = max(1.0, float(duration_seconds))
     normalized_device = (device or DEFAULT_ENHANCE_DEVICE).strip().lower()
@@ -365,17 +456,17 @@ def _estimate_runtime_seconds(duration_seconds: float, *, device: str, nfe: int,
         estimate = base_seconds + (safe_duration * per_second)
         return max(minimum, min(int(round(estimate)), 20 * 60))
 
-    if enhancement_model == EnhancementModel.SGMSE:
+    if enhancement_model in {EnhancementModel.STUDIO, EnhancementModel.STUDIO_V18}:
         if accelerated:
             base_seconds = 18.0
-            per_second = 2.6
+            per_second = 2.4
             minimum = 24
         else:
-            base_seconds = 45.0
-            per_second = 5.4
-            minimum = 60
+            base_seconds = 42.0
+            per_second = 5.0
+            minimum = 55
         estimate = base_seconds + (safe_duration * per_second)
-        return max(minimum, min(int(round(estimate)), 45 * 60))
+        return max(minimum, min(int(round(estimate)), 40 * 60))
 
     quality_factor = max(0.65, float(nfe) / float(DEFAULT_ENHANCE_NFE))
     if accelerated:

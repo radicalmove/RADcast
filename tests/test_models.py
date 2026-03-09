@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from radcast.constants import DEFAULT_ENHANCE_COMMAND
+from radcast.constants import DEFAULT_ENHANCE_COMMAND, DEFAULT_STUDIO_COMMAND
 from radcast.models import EnhancementModel, OutputFormat, SimpleEnhanceRequest
 from radcast.services.enhance import (
     EnhanceService,
@@ -61,12 +61,34 @@ def test_resolve_default_command_prefers_wrapper_binary(monkeypatch: pytest.Monk
     assert command[0] == str(fake_binary)
 
 
+def test_resolve_studio_command_prefers_wrapper_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    fake_python = tmp_path / "python"
+    fake_python.write_text("")
+    fake_binary = tmp_path / DEFAULT_STUDIO_COMMAND
+    fake_binary.write_text("")
+
+    monkeypatch.setattr("radcast.services.enhance.sys.executable", str(fake_python))
+
+    command = _resolve_command(DEFAULT_STUDIO_COMMAND)
+
+    assert command[0] == str(fake_binary)
+
+
 def test_estimate_runtime_seconds_scales_with_duration():
     short_runtime = _estimate_runtime_seconds(5, device="cpu", nfe=32, enhancement_model=EnhancementModel.RESEMBLE)
     long_runtime = _estimate_runtime_seconds(30, device="cpu", nfe=32, enhancement_model=EnhancementModel.RESEMBLE)
 
     assert short_runtime >= 35
     assert long_runtime > short_runtime
+
+
+def test_studio_runtime_estimate_is_slower_than_resemble_for_same_input():
+    resemble_runtime = _estimate_runtime_seconds(30, device="cpu", nfe=32, enhancement_model=EnhancementModel.RESEMBLE)
+    studio_runtime = _estimate_runtime_seconds(30, device="cpu", nfe=32, enhancement_model=EnhancementModel.STUDIO)
+    studio_v18_runtime = _estimate_runtime_seconds(30, device="cpu", nfe=32, enhancement_model=EnhancementModel.STUDIO_V18)
+
+    assert studio_runtime > resemble_runtime
+    assert studio_v18_runtime == studio_runtime
 
 
 def test_estimate_progress_moves_through_enhancement_band():
@@ -128,3 +150,96 @@ def test_enhance_service_applies_prefilter_before_enhancement(
 
     assert final_path.suffix == ".wav"
     assert calls[0] == service.prefilter
+
+
+def test_studio_model_uses_studio_postfilter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    service = EnhanceService()
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"fake-wav")
+    calls: list[str | None] = []
+
+    monkeypatch.setattr("radcast.services.enhance._command_available", lambda _cmd: True)
+    monkeypatch.setattr("radcast.services.enhance._python_modules_available", lambda _mods: True)
+    monkeypatch.setattr("radcast.services.enhance.probe_duration_seconds", lambda _path: 5.0)
+
+    def fake_convert(src: Path, dst: Path, *, audio_filters: str | None = None) -> None:
+        calls.append(audio_filters)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"converted")
+
+    class FakeProc:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def communicate(self):
+            return ("", "")
+
+        def terminate(self):
+            return None
+
+    monkeypatch.setattr("radcast.services.enhance.run_ffmpeg_convert", fake_convert)
+    monkeypatch.setattr("radcast.services.enhance.subprocess.Popen", lambda *args, **kwargs: FakeProc())
+    monkeypatch.setattr(EnhanceService, "_collect_backend_output", lambda self, *, model, out_dir: source)
+
+    final_path = service.enhance(
+        job_id="job1",
+        enhancement_model=EnhancementModel.STUDIO,
+        input_audio_path=source,
+        output_format=OutputFormat.MP3,
+        output_base_path=tmp_path / "out" / "result",
+        on_stage=lambda *args: None,
+        cancel_check=lambda: False,
+    )
+
+    assert final_path.suffix == ".mp3"
+    assert calls[0] == service.prefilter
+    assert calls[-1] == service.studio_postfilter
+
+
+def test_studio_v18_model_uses_studio_v18_postfilter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    service = EnhanceService()
+    source = tmp_path / "input.wav"
+    source.write_bytes(b"fake-wav")
+    calls: list[str | None] = []
+
+    monkeypatch.setattr("radcast.services.enhance._command_available", lambda _cmd: True)
+    monkeypatch.setattr("radcast.services.enhance._python_modules_available", lambda _mods: True)
+    monkeypatch.setattr("radcast.services.enhance.probe_duration_seconds", lambda _path: 5.0)
+
+    def fake_convert(src: Path, dst: Path, *, audio_filters: str | None = None) -> None:
+        calls.append(audio_filters)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"converted")
+
+    class FakeProc:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def communicate(self):
+            return ("", "")
+
+        def terminate(self):
+            return None
+
+    monkeypatch.setattr("radcast.services.enhance.run_ffmpeg_convert", fake_convert)
+    monkeypatch.setattr("radcast.services.enhance.subprocess.Popen", lambda *args, **kwargs: FakeProc())
+    monkeypatch.setattr(EnhanceService, "_collect_backend_output", lambda self, *, model, out_dir: source)
+
+    final_path = service.enhance(
+        job_id="job1",
+        enhancement_model=EnhancementModel.STUDIO_V18,
+        input_audio_path=source,
+        output_format=OutputFormat.MP3,
+        output_base_path=tmp_path / "out" / "result",
+        on_stage=lambda *args: None,
+        cancel_check=lambda: False,
+    )
+
+    assert final_path.suffix == ".mp3"
+    assert calls[0] == service.prefilter
+    assert calls[-1] == service.studio_v18_postfilter
+    assert service.output_tuning_label_for_model(EnhancementModel.STUDIO_V18) == "Version 18"

@@ -20,7 +20,8 @@ class OutputFormat(str, Enum):
 class EnhancementModel(str, Enum):
     RESEMBLE = "resemble"
     DEEPFILTERNET = "deepfilternet"
-    SGMSE = "sgmse"
+    STUDIO = "studio"
+    STUDIO_V18 = "studio_v18"
 
 
 class WorkerCapability(str, Enum):

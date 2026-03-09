@@ -662,7 +662,7 @@ def _run_enhancement_job(
             duration_seconds=duration_seconds,
             output_format=output_format,
             enhancement_model=enhancement_model,
-            audio_tuning_label=enhance_service.audio_tuning_label,
+            audio_tuning_label=enhance_service.output_tuning_label_for_model(enhancement_model),
             project_id=scoped_project_id,
             job_id=job_id,
         )

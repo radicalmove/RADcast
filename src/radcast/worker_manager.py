@@ -360,7 +360,7 @@ class WorkerManager:
             duration_seconds=req.duration_seconds,
             output_format=OutputFormat(req.output_format),
             enhancement_model=payload.enhancement_model,
-            audio_tuning_label=current_audio_tuning_label(),
+            audio_tuning_label=current_audio_tuning_label(payload.enhancement_model),
             project_id=payload.project_id,
             job_id=job_id,
         )

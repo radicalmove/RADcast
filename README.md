@@ -44,6 +44,7 @@ Defaults:
 Environment variables:
 - `RADCAST_DEFAULT_ENHANCEMENT_MODEL`
 - `RADCAST_ENHANCE_COMMAND`
+- `RADCAST_STUDIO_COMMAND`
 - `RADCAST_ENHANCE_DEVICE`
 - `RADCAST_ENHANCE_NFE`
 - `RADCAST_ENHANCE_LAMBD`
@@ -58,9 +59,19 @@ Environment variables:
 - `RADCAST_DEEPFILTERNET_COMMAND`
 - `RADCAST_DEEPFILTERNET_MODEL`
 - `RADCAST_DEEPFILTERNET_POST_FILTER`
-- `RADCAST_SGMSE_COMMAND_TEMPLATE`
-  - supports placeholders: `{input_dir}` `{output_dir}` `{input_file}` `{input_name}`
 
 If `resemble-enhance` is not on PATH, install it or set `RADCAST_ENHANCE_COMMAND`.
 
 For Ubuntu CPU deployments, use [`scripts/install-linux-cpu.sh`](/Users/rcd58/RADcast/scripts/install-linux-cpu.sh). It installs the CPU PyTorch wheels, `torchcodec`, `deepspeed` without custom ops, and `resemble-enhance`.
+
+## Experimental paired restoration
+
+RADcast also has a local-only experimental track for building paired `noisy -> clean` datasets so we can train a true speech-restoration model instead of only stacking enhancement and mastering.
+
+See:
+- [`docs/paired_restoration.md`](/Users/rcd58/RADcast/docs/paired_restoration.md)
+- [`scripts/build_paired_restoration_dataset.py`](/Users/rcd58/RADcast/scripts/build_paired_restoration_dataset.py)
+- [`scripts/discover_restoration_pairs.py`](/Users/rcd58/RADcast/scripts/discover_restoration_pairs.py)
+- [`scripts/run_sgmse_train.py`](/Users/rcd58/RADcast/scripts/run_sgmse_train.py)
+
+Use `python scripts/run_sgmse_train.py ... --smoke` for the first real end-to-end training probe. The upstream SGMSE Python environment also needs `torchcodec` installed.

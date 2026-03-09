@@ -42,10 +42,11 @@ def test_worker_invite_and_status_endpoints_render():
     models = client.get("/enhancement/models")
     assert models.status_code == 200
     models_payload = models.json()
-    assert models_payload["default_model"] in {"resemble", "deepfilternet", "sgmse"}
+    assert models_payload["default_model"] in {"resemble", "deepfilternet", "studio"}
     assert any(item["id"] == "resemble" for item in models_payload["models"])
     assert any(item["id"] == "deepfilternet" for item in models_payload["models"])
-    assert any(item["id"] == "sgmse" for item in models_payload["models"])
+    assert any(item["id"] == "studio" for item in models_payload["models"])
+    assert any(item["id"] == "studio_v18" for item in models_payload["models"])
 
 
 def test_project_create_and_list_roundtrip():

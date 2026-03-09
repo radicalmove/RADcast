@@ -1,4 +1,5 @@
 [console_scripts]
 radcast-api = radcast.api:main
 radcast-enhance = radcast.enhance_cli:main
+radcast-studio-enhance = radcast.studio_cli:main
 radcast-worker-install = radcast.worker_setup:main
