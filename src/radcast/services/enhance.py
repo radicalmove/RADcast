@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from radcast.constants import (
+    DEFAULT_AUDIO_TUNING_LABEL,
     DEFAULT_DEEPFILTERNET_COMMAND,
     DEFAULT_DEEPFILTERNET_MODEL,
     DEFAULT_DEEPFILTERNET_POST_FILTER,
@@ -44,6 +45,11 @@ MODEL_DESCRIPTIONS = {
 }
 
 
+def current_audio_tuning_label() -> str:
+    raw = str(os.environ.get("RADCAST_AUDIO_TUNING_LABEL", DEFAULT_AUDIO_TUNING_LABEL)).strip()
+    return raw or DEFAULT_AUDIO_TUNING_LABEL
+
+
 class EnhanceService:
     def __init__(self) -> None:
         self.default_model = _parse_model(os.environ.get("RADCAST_DEFAULT_ENHANCEMENT_MODEL"), DEFAULT_ENHANCEMENT_MODEL)
@@ -69,6 +75,7 @@ class EnhanceService:
         self.tau = _safe_float(os.environ.get("RADCAST_ENHANCE_TAU"), DEFAULT_ENHANCE_TAU)
         self.prefilter = os.environ.get("RADCAST_ENHANCE_PREFILTER", DEFAULT_ENHANCE_PREFILTER).strip()
         self.postfilter = os.environ.get("RADCAST_ENHANCE_POSTFILTER", DEFAULT_ENHANCE_POSTFILTER).strip()
+        self.audio_tuning_label = current_audio_tuning_label()
         self._processes: dict[str, subprocess.Popen[str]] = {}
         self._lock = threading.Lock()
 

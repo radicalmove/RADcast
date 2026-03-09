@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from radcast.api import app
+from radcast.manifests import ManifestStore
+from radcast.models import EnhancementModel, OutputFormat, OutputMetadata
 
 
 def test_ui_homepage_renders():
@@ -132,5 +134,47 @@ def test_source_audio_upload_list_and_enhance_by_hash(monkeypatch):
             if path.exists():
                 shutil.rmtree(path)
         project_root = Path("projects") / project_id
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_project_outputs_endpoint_includes_tuning_label():
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        manifests = project_root / "manifests"
+        store = ManifestStore(manifests)
+        output_path = project_root / "assets" / "enhanced_audio" / "sample.mp3"
+        input_path = project_root / "assets" / "source_audio" / "sample.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp3")
+        input_path.write_bytes(b"fake-wav")
+        metadata = OutputMetadata(
+            output_file=output_path,
+            input_file=input_path,
+            duration_seconds=4.2,
+            output_format=OutputFormat.MP3,
+            enhancement_model=EnhancementModel.RESEMBLE,
+            audio_tuning_label="Version 5",
+            project_id=project_id,
+            job_id="job_test",
+        )
+        store.append_output(metadata)
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        assert outputs.status_code == 200
+        payload = outputs.json()
+        assert len(payload["outputs"]) == 1
+        assert payload["outputs"][0]["audio_tuning_label"] == "Version 5"
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
         if project_root.exists():
             shutil.rmtree(project_root)

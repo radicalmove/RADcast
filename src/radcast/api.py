@@ -662,6 +662,7 @@ def _run_enhancement_job(
             duration_seconds=duration_seconds,
             output_format=output_format,
             enhancement_model=enhancement_model,
+            audio_tuning_label=enhance_service.audio_tuning_label,
             project_id=scoped_project_id,
             job_id=job_id,
         )
@@ -1203,6 +1204,7 @@ def list_project_outputs(request: Request, project_id: str):
                     "created_at": str(item.get("created_at") or ""),
                     "duration_seconds": float(item.get("duration_seconds") or 0.0),
                     "enhancement_model": str(item.get("enhancement_model") or ""),
+                    "audio_tuning_label": str(item.get("audio_tuning_label") or ""),
                     "download_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=true",
                     "play_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=false",
                 }

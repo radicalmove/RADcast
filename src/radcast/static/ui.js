@@ -1085,6 +1085,8 @@ function formatOutputMeta(item) {
     const created = formatDisplayDateTime(item.created_at);
     if (created) parts.push(`Created: ${created}`);
   }
+  const tuningLabel = cleanOptional(item.audio_tuning_label);
+  if (tuningLabel) parts.push(`Tuning: ${tuningLabel}`);
   return parts.join(" ");
 }
 

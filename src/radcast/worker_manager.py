@@ -33,6 +33,7 @@ from radcast.models import (
     WorkerSummary,
 )
 from radcast.project import ProjectManager
+from radcast.services.enhance import current_audio_tuning_label
 
 
 def _now_iso() -> str:
@@ -359,6 +360,7 @@ class WorkerManager:
             duration_seconds=req.duration_seconds,
             output_format=OutputFormat(req.output_format),
             enhancement_model=payload.enhancement_model,
+            audio_tuning_label=current_audio_tuning_label(),
             project_id=payload.project_id,
             job_id=job_id,
         )
