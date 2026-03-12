@@ -81,6 +81,15 @@ class ProjectSourceAudioUploadRequest(BaseModel):
     audio_b64: str = Field(min_length=32)
 
 
+class ProjectUiSettings(BaseModel):
+    selected_audio_hash: str | None = None
+    output_format: OutputFormat = OutputFormat.MP3
+    enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
+    reduce_silence_enabled: bool = False
+    max_silence_seconds: float = Field(default=1.0, ge=0.0, le=4.0)
+    remove_filler_words: bool = False
+
+
 class OutputMetadata(BaseModel):
     output_file: Path
     input_file: Path

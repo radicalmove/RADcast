@@ -75,6 +75,8 @@ const state = {
   activeProjectLabel: null,
   selectedAudioFile: null,
   selectedAudioHash: null,
+  projectSettings: null,
+  projectSettingsSaveTimer: null,
   sourceAudioSamples: [],
   activeJobId: null,
   pollTimer: null,
@@ -122,6 +124,139 @@ function escapeHtml(value) {
 function cleanOptional(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length ? trimmed : null;
+}
+
+function clampSilenceSeconds(value) {
+  const numeric = Number(value ?? 1);
+  if (!Number.isFinite(numeric)) return 1;
+  return Math.max(0, Math.min(4, numeric));
+}
+
+function defaultProjectSettings() {
+  return {
+    selected_audio_hash: null,
+    output_format: "mp3",
+    enhancement_model: "resemble",
+    reduce_silence_enabled: false,
+    max_silence_seconds: 1,
+    remove_filler_words: false,
+  };
+}
+
+function normalizeProjectSettings(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  const outputFormat = cleanOptional(data.output_format);
+  const enhancementModel = cleanOptional(data.enhancement_model);
+  const selectedAudioHash = cleanOptional(data.selected_audio_hash);
+
+  return {
+    selected_audio_hash: selectedAudioHash && selectedAudioHash.length >= 16 ? selectedAudioHash : null,
+    output_format: outputFormat === "wav" ? "wav" : "mp3",
+    enhancement_model: enhancementModel || "resemble",
+    reduce_silence_enabled: Boolean(data.reduce_silence_enabled),
+    max_silence_seconds: clampSilenceSeconds(data.max_silence_seconds),
+    remove_filler_words: Boolean(data.remove_filler_words),
+  };
+}
+
+function applyProjectSettingsToControls(settings) {
+  const normalized = normalizeProjectSettings(settings);
+  state.projectSettings = normalized;
+
+  if (outputFormatNode) {
+    outputFormatNode.value = normalized.output_format;
+  }
+  if (enhancementModelNode) {
+    const desiredOption = Array.from(enhancementModelNode.options).find((option) => {
+      return option.value === normalized.enhancement_model && !option.disabled;
+    });
+    if (desiredOption) {
+      enhancementModelNode.value = desiredOption.value;
+    }
+  }
+  if (reduceSilenceEnabledNode) {
+    reduceSilenceEnabledNode.checked = normalized.reduce_silence_enabled;
+  }
+  if (reduceSilenceSecondsNode) {
+    reduceSilenceSecondsNode.value = String(normalized.max_silence_seconds);
+  }
+  if (removeFillerWordsNode) {
+    removeFillerWordsNode.checked = normalized.remove_filler_words;
+  }
+
+  updateEnhancementModelStatusFromSelection();
+  updateSpeechCleanupControls();
+  updateSpeechCleanupStatusFromSelection();
+}
+
+function resetProjectSettingsControls() {
+  applyProjectSettingsToControls(defaultProjectSettings());
+}
+
+function currentProjectSettingsPayload() {
+  return normalizeProjectSettings({
+    selected_audio_hash: state.selectedAudioHash,
+    output_format: cleanOptional(outputFormatNode?.value) || "mp3",
+    enhancement_model: selectedEnhancementModelId(),
+    reduce_silence_enabled: Boolean(reduceSilenceEnabledNode?.checked),
+    max_silence_seconds: reduceSilenceSecondsNode?.value ?? 1,
+    remove_filler_words: Boolean(removeFillerWordsNode?.checked),
+  });
+}
+
+function clearProjectSettingsSaveTimer() {
+  if (state.projectSettingsSaveTimer) {
+    clearTimeout(state.projectSettingsSaveTimer);
+    state.projectSettingsSaveTimer = null;
+  }
+}
+
+async function saveProjectSettings(projectRef, settings) {
+  if (!projectRef) return;
+  const normalized = normalizeProjectSettings(settings);
+  try {
+    const data = await requestJSON(`/projects/${encodeURIComponent(projectRef)}/settings`, "PUT", normalized);
+    if (state.activeProjectRef === projectRef) {
+      state.projectSettings = normalizeProjectSettings(data?.settings);
+    }
+  } catch (err) {
+    console.warn("Could not save project settings", err);
+  }
+}
+
+function queueProjectSettingsSave() {
+  const projectRef = state.activeProjectRef;
+  if (!projectRef) return;
+
+  const settings = currentProjectSettingsPayload();
+  state.projectSettings = settings;
+  clearProjectSettingsSaveTimer();
+  state.projectSettingsSaveTimer = setTimeout(() => {
+    state.projectSettingsSaveTimer = null;
+    void saveProjectSettings(projectRef, settings);
+  }, 250);
+}
+
+async function loadProjectSettings(projectRef) {
+  if (!projectRef) return defaultProjectSettings();
+  try {
+    const data = await requestJSON(`/projects/${encodeURIComponent(projectRef)}/settings`, "GET");
+    return normalizeProjectSettings(data?.settings);
+  } catch (err) {
+    console.warn("Could not load project settings", err);
+    return defaultProjectSettings();
+  }
+}
+
+async function restoreProjectSettings(projectRef) {
+  resetProjectSettingsControls();
+  const settings = await loadProjectSettings(projectRef);
+  if (state.activeProjectRef !== projectRef) return;
+
+  applyProjectSettingsToControls(settings);
+  await loadSourceAudioSamples(settings.selected_audio_hash);
+  if (state.activeProjectRef !== projectRef) return;
+  state.projectSettings = currentProjectSettingsPayload();
 }
 
 function setGatewayStatus(message, isError = false) {
@@ -365,6 +500,15 @@ async function loadEnhancementModels() {
       const firstEnabled = Array.from(enhancementModelNode.options).find((option) => !option.disabled);
       if (firstEnabled) enhancementModelNode.value = firstEnabled.value;
     }
+    if (state.projectSettings) {
+      const desiredModel = normalizeProjectSettings(state.projectSettings).enhancement_model;
+      const desiredOption = Array.from(enhancementModelNode.options).find((option) => {
+        return option.value === desiredModel && !option.disabled;
+      });
+      if (desiredOption) {
+        enhancementModelNode.value = desiredOption.value;
+      }
+    }
     updateEnhancementModelStatusFromSelection();
     updateSpeechCleanupControls();
     updateSpeechCleanupStatusFromSelection();
@@ -440,6 +584,7 @@ function resetAudioSelection() {
 }
 
 function markWorkspaceReady(projectRef, projectLabel) {
+  clearProjectSettingsSaveTimer();
   state.activeProjectRef = projectRef;
   state.activeProjectLabel = projectLabel;
 
@@ -452,18 +597,21 @@ function markWorkspaceReady(projectRef, projectLabel) {
   if (activeProjectLabelNode) activeProjectLabelNode.textContent = projectLabel;
 
   resetAudioSelection();
+  resetProjectSettingsControls();
   setGenerateStatus("Upload an audio file, then click Enhance audio.");
   refreshProjectAccessInfo();
-  void loadSourceAudioSamples();
+  void restoreProjectSettings(projectRef);
   loadOutputs();
   void fetchWorkerStatus();
   startWorkerStatusPolling();
 }
 
 function showProjectGateway() {
+  clearProjectSettingsSaveTimer();
   state.activeProjectRef = null;
   state.activeProjectLabel = null;
   state.canManageActiveProject = false;
+  state.projectSettings = defaultProjectSettings();
 
   if (workspaceNode) workspaceNode.classList.add("workspace-hidden");
   if (projectGatewayNode) projectGatewayNode.hidden = false;
@@ -698,7 +846,10 @@ async function saveSelectedAudioFile(file) {
   };
   const data = await requestJSON(`/projects/${encodeURIComponent(projectId)}/source-audio`, "POST", payload);
   const audioHash = String(data.audio_hash || "");
+  state.selectedAudioFile = null;
+  state.selectedAudioHash = audioHash || null;
   await loadSourceAudioSamples(audioHash);
+  queueProjectSettingsSave();
   return audioHash || null;
 }
 
@@ -1543,39 +1694,50 @@ async function init() {
           if (audioFileNameNode) audioFileNameNode.textContent = "No file selected.";
         }
         setSavedSourceAudioStatus("Uploaded audio files are saved to this project for reuse.");
+        queueProjectSettingsSave();
         return;
       }
       applySavedSourceAudioSelection(audioHash);
+      queueProjectSettingsSave();
     });
   }
 
   if (generateBtn) generateBtn.addEventListener("click", () => void handleGenerate());
   if (cancelBtn) cancelBtn.addEventListener("click", () => void handleCancel());
+  if (outputFormatNode) {
+    outputFormatNode.addEventListener("change", () => {
+      queueProjectSettingsSave();
+    });
+  }
   if (enhancementModelNode) {
     enhancementModelNode.addEventListener("change", () => {
       updateEnhancementModelStatusFromSelection();
+      queueProjectSettingsSave();
     });
   }
   if (reduceSilenceEnabledNode) {
     reduceSilenceEnabledNode.addEventListener("change", () => {
       updateSpeechCleanupControls();
       updateSpeechCleanupStatusFromSelection();
+      queueProjectSettingsSave();
     });
   }
   if (reduceSilenceSecondsNode) {
     reduceSilenceSecondsNode.addEventListener("input", () => {
       updateSpeechCleanupControls();
       updateSpeechCleanupStatusFromSelection();
+      queueProjectSettingsSave();
     });
   }
   if (removeFillerWordsNode) {
     removeFillerWordsNode.addEventListener("change", () => {
       updateSpeechCleanupStatusFromSelection();
+      queueProjectSettingsSave();
     });
   }
   bindOutputActions();
-  updateSpeechCleanupControls();
-  updateSpeechCleanupStatusFromSelection();
+  state.projectSettings = defaultProjectSettings();
+  resetProjectSettingsControls();
 
   void fetchWorkerStatus();
   void loadEnhancementModels();

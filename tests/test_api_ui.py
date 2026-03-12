@@ -183,6 +183,70 @@ def test_source_audio_upload_list_and_enhance_by_hash(monkeypatch):
             shutil.rmtree(project_root)
 
 
+def test_project_settings_roundtrip_persists_last_used_options():
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    project_root = Path("projects") / project_id
+    sample_b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw"
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        default_settings = client.get(f"/projects/{project_id}/settings")
+        assert default_settings.status_code == 200
+        assert default_settings.json()["settings"] == {
+            "selected_audio_hash": None,
+            "output_format": "mp3",
+            "enhancement_model": "resemble",
+            "reduce_silence_enabled": False,
+            "max_silence_seconds": 1.0,
+            "remove_filler_words": False,
+        }
+
+        uploaded = client.post(
+            f"/projects/{project_id}/source-audio",
+            json={"filename": "lecture.wav", "audio_b64": sample_b64},
+        )
+        assert uploaded.status_code == 200
+        audio_hash = uploaded.json()["audio_hash"]
+
+        updated = client.put(
+            f"/projects/{project_id}/settings",
+            json={
+                "selected_audio_hash": audio_hash,
+                "output_format": "wav",
+                "enhancement_model": "deepfilternet",
+                "reduce_silence_enabled": True,
+                "max_silence_seconds": 2.25,
+                "remove_filler_words": True,
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["settings"] == {
+            "selected_audio_hash": audio_hash,
+            "output_format": "wav",
+            "enhancement_model": "deepfilternet",
+            "reduce_silence_enabled": True,
+            "max_silence_seconds": 2.25,
+            "remove_filler_words": True,
+        }
+
+        loaded = client.get(f"/projects/{project_id}/settings")
+        assert loaded.status_code == 200
+        assert loaded.json()["settings"] == updated.json()["settings"]
+
+        manifest_text = (project_root / "manifests" / "project.json").read_text(encoding="utf-8")
+        assert '"ui_settings"' in manifest_text
+        assert audio_hash in manifest_text
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_project_outputs_endpoint_includes_output_card_metadata():
     client = TestClient(app)
     project_id = f"radcast-{uuid.uuid4().hex[:8]}"

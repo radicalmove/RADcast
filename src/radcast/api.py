@@ -29,6 +29,7 @@ from radcast.models import (
     ProjectAccessRevokeRequest,
     ProjectCreateRequest,
     ProjectSourceAudioUploadRequest,
+    ProjectUiSettings,
     SimpleEnhanceRequest,
     WorkerEnhanceEnqueueRequest,
     WorkerInviteRequest,
@@ -233,6 +234,54 @@ def _project_last_activity_at(scoped_project_id: str) -> datetime:
     if not timestamps:
         return datetime.fromtimestamp(0, tz=timezone.utc)
     return max(timestamps)
+
+
+def _coerce_project_settings(payload: object) -> ProjectUiSettings:
+    data = payload if isinstance(payload, dict) else {}
+
+    selected_audio_hash = str(data.get("selected_audio_hash") or "").strip() or None
+    if selected_audio_hash and len(selected_audio_hash) < 16:
+        selected_audio_hash = None
+
+    output_format_raw = str(data.get("output_format") or OutputFormat.MP3.value).strip().lower()
+    try:
+        output_format = OutputFormat(output_format_raw)
+    except ValueError:
+        output_format = OutputFormat.MP3
+
+    enhancement_model_raw = str(data.get("enhancement_model") or EnhancementModel.RESEMBLE.value).strip().lower()
+    try:
+        enhancement_model = EnhancementModel(enhancement_model_raw)
+    except ValueError:
+        enhancement_model = EnhancementModel.RESEMBLE
+
+    try:
+        max_silence_seconds = float(data.get("max_silence_seconds", 1.0))
+    except (TypeError, ValueError):
+        max_silence_seconds = 1.0
+    max_silence_seconds = max(0.0, min(4.0, max_silence_seconds))
+
+    return ProjectUiSettings(
+        selected_audio_hash=selected_audio_hash,
+        output_format=output_format,
+        enhancement_model=enhancement_model,
+        reduce_silence_enabled=bool(data.get("reduce_silence_enabled", False)),
+        max_silence_seconds=max_silence_seconds,
+        remove_filler_words=bool(data.get("remove_filler_words", False)),
+    )
+
+
+def _load_project_settings(scoped_project_id: str) -> ProjectUiSettings:
+    metadata = project_manager.load_project_metadata(scoped_project_id)
+    return _coerce_project_settings(metadata.get("ui_settings"))
+
+
+def _write_project_settings(scoped_project_id: str, settings: ProjectUiSettings) -> ProjectUiSettings:
+    project_manager.update_project_metadata(
+        scoped_project_id,
+        {"ui_settings": settings.model_dump(mode="json")},
+    )
+    return settings
 
 
 def _inferred_owner_key_from_project_id(scoped_project_id: str) -> str:
@@ -982,6 +1031,32 @@ def list_source_audio(request: Request, project_id: str):
     return {
         "project_id": _display_project_id(scoped_project_id),
         "samples": _list_source_audio_entries(request, scoped_project_id=scoped_project_id),
+    }
+
+
+@app.get("/projects/{project_id}/settings")
+def get_project_settings(request: Request, project_id: str):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    project_manager.ensure_project(scoped_project_id)
+    settings = _load_project_settings(scoped_project_id)
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "project_ref": scoped_project_id,
+        "settings": settings.model_dump(mode="json"),
+    }
+
+
+@app.put("/projects/{project_id}/settings")
+def update_project_settings(request: Request, project_id: str, req: ProjectUiSettings):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    project_manager.ensure_project(scoped_project_id)
+    settings = _write_project_settings(scoped_project_id, req)
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "project_ref": scoped_project_id,
+        "settings": settings.model_dump(mode="json"),
     }
 
 

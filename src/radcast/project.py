@@ -87,6 +87,32 @@ class ProjectManager:
             )
         return paths
 
+    def project_metadata_path(self, project_id: str) -> Path:
+        return self.get_paths(project_id).manifests / "project.json"
+
+    def load_project_metadata(self, project_id: str) -> dict[str, object]:
+        metadata_path = self.project_metadata_path(project_id)
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.setdefault("project_id", project_id)
+        return payload
+
+    def write_project_metadata(self, project_id: str, metadata: dict[str, object]) -> None:
+        metadata_path = self.project_metadata_path(project_id)
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_json(metadata_path, metadata)
+
+    def update_project_metadata(self, project_id: str, updates: dict[str, object]) -> dict[str, object]:
+        metadata = self.load_project_metadata(project_id)
+        metadata.update(updates)
+        metadata["updated_at"] = now_utc_iso()
+        self.write_project_metadata(project_id, metadata)
+        return metadata
+
     @staticmethod
     def _write_json(path: Path, data: object) -> None:
         path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")

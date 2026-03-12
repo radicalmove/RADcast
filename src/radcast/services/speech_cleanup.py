@@ -36,10 +36,13 @@ _FILLER_WORDS = {
 _MIN_COMPACTABLE_GAP_SECONDS = 0.35
 _FILLER_MIN_DURATION_SECONDS = 0.08
 _FILLER_MAX_DURATION_SECONDS = 1.35
-_FILLER_MIN_PROBABILITY = 0.32
+_FILLER_MIN_PROBABILITY = 0.24
 _FILLER_MIN_CONTEXT_GAP_SECONDS = 0.13
 _FILLER_MIN_STRONG_SIDE_GAP_SECONDS = 0.05
 _FILLER_SINGLE_SIDE_GAP_SECONDS = 0.14
+_FILLER_TWO_SIDED_CONTEXT_GAP_SECONDS = 0.09
+_FILLER_TWO_SIDED_MIN_GAP_SECONDS = 0.035
+_FILLER_RUN_MAX_INTERNAL_GAP_SECONDS = 0.18
 _CUT_CROSSFADE_SECONDS = 0.012
 _TRANSCRIBE_PROGRESS_MIN_INTERVAL_SECONDS = 0.8
 _TOKEN_RE = re.compile(r"[^a-z']+")
@@ -298,29 +301,39 @@ class SpeechCleanupService:
 
         intervals: list[tuple[float, float]] = []
         count = 0
-        for idx, word in enumerate(words):
+        idx = 0
+        while idx < len(words):
+            word = words[idx]
             normalized = _normalize_token(word.text)
             if not _is_filler_token(normalized):
+                idx += 1
                 continue
 
-            duration = max(0.0, word.end - word.start)
+            run_words, next_idx = _collect_filler_run(words, idx)
+            run_start = run_words[0].start
+            run_end = run_words[-1].end
+            duration = max(0.0, run_end - run_start)
             if duration < _FILLER_MIN_DURATION_SECONDS or duration > _FILLER_MAX_DURATION_SECONDS:
+                idx = next_idx
                 continue
-            if word.probability is not None and word.probability < _FILLER_MIN_PROBABILITY:
+            if not _filler_run_confident_enough(run_words):
+                idx = next_idx
                 continue
 
             prev_end = words[idx - 1].end if idx > 0 else 0.0
-            next_start = words[idx + 1].start if idx + 1 < len(words) else word.end
-            gap_before = max(0.0, word.start - prev_end)
-            gap_after = max(0.0, next_start - word.end)
+            next_start = words[next_idx].start if next_idx < len(words) else run_end
+            gap_before = max(0.0, run_start - prev_end)
+            gap_after = max(0.0, next_start - run_end)
 
             if not _filler_has_enough_context(gap_before, gap_after):
+                idx = next_idx
                 continue
 
-            lead_pad = min(0.025, gap_before * 0.45)
-            tail_pad = min(0.05, gap_after * 0.45)
-            intervals.append((max(0.0, word.start - lead_pad), max(word.start, word.end + tail_pad)))
-            count += 1
+            lead_pad = min(0.03, gap_before * 0.5)
+            tail_pad = min(0.06, gap_after * 0.5)
+            intervals.append((max(0.0, run_start - lead_pad), max(run_start, run_end + tail_pad)))
+            count += len(run_words)
+            idx = next_idx
         return intervals, count
 
     def _silence_intervals(
@@ -424,7 +437,36 @@ def _filler_has_enough_context(gap_before: float, gap_after: float) -> bool:
     strongest_gap = max(gap_before, gap_after)
     if total_gap >= _FILLER_MIN_CONTEXT_GAP_SECONDS and strongest_gap >= _FILLER_MIN_STRONG_SIDE_GAP_SECONDS:
         return True
+    if (
+        total_gap >= _FILLER_TWO_SIDED_CONTEXT_GAP_SECONDS
+        and gap_before >= _FILLER_TWO_SIDED_MIN_GAP_SECONDS
+        and gap_after >= _FILLER_TWO_SIDED_MIN_GAP_SECONDS
+    ):
+        return True
     return strongest_gap >= _FILLER_SINGLE_SIDE_GAP_SECONDS
+
+
+def _collect_filler_run(words: list[TranscriptWordTiming], start_idx: int) -> tuple[list[TranscriptWordTiming], int]:
+    run_words = [words[start_idx]]
+    next_idx = start_idx + 1
+    while next_idx < len(words):
+        next_word = words[next_idx]
+        normalized = _normalize_token(next_word.text)
+        if not _is_filler_token(normalized):
+            break
+        if max(0.0, next_word.start - run_words[-1].end) > _FILLER_RUN_MAX_INTERNAL_GAP_SECONDS:
+            break
+        run_words.append(next_word)
+        next_idx += 1
+    return run_words, next_idx
+
+
+def _filler_run_confident_enough(words: list[TranscriptWordTiming]) -> bool:
+    probabilities = [float(word.probability) for word in words if word.probability is not None]
+    if not probabilities:
+        return True
+    average_probability = sum(probabilities) / len(probabilities)
+    return average_probability >= _FILLER_MIN_PROBABILITY
 
 
 def _remaining_cleanup_eta(started_at: float, cleanup_eta_seconds: int, *, floor_seconds: int) -> int:
