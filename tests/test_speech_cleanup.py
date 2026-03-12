@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -268,7 +269,7 @@ def test_cleanup_audio_file_aggressive_mode_removes_more_low_confidence_fillers(
         lambda _path, **kwargs: (
             [
                 TranscriptWordTiming(text="well", start=0.0, end=0.28, probability=0.94),
-                TranscriptWordTiming(text="ah", start=0.315, end=0.425, probability=0.19),
+                TranscriptWordTiming(text="ah", start=0.315, end=0.425, probability=0.01),
                 TranscriptWordTiming(text="right", start=0.465, end=0.745, probability=0.91),
             ],
             [],
@@ -297,6 +298,59 @@ def test_cleanup_audio_file_aggressive_mode_removes_more_low_confidence_fillers(
     assert aggressive_result.applied is True
     assert aggressive_result.removed_filler_count == 1
     assert aggressive_result.duration_seconds < original_duration
+
+
+def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 7.2), dtype=np.float32)
+    audio_path = tmp_path / "analysis.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    calls: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(service, "_load_model", lambda: object())
+
+    def fake_transcribe_file(_model, clip_path: Path, *, preserve_fillers: bool):
+        calls.append((clip_path.name, preserve_fillers))
+        if clip_path.name == "window_000000.wav":
+            return [
+                SimpleNamespace(
+                    start=1.2,
+                    end=1.45,
+                    text="um",
+                    words=[SimpleNamespace(start=1.2, end=1.45, word="um", probability=0.02)],
+                )
+            ]
+        if clip_path.name == "window_003000.wav":
+            return [
+                SimpleNamespace(
+                    start=1.1,
+                    end=1.34,
+                    text="uh",
+                    words=[SimpleNamespace(start=1.1, end=1.34, word="uh", probability=0.01)],
+                )
+            ]
+        return []
+
+    monkeypatch.setattr(service, "_transcribe_file", fake_transcribe_file)
+
+    words, _segments = service._transcribe_timeline(
+        audio_path,
+        total_duration=7.2,
+        started_at=0.0,
+        cleanup_eta_seconds=30,
+        on_stage=None,
+        remove_filler_words=True,
+        filler_removal_mode=FillerRemovalMode.AGGRESSIVE,
+    )
+
+    assert ("window_000000.wav", True) in calls
+    assert ("window_003000.wav", True) in calls
+    assert all(preserve_fillers for _, preserve_fillers in calls)
+    assert [word.text for word in words] == ["um", "uh"]
+    assert words[0].start == 1.2
+    assert words[1].start == 4.1
 
 
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):

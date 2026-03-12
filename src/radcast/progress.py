@@ -14,8 +14,8 @@ def estimate_speech_cleanup_seconds(
     safe_duration = max(1.0, float(duration_seconds or 1.0))
     if remove_filler_words:
         if filler_removal_mode == FillerRemovalMode.AGGRESSIVE:
-            base_seconds = 14.0
-            per_second = 0.42
+            base_seconds = 18.0
+            per_second = 0.55
         else:
             base_seconds = 11.0
             per_second = 0.32

@@ -39,6 +39,11 @@ _FILLER_MAX_DURATION_SECONDS = 1.35
 _CUT_CROSSFADE_SECONDS = 0.012
 _TRANSCRIBE_PROGRESS_MIN_INTERVAL_SECONDS = 0.8
 _TOKEN_RE = re.compile(r"[^a-z']+")
+_AGGRESSIVE_TRANSCRIBE_WINDOW_SECONDS = 4.0
+_AGGRESSIVE_TRANSCRIBE_OVERLAP_SECONDS = 1.0
+_AGGRESSIVE_FILLER_PROMPT = (
+    "Transcribe all spoken disfluencies exactly, including um, ums, uh, uhh, ah, ahh, erm, mm, and hesitation sounds."
+)
 
 
 @dataclass(frozen=True)
@@ -88,6 +93,7 @@ class FillerRemovalHeuristics:
     tail_pad_cap_seconds: float
     lead_pad_ratio: float = 0.5
     tail_pad_ratio: float = 0.5
+    always_accept_explicit_fillers: bool = False
 
 
 _NORMAL_FILLER_HEURISTICS = FillerRemovalHeuristics(
@@ -104,7 +110,7 @@ _NORMAL_FILLER_HEURISTICS = FillerRemovalHeuristics(
 )
 
 _AGGRESSIVE_FILLER_HEURISTICS = FillerRemovalHeuristics(
-    min_probability=0.16,
+    min_probability=0.08,
     min_context_gap_seconds=0.11,
     min_strong_side_gap_seconds=0.04,
     single_side_gap_seconds=0.1,
@@ -116,12 +122,13 @@ _AGGRESSIVE_FILLER_HEURISTICS = FillerRemovalHeuristics(
     tail_pad_cap_seconds=0.07,
     lead_pad_ratio=0.55,
     tail_pad_ratio=0.55,
+    always_accept_explicit_fillers=True,
 )
 
 
 class SpeechCleanupService:
     def __init__(self) -> None:
-        self.model_size = os.environ.get("RADCAST_SPEECH_CLEANUP_MODEL", "small.en").strip() or "small.en"
+        self.model_size = os.environ.get("RADCAST_SPEECH_CLEANUP_MODEL", "small").strip() or "small"
         self.device = os.environ.get("RADCAST_SPEECH_CLEANUP_DEVICE", "auto").strip() or "auto"
         self.compute_type = os.environ.get("RADCAST_SPEECH_CLEANUP_COMPUTE_TYPE", "int8").strip() or "int8"
         self.beam_size = max(1, int(os.environ.get("RADCAST_SPEECH_CLEANUP_BEAM_SIZE", "3")))
@@ -148,8 +155,8 @@ class SpeechCleanupService:
         normalized_mode = _normalize_filler_mode(filler_removal_mode)
         if remove_filler_words:
             if normalized_mode == FillerRemovalMode.AGGRESSIVE:
-                base_seconds = 14.0
-                per_second = 0.42
+                base_seconds = 18.0
+                per_second = 0.55
             else:
                 base_seconds = 11.0
                 per_second = 0.32
@@ -209,6 +216,8 @@ class SpeechCleanupService:
                 started_at=cleanup_started_at,
                 cleanup_eta_seconds=cleanup_eta_seconds,
                 on_stage=on_stage,
+                remove_filler_words=remove_filler_words,
+                filler_removal_mode=filler_removal_mode,
             )
 
             if cancel_check and cancel_check():
@@ -291,6 +300,18 @@ class SpeechCleanupService:
             self._model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
         return self._model
 
+    def _transcribe_file(self, model, audio_path: Path, *, preserve_fillers: bool) -> list[object]:
+        kwargs = {
+            "beam_size": self.beam_size,
+            "word_timestamps": True,
+            "vad_filter": not preserve_fillers,
+            "condition_on_previous_text": False,
+        }
+        if preserve_fillers:
+            kwargs["initial_prompt"] = _AGGRESSIVE_FILLER_PROMPT
+        segment_iter, _info = model.transcribe(str(audio_path), **kwargs)
+        return list(segment_iter)
+
     def _transcribe_timeline(
         self,
         audio_path: Path,
@@ -299,20 +320,26 @@ class SpeechCleanupService:
         started_at: float,
         cleanup_eta_seconds: int,
         on_stage: CleanupStageCallback | None,
+        remove_filler_words: bool,
+        filler_removal_mode: FillerRemovalMode,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
+        normalized_mode = _normalize_filler_mode(filler_removal_mode)
+        if remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE:
+            return self._transcribe_windowed_timeline(
+                audio_path,
+                total_duration=total_duration,
+                started_at=started_at,
+                cleanup_eta_seconds=cleanup_eta_seconds,
+                on_stage=on_stage,
+            )
+
         model = self._load_model()
-        segment_iter, _info = model.transcribe(
-            str(audio_path),
-            beam_size=self.beam_size,
-            word_timestamps=True,
-            vad_filter=True,
-            condition_on_previous_text=False,
-        )
+        transcribed_segments = self._transcribe_file(model, audio_path, preserve_fillers=False)
 
         words: list[TranscriptWordTiming] = []
         segments: list[TranscriptSegmentTiming] = []
         last_progress_emit_at = 0.0
-        for seg in segment_iter:
+        for seg in transcribed_segments:
             start = max(0.0, float(seg.start))
             end = max(start, float(seg.end))
             text = str(seg.text or "").strip()
@@ -348,6 +375,72 @@ class SpeechCleanupService:
                     )
                     last_progress_emit_at = now
         return words, segments
+
+    def _transcribe_windowed_timeline(
+        self,
+        audio_path: Path,
+        *,
+        total_duration: float,
+        started_at: float,
+        cleanup_eta_seconds: int,
+        on_stage: CleanupStageCallback | None,
+    ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
+        model = self._load_model()
+        waveform, sample_rate = _read_pcm16_wav(audio_path)
+        total_duration = max(0.0, float(total_duration))
+        if total_duration <= 0.0:
+            return [], []
+
+        window_seconds = min(max(_AGGRESSIVE_TRANSCRIBE_WINDOW_SECONDS, 1.0), total_duration)
+        overlap_seconds = min(_AGGRESSIVE_TRANSCRIBE_OVERLAP_SECONDS, max(0.0, window_seconds / 2.0))
+        step_seconds = max(0.5, window_seconds - overlap_seconds)
+        words: list[TranscriptWordTiming] = []
+        segments: list[TranscriptSegmentTiming] = []
+
+        with tempfile.TemporaryDirectory(prefix="radcast_cleanup_transcribe_") as tmp:
+            tmp_path = Path(tmp)
+            window_start = 0.0
+            window_index = 0
+            while True:
+                window_end = min(total_duration, window_start + window_seconds)
+                start_idx = max(0, min(len(waveform), int(round(window_start * sample_rate))))
+                end_idx = max(start_idx, min(len(waveform), int(round(window_end * sample_rate))))
+                window_path = tmp_path / f"window_{int(round(window_start * 1000)):06d}.wav"
+                _write_pcm16_wav(window_path, waveform[start_idx:end_idx], sample_rate=sample_rate)
+                transcribed_segments = self._transcribe_file(model, window_path, preserve_fillers=True)
+
+                left_guard_seconds = 0.0 if window_index == 0 else overlap_seconds / 2.0
+                right_guard_seconds = 0.0 if window_end >= total_duration - 1e-6 else overlap_seconds / 2.0
+                keep_start_seconds = left_guard_seconds
+                keep_end_seconds = max(keep_start_seconds, (window_end - window_start) - right_guard_seconds)
+                window_words, window_segments = _collect_timing_rows(
+                    transcribed_segments,
+                    window_offset_seconds=window_start,
+                    keep_start_seconds=keep_start_seconds,
+                    keep_end_seconds=keep_end_seconds,
+                )
+                words.extend(window_words)
+                segments.extend(window_segments)
+
+                if on_stage:
+                    coverage = min(1.0, window_end / max(total_duration, 0.01))
+                    progress = min(0.68, 0.08 + (coverage * 0.6))
+                    on_stage(
+                        progress,
+                        "Transcribing speech timing for cleanup.",
+                        _transcription_eta_seconds(
+                            elapsed_seconds=max(0.0, time.monotonic() - started_at),
+                            cleanup_eta_seconds=cleanup_eta_seconds,
+                            coverage=coverage,
+                        ),
+                    )
+
+                if window_end >= total_duration - 1e-6:
+                    break
+                window_start = min(total_duration, window_start + step_seconds)
+                window_index += 1
+
+        return _dedupe_transcript_words(words), _dedupe_transcript_segments(segments)
 
     def _filler_intervals(
         self,
@@ -544,6 +637,8 @@ def _collect_filler_run(
 
 
 def _filler_run_confident_enough(words: list[TranscriptWordTiming], *, heuristics: FillerRemovalHeuristics) -> bool:
+    if heuristics.always_accept_explicit_fillers and all(_is_filler_token(_normalize_token(word.text)) for word in words):
+        return True
     probabilities = [float(word.probability) for word in words if word.probability is not None]
     if not probabilities:
         return True
@@ -566,6 +661,82 @@ def _transcription_eta_seconds(*, elapsed_seconds: float, cleanup_eta_seconds: i
     else:
         remaining = float(cleanup_eta_seconds) - safe_elapsed
     return max(2, int(round(max(1.0, remaining))))
+
+
+def _collect_timing_rows(
+    transcribed_segments: list[object],
+    *,
+    window_offset_seconds: float,
+    keep_start_seconds: float,
+    keep_end_seconds: float,
+) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
+    words: list[TranscriptWordTiming] = []
+    segments: list[TranscriptSegmentTiming] = []
+    for seg in transcribed_segments:
+        seg_start = max(0.0, float(seg.start))
+        seg_end = max(seg_start, float(seg.end))
+        if seg_end <= keep_start_seconds or seg_start >= keep_end_seconds:
+            continue
+        text = str(seg.text or "").strip()
+        segments.append(
+            TranscriptSegmentTiming(
+                text=text,
+                start=window_offset_seconds + max(seg_start, keep_start_seconds),
+                end=window_offset_seconds + min(seg_end, keep_end_seconds),
+            )
+        )
+        for word in seg.words or []:
+            word_start = max(0.0, float(word.start))
+            word_end = max(word_start, float(word.end))
+            if word_end <= keep_start_seconds or word_start >= keep_end_seconds:
+                continue
+            words.append(
+                TranscriptWordTiming(
+                    text=str(word.word or "").strip(),
+                    start=window_offset_seconds + max(word_start, keep_start_seconds),
+                    end=window_offset_seconds + min(word_end, keep_end_seconds),
+                    probability=float(word.probability) if word.probability is not None else None,
+                )
+            )
+    return words, segments
+
+
+def _dedupe_transcript_words(words: list[TranscriptWordTiming]) -> list[TranscriptWordTiming]:
+    if not words:
+        return []
+    deduped: list[TranscriptWordTiming] = []
+    for word in sorted(words, key=lambda item: (item.start, item.end, item.text.lower())):
+        if not deduped:
+            deduped.append(word)
+            continue
+        prev = deduped[-1]
+        same_token = _normalize_token(prev.text) == _normalize_token(word.text)
+        same_window = abs(prev.start - word.start) <= 0.08 and abs(prev.end - word.end) <= 0.12
+        if same_token and same_window:
+            prev_probability = prev.probability if prev.probability is not None else -1.0
+            word_probability = word.probability if word.probability is not None else -1.0
+            if word_probability > prev_probability:
+                deduped[-1] = word
+            continue
+        deduped.append(word)
+    return deduped
+
+
+def _dedupe_transcript_segments(segments: list[TranscriptSegmentTiming]) -> list[TranscriptSegmentTiming]:
+    if not segments:
+        return []
+    deduped: list[TranscriptSegmentTiming] = []
+    for segment in sorted(segments, key=lambda item: (item.start, item.end, item.text.lower())):
+        if not deduped:
+            deduped.append(segment)
+            continue
+        prev = deduped[-1]
+        same_text = prev.text.strip().lower() == segment.text.strip().lower()
+        same_window = abs(prev.start - segment.start) <= 0.08 and abs(prev.end - segment.end) <= 0.12
+        if same_text and same_window:
+            continue
+        deduped.append(segment)
+    return deduped
 
 
 def _merge_touching_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
