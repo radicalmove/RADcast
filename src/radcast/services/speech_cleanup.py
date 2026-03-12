@@ -36,13 +36,14 @@ _FILLER_WORDS = {
 _MIN_COMPACTABLE_GAP_SECONDS = 0.35
 _FILLER_MIN_DURATION_SECONDS = 0.08
 _FILLER_MAX_DURATION_SECONDS = 1.35
-_FILLER_MIN_PROBABILITY = 0.24
+_FILLER_MIN_PROBABILITY = 0.18
 _FILLER_MIN_CONTEXT_GAP_SECONDS = 0.13
 _FILLER_MIN_STRONG_SIDE_GAP_SECONDS = 0.05
-_FILLER_SINGLE_SIDE_GAP_SECONDS = 0.14
-_FILLER_TWO_SIDED_CONTEXT_GAP_SECONDS = 0.09
-_FILLER_TWO_SIDED_MIN_GAP_SECONDS = 0.035
-_FILLER_RUN_MAX_INTERNAL_GAP_SECONDS = 0.18
+_FILLER_SINGLE_SIDE_GAP_SECONDS = 0.12
+_FILLER_TWO_SIDED_CONTEXT_GAP_SECONDS = 0.07
+_FILLER_TWO_SIDED_MIN_GAP_SECONDS = 0.025
+_FILLER_RUN_MAX_INTERNAL_GAP_SECONDS = 0.24
+_FILLER_STRONG_PROBABILITY = 0.26
 _CUT_CROSSFADE_SECONDS = 0.012
 _TRANSCRIBE_PROGRESS_MIN_INTERVAL_SECONDS = 0.8
 _TOKEN_RE = re.compile(r"[^a-z']+")
@@ -466,7 +467,8 @@ def _filler_run_confident_enough(words: list[TranscriptWordTiming]) -> bool:
     if not probabilities:
         return True
     average_probability = sum(probabilities) / len(probabilities)
-    return average_probability >= _FILLER_MIN_PROBABILITY
+    strongest_probability = max(probabilities)
+    return average_probability >= _FILLER_MIN_PROBABILITY or strongest_probability >= _FILLER_STRONG_PROBABILITY
 
 
 def _remaining_cleanup_eta(started_at: float, cleanup_eta_seconds: int, *, floor_seconds: int) -> int:
