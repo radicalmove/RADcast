@@ -234,7 +234,7 @@ class WorkerClient:
                 )
                 stage_durations_seconds["total"] = round(time.monotonic() - started_at, 3)
                 emit_progress(
-                    0.84 if cleanup_requested else 0.97,
+                    0.72 if cleanup_requested else 0.97,
                     stage="finalize",
                     detail="Uploading enhanced audio for server-side speech cleanup" if cleanup_requested else "Saving enhanced audio",
                     eta_seconds=max(8, cleanup_eta_seconds or 8),

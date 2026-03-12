@@ -45,7 +45,7 @@ def test_cleanup_audio_file_shortens_long_speech_gap(monkeypatch, tmp_path: Path
     monkeypatch.setattr(
         service,
         "_transcribe_timeline",
-        lambda _path: (
+        lambda _path, **kwargs: (
             [
                 TranscriptWordTiming(text="hello", start=0.0, end=0.34, probability=0.95),
                 TranscriptWordTiming(text="world", start=1.55, end=1.9, probability=0.95),
@@ -89,7 +89,7 @@ def test_cleanup_audio_file_removes_isolated_filler_word(monkeypatch, tmp_path: 
     monkeypatch.setattr(
         service,
         "_transcribe_timeline",
-        lambda _path: (
+        lambda _path, **kwargs: (
             [
                 TranscriptWordTiming(text="hello", start=0.0, end=0.34, probability=0.93),
                 TranscriptWordTiming(text="um", start=0.50, end=0.73, probability=0.88),
@@ -134,7 +134,7 @@ def test_cleanup_audio_file_removes_elongated_filler_with_asymmetric_context(mon
     monkeypatch.setattr(
         service,
         "_transcribe_timeline",
-        lambda _path: (
+        lambda _path, **kwargs: (
             [
                 TranscriptWordTiming(text="right", start=0.0, end=0.29, probability=0.91),
                 TranscriptWordTiming(text="ummm", start=0.33, end=0.61, probability=0.36),

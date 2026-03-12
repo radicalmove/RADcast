@@ -7,6 +7,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import wave
 from dataclasses import dataclass
 from importlib.util import find_spec
@@ -40,6 +41,7 @@ _FILLER_MIN_CONTEXT_GAP_SECONDS = 0.13
 _FILLER_MIN_STRONG_SIDE_GAP_SECONDS = 0.05
 _FILLER_SINGLE_SIDE_GAP_SECONDS = 0.14
 _CUT_CROSSFADE_SECONDS = 0.012
+_TRANSCRIBE_PROGRESS_MIN_INTERVAL_SECONDS = 0.8
 _TOKEN_RE = re.compile(r"[^a-z']+")
 
 
@@ -126,11 +128,13 @@ class SpeechCleanupService:
             raise JobCancelledError("job cancelled")
 
         input_duration = probe_duration_seconds(audio_path)
+        cleanup_started_at = time.monotonic()
+        cleanup_eta_seconds = self.estimate_runtime_seconds(input_duration, remove_filler_words=remove_filler_words)
         if on_stage:
             on_stage(
-                0.965,
-                "Analyzing speech timing for pause cleanup.",
-                self.estimate_runtime_seconds(input_duration, remove_filler_words=remove_filler_words),
+                0.02,
+                "Transcribing speech timing for cleanup.",
+                cleanup_eta_seconds,
             )
 
         with tempfile.TemporaryDirectory(prefix="radcast_cleanup_") as tmp:
@@ -138,13 +142,25 @@ class SpeechCleanupService:
             analysis_wav = tmp_path / "analysis.wav"
             run_ffmpeg_convert(audio_path, analysis_wav)
 
-            words, segments = self._transcribe_timeline(analysis_wav)
+            words, segments = self._transcribe_timeline(
+                analysis_wav,
+                total_duration=input_duration,
+                started_at=cleanup_started_at,
+                cleanup_eta_seconds=cleanup_eta_seconds,
+                on_stage=on_stage,
+            )
 
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
 
             waveform, sample_rate = _read_pcm16_wav(analysis_wav)
             total_duration = waveform.shape[0] / float(sample_rate) if sample_rate else 0.0
+            if on_stage:
+                on_stage(
+                    0.74,
+                    "Reviewing speech gaps and filler words.",
+                    _remaining_cleanup_eta(cleanup_started_at, cleanup_eta_seconds, floor_seconds=4),
+                )
             filler_intervals, filler_count = self._filler_intervals(
                 words=words,
                 remove_filler_words=remove_filler_words,
@@ -169,9 +185,9 @@ class SpeechCleanupService:
 
             if on_stage:
                 on_stage(
-                    0.985,
+                    0.9,
                     self._rewrite_detail(silence_count=silence_count, filler_count=filler_count),
-                    4,
+                    _remaining_cleanup_eta(cleanup_started_at, cleanup_eta_seconds, floor_seconds=3),
                 )
 
             edited = _splice_waveform(waveform, sample_rate=sample_rate, removal_intervals=removal_intervals)
@@ -179,6 +195,12 @@ class SpeechCleanupService:
             _write_pcm16_wav(cleaned_wav, edited, sample_rate=sample_rate)
 
             final_tmp = tmp_path / f"final-output{audio_path.suffix.lower() or '.wav'}"
+            if on_stage:
+                on_stage(
+                    0.97,
+                    "Saving cleaned audio.",
+                    _remaining_cleanup_eta(cleanup_started_at, cleanup_eta_seconds, floor_seconds=2),
+                )
             if output_format == OutputFormat.WAV:
                 shutil.copy2(cleaned_wav, final_tmp)
             else:
@@ -210,6 +232,11 @@ class SpeechCleanupService:
     def _transcribe_timeline(
         self,
         audio_path: Path,
+        *,
+        total_duration: float,
+        started_at: float,
+        cleanup_eta_seconds: int,
+        on_stage: CleanupStageCallback | None,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         model = self._load_model()
         segment_iter, _info = model.transcribe(
@@ -222,6 +249,7 @@ class SpeechCleanupService:
 
         words: list[TranscriptWordTiming] = []
         segments: list[TranscriptSegmentTiming] = []
+        last_progress_emit_at = 0.0
         for seg in segment_iter:
             start = max(0.0, float(seg.start))
             end = max(start, float(seg.end))
@@ -238,6 +266,25 @@ class SpeechCleanupService:
                         probability=float(word.probability) if word.probability is not None else None,
                     )
                 )
+            if on_stage:
+                now = time.monotonic()
+                if (
+                    last_progress_emit_at == 0.0
+                    or now - last_progress_emit_at >= _TRANSCRIBE_PROGRESS_MIN_INTERVAL_SECONDS
+                    or (total_duration > 0 and end >= total_duration - 0.2)
+                ):
+                    coverage = min(1.0, end / max(total_duration, 0.01))
+                    progress = min(0.68, 0.08 + (coverage * 0.6))
+                    on_stage(
+                        progress,
+                        "Transcribing speech timing for cleanup.",
+                        _transcription_eta_seconds(
+                            elapsed_seconds=max(0.0, now - started_at),
+                            cleanup_eta_seconds=cleanup_eta_seconds,
+                            coverage=coverage,
+                        ),
+                    )
+                    last_progress_emit_at = now
         return words, segments
 
     def _filler_intervals(
@@ -331,7 +378,7 @@ class SpeechCleanupService:
             raw_intervals: list[tuple[float, float]] = []
             for word in words:
                 normalized = _normalize_token(word.text)
-                if treat_fillers_as_removed and normalized in _FILLER_WORDS:
+                if treat_fillers_as_removed and _is_filler_token(normalized):
                     continue
                 if word.end > word.start:
                     raw_intervals.append((word.start, word.end))
@@ -378,6 +425,22 @@ def _filler_has_enough_context(gap_before: float, gap_after: float) -> bool:
     if total_gap >= _FILLER_MIN_CONTEXT_GAP_SECONDS and strongest_gap >= _FILLER_MIN_STRONG_SIDE_GAP_SECONDS:
         return True
     return strongest_gap >= _FILLER_SINGLE_SIDE_GAP_SECONDS
+
+
+def _remaining_cleanup_eta(started_at: float, cleanup_eta_seconds: int, *, floor_seconds: int) -> int:
+    elapsed_seconds = max(0.0, time.monotonic() - started_at)
+    return max(int(floor_seconds), int(round(max(1.0, cleanup_eta_seconds - elapsed_seconds))))
+
+
+def _transcription_eta_seconds(*, elapsed_seconds: float, cleanup_eta_seconds: int, coverage: float) -> int:
+    safe_elapsed = max(0.0, float(elapsed_seconds))
+    safe_coverage = max(0.0, min(1.0, float(coverage)))
+    if safe_coverage >= 0.08:
+        projected_total = max(float(cleanup_eta_seconds), safe_elapsed / safe_coverage)
+        remaining = projected_total - safe_elapsed
+    else:
+        remaining = float(cleanup_eta_seconds) - safe_elapsed
+    return max(2, int(round(max(1.0, remaining))))
 
 
 def _merge_touching_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:

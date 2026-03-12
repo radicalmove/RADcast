@@ -365,9 +365,9 @@ class WorkerManager:
                     job_id=job_id,
                     status=JobStatus.RUNNING,
                     stage="cleanup",
-                    progress=0.84,
+                    progress=0.72,
                     eta_seconds=cleanup_eta_seconds,
-                    log="Applying speech cleanup on the RADcast server.",
+                    log="Helper enhancement is done. Applying speech cleanup on the RADcast server.",
                 )
                 threading.Thread(
                     target=self._finalize_worker_output,

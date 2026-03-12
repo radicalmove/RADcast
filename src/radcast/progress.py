@@ -16,11 +16,11 @@ def map_local_stage_progress(stage: str, progress: float, *, reserve_cleanup_ban
     if not reserve_cleanup_band:
         return clamped
     if normalized == "prepare":
-        return _remap(clamped, source_start=0.08, source_end=0.22, target_start=0.08, target_end=0.18)
+        return _remap(clamped, source_start=0.08, source_end=0.22, target_start=0.08, target_end=0.16)
     if normalized == "enhance":
-        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.18, target_end=0.76)
+        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.16, target_end=0.68)
     if normalized == "finalize":
-        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.78, target_end=0.82)
+        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.68, target_end=0.72)
     return clamped
 
 
@@ -36,17 +36,17 @@ def map_worker_stage_progress(stage: str, progress: float, *, reserve_cleanup_ba
             return min(0.96, max(0.9, clamped))
         return clamped
     if normalized == "prepare":
-        return _remap(clamped, source_start=0.08, source_end=0.22, target_start=0.14, target_end=0.2)
+        return _remap(clamped, source_start=0.08, source_end=0.22, target_start=0.14, target_end=0.18)
     if normalized == "enhance":
-        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.22, target_end=0.76)
+        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.18, target_end=0.68)
     if normalized == "finalize":
-        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.78, target_end=0.84)
+        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.68, target_end=0.72)
     return clamped
 
 
 def map_cleanup_stage_progress(progress: float) -> float:
     clamped = max(0.0, min(1.0, float(progress)))
-    return _remap(clamped, source_start=0.965, source_end=0.985, target_start=0.84, target_end=0.96)
+    return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.96)
 
 
 def extend_eta_with_cleanup(eta_seconds: int | None, cleanup_eta_seconds: int | None, *, reserve_cleanup_band: bool) -> int | None:

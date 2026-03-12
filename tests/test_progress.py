@@ -21,14 +21,14 @@ def test_worker_progress_reserves_band_when_cleanup_enabled():
     with_cleanup = map_worker_stage_progress("finalize", 0.96, reserve_cleanup_band=True)
 
     assert without_cleanup > with_cleanup
-    assert with_cleanup <= 0.84
+    assert with_cleanup <= 0.72
 
 
 def test_cleanup_stage_progress_maps_into_reserved_tail():
-    start = map_cleanup_stage_progress(0.965)
-    end = map_cleanup_stage_progress(0.985)
+    start = map_cleanup_stage_progress(0.0)
+    end = map_cleanup_stage_progress(1.0)
 
-    assert 0.84 <= start < end <= 0.96
+    assert 0.72 <= start < end <= 0.96
 
 
 def test_eta_extension_adds_cleanup_reserve():

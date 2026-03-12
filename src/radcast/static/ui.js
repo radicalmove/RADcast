@@ -897,7 +897,12 @@ function syncEtaFromJob(nextStage, nextEtaSeconds) {
   }
 
   const currentRemaining = currentEtaRemainingSeconds();
-  if (currentRemaining === null || nextEtaSeconds <= currentRemaining - 3) {
+  const allowEtaIncrease = nextStage === "cleanup" || state.etaStage === "cleanup";
+  if (
+    currentRemaining === null ||
+    nextEtaSeconds <= currentRemaining - 3 ||
+    (allowEtaIncrease && nextEtaSeconds >= currentRemaining + 4)
+  ) {
     state.etaSeconds = nextEtaSeconds;
     state.etaUpdatedAtMs = Date.now();
   }
@@ -927,6 +932,10 @@ function renderEtaText() {
   }
 
   if (remaining <= 0) {
+    if (state.currentStage === "cleanup") {
+      progressEtaNode.textContent = "Time left to process: recalculating...";
+      return;
+    }
     progressEtaNode.textContent = "Time left to process: finishing soon";
     return;
   }
@@ -939,7 +948,7 @@ function runningStatusText() {
     return `Waiting for helper pickup (${workerAvailabilitySummary()}).`;
   }
   if (state.currentStage === "cleanup") {
-    return "Applying speech cleanup on the RADcast server (Mac mini).";
+    return "Helper enhancement is done. Applying speech cleanup on the RADcast server (Mac mini).";
   }
   if (state.computeMode === "worker") {
     if (state.currentStage === "prepare") return "Helper connected. Preparing enhancement on your local helper device.";
