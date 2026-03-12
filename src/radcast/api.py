@@ -44,6 +44,7 @@ from radcast.models import (
 )
 from radcast.project import ProjectManager
 from radcast.services.enhance import EnhanceService
+from radcast.services.speech_cleanup import SpeechCleanupService
 from radcast.utils.audio import probe_duration_seconds
 from radcast.worker_manager import WorkerManager
 
@@ -113,6 +114,7 @@ templates = Jinja2Templates(directory=str(MODULE_ROOT / "templates"))
 
 project_manager = ProjectManager(PROJECTS_ROOT)
 enhance_service = EnhanceService()
+speech_cleanup_service = SpeechCleanupService()
 worker_manager = WorkerManager(projects_root=PROJECTS_ROOT, worker_secret=WORKER_SECRET)
 
 _job_update_lock = threading.Lock()
@@ -649,6 +651,8 @@ def _run_enhancement_job(
     output_name: str,
     output_format: OutputFormat,
     enhancement_model: EnhancementModel,
+    max_silence_seconds: float | None = None,
+    remove_filler_words: bool = False,
 ) -> None:
     paths = project_manager.ensure_project(scoped_project_id)
     manifests_dir = paths.manifests
@@ -680,7 +684,16 @@ def _run_enhancement_job(
         if _cancel_requested(job_id):
             raise JobCancelledError("job cancelled")
 
-        duration_seconds = probe_duration_seconds(final_path)
+        cleanup_result = speech_cleanup_service.cleanup_audio_file(
+            audio_path=final_path,
+            output_format=output_format,
+            max_silence_seconds=max_silence_seconds,
+            remove_filler_words=remove_filler_words,
+            on_stage=lambda progress, detail, eta_seconds: on_stage("cleanup", progress, detail, eta_seconds),
+            cancel_check=lambda: _cancel_requested(job_id),
+        )
+
+        duration_seconds = cleanup_result.duration_seconds
         metadata = OutputMetadata(
             output_file=final_path,
             input_file=input_audio_path,
@@ -688,6 +701,8 @@ def _run_enhancement_job(
             output_format=output_format,
             enhancement_model=enhancement_model,
             audio_tuning_label=enhance_service.output_tuning_label_for_model(enhancement_model),
+            max_silence_seconds=max_silence_seconds,
+            remove_filler_words=remove_filler_words,
             project_id=scoped_project_id,
             job_id=job_id,
         )
@@ -707,7 +722,7 @@ def _run_enhancement_job(
             stage="completed",
             progress=1.0,
             eta_seconds=None,
-            log="Enhancement completed",
+            log=cleanup_result.summary_text() if cleanup_result.applied else "Enhancement completed",
             outputs=outputs,
         )
     except JobCancelledError as exc:
@@ -775,6 +790,8 @@ def _run_local_enhancement_from_worker_payload(
         output_name=str(worker_payload.output_name or _build_output_name(source_filename, None)),
         output_format=worker_payload.output_format,
         enhancement_model=worker_payload.enhancement_model,
+        max_silence_seconds=worker_payload.max_silence_seconds,
+        remove_filler_words=worker_payload.remove_filler_words,
     )
 
 
@@ -1113,6 +1130,10 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
     selected_model = EnhancementModel(req.enhancement_model)
     if not enhance_service.is_model_available(selected_model):
         raise HTTPException(status_code=503, detail=f"{selected_model.value} is not available on this machine")
+    if req.speech_cleanup_requested():
+        cleanup_available, cleanup_detail = speech_cleanup_service.capability_status()
+        if not cleanup_available:
+            raise HTTPException(status_code=503, detail=cleanup_detail)
     input_audio_path: Path
     input_audio_filename: str
     input_audio_bytes: bytes
@@ -1148,6 +1169,8 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         output_name=output_name,
         output_format=req.output_format,
         enhancement_model=selected_model,
+        max_silence_seconds=req.max_silence_seconds,
+        remove_filler_words=req.remove_filler_words,
     )
     job_id = worker_manager.enqueue_enhance_job(worker_req)
     worker_snapshot = _worker_availability_snapshot()
@@ -1292,9 +1315,14 @@ def workers_status(request: Request):
 @app.get("/enhancement/models")
 def enhancement_models(request: Request):
     _require_auth(request)
+    cleanup_available, cleanup_detail = speech_cleanup_service.capability_status()
     return {
         "default_model": enhance_service.default_model.value,
         "models": enhance_service.available_models(),
+        "speech_cleanup": {
+            "available": cleanup_available,
+            "detail": cleanup_detail,
+        },
     }
 
 

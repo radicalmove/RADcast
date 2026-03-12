@@ -34,6 +34,8 @@ from radcast.models import (
 )
 from radcast.project import ProjectManager
 from radcast.services.enhance import current_audio_tuning_label
+from radcast.services.speech_cleanup import SpeechCleanupService
+from radcast.utils.audio import probe_duration_seconds
 
 
 def _now_iso() -> str:
@@ -50,6 +52,7 @@ def _slugify_filename(name: str) -> str:
 
 
 _UNSET = object()
+speech_cleanup_service = SpeechCleanupService()
 
 
 class WorkerManager:
@@ -336,52 +339,86 @@ class WorkerManager:
                 raise FileNotFoundError(f"worker job not found: {job_id}")
             if entry.get("assigned_worker_id") != req.worker_id or entry.get("status") != "running":
                 return "ignored"
-            entry["status"] = "completed"
             entry["updated_at"] = _now_iso()
             self._write_list(self.jobs_path, jobs)
 
         payload = WorkerEnhanceEnqueueRequest(**entry["payload"])
-        paths = self.project_manager.ensure_project(payload.project_id)
-        store = ManifestStore(paths.manifests)
+        try:
+            paths = self.project_manager.ensure_project(payload.project_id)
+            store = ManifestStore(paths.manifests)
 
-        output_suffix = req.output_format.value
-        output_path = paths.assets_enhanced_audio / f"{payload.output_name}.{output_suffix}"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(base64.b64decode(req.output_audio_b64.encode("utf-8")))
+            output_suffix = req.output_format.value
+            output_path = paths.assets_enhanced_audio / f"{payload.output_name}.{output_suffix}"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(base64.b64decode(req.output_audio_b64.encode("utf-8")))
 
-        input_filename = _slugify_filename(payload.input_audio_filename)
-        input_path = paths.assets_source_audio / f"{payload.output_name}_{input_filename}"
-        input_path.parent.mkdir(parents=True, exist_ok=True)
-        input_path.write_bytes(base64.b64decode(payload.input_audio_b64.encode("utf-8")))
+            input_filename = _slugify_filename(payload.input_audio_filename)
+            input_path = paths.assets_source_audio / f"{payload.output_name}_{input_filename}"
+            input_path.parent.mkdir(parents=True, exist_ok=True)
+            input_path.write_bytes(base64.b64decode(payload.input_audio_b64.encode("utf-8")))
 
-        metadata = OutputMetadata(
-            output_file=output_path,
-            input_file=input_path,
-            duration_seconds=req.duration_seconds,
-            output_format=OutputFormat(req.output_format),
-            enhancement_model=payload.enhancement_model,
-            audio_tuning_label=current_audio_tuning_label(payload.enhancement_model),
-            project_id=payload.project_id,
-            job_id=job_id,
-        )
-        metadata_path = paths.manifests / f"{payload.output_name}.metadata.json"
-        store.write_output_file(metadata_path, metadata)
-        store.append_output(metadata)
+            cleanup_result = None
+            duration_seconds = req.duration_seconds
+            if payload.speech_cleanup_requested():
+                cleanup_result = speech_cleanup_service.cleanup_audio_file(
+                    audio_path=output_path,
+                    output_format=OutputFormat(req.output_format),
+                    max_silence_seconds=payload.max_silence_seconds,
+                    remove_filler_words=payload.remove_filler_words,
+                    on_stage=lambda progress, detail, eta_seconds: self._update_job_manifest(
+                        project_id=payload.project_id,
+                        job_id=job_id,
+                        status=JobStatus.RUNNING,
+                        stage="cleanup",
+                        progress=progress,
+                        eta_seconds=eta_seconds if eta_seconds is not None else _UNSET,
+                        log=detail,
+                    ),
+                )
+                duration_seconds = cleanup_result.duration_seconds or probe_duration_seconds(output_path)
+            metadata = OutputMetadata(
+                output_file=output_path,
+                input_file=input_path,
+                duration_seconds=duration_seconds,
+                output_format=OutputFormat(req.output_format),
+                enhancement_model=payload.enhancement_model,
+                audio_tuning_label=current_audio_tuning_label(payload.enhancement_model),
+                max_silence_seconds=payload.max_silence_seconds,
+                remove_filler_words=payload.remove_filler_words,
+                project_id=payload.project_id,
+                job_id=job_id,
+            )
+            metadata_path = paths.manifests / f"{payload.output_name}.metadata.json"
+            store.write_output_file(metadata_path, metadata)
+            store.append_output(metadata)
 
-        outputs = {
-            "audio_path": str(output_path),
-            "metadata_path": str(metadata_path),
-        }
-        self._update_job_manifest(
-            project_id=payload.project_id,
-            job_id=job_id,
-            status=JobStatus.COMPLETED,
-            stage="completed",
-            progress=1.0,
-            outputs=outputs,
-            log=f"worker {req.worker_id} completed job",
-        )
-        return "completed"
+            outputs = {
+                "audio_path": str(output_path),
+                "metadata_path": str(metadata_path),
+            }
+            self._mark_queue_job(job_id, status="completed")
+            self._update_job_manifest(
+                project_id=payload.project_id,
+                job_id=job_id,
+                status=JobStatus.COMPLETED,
+                stage="completed",
+                progress=1.0,
+                outputs=outputs,
+                log=cleanup_result.summary_text() if cleanup_result and cleanup_result.applied else f"worker {req.worker_id} completed job",
+            )
+            return "completed"
+        except Exception as exc:
+            self._mark_queue_job(job_id, status="failed", error=str(exc))
+            self._update_job_manifest(
+                project_id=payload.project_id,
+                job_id=job_id,
+                status=JobStatus.FAILED,
+                stage="failed",
+                progress=1.0,
+                error=str(exc),
+                log=f"worker {req.worker_id} failed while finalizing output: {exc}",
+            )
+            raise
 
     def progress_job(self, job_id: str, req: WorkerJobProgressRequest) -> str:
         pull_req = WorkerPullRequest(worker_id=req.worker_id, api_key=req.api_key)
@@ -448,6 +485,17 @@ class WorkerManager:
             log=f"worker {req.worker_id} failed job: {req.error}",
         )
         return "failed"
+
+    def _mark_queue_job(self, job_id: str, *, status: str, error: str | None = None) -> None:
+        with self._lock:
+            jobs = self._read_list(self.jobs_path)
+            entry = next((item for item in jobs if item.get("job_id") == job_id), None)
+            if entry is None:
+                return
+            entry["status"] = status
+            entry["updated_at"] = _now_iso()
+            entry["error"] = error
+            self._write_list(self.jobs_path, jobs)
 
     def _update_job_manifest(
         self,

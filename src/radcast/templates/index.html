@@ -137,6 +137,21 @@
                 </select>
                 <small id="enhancement-model-status" class="field-note">Checking available enhancement models...</small>
               </label>
+              <div class="slider-block speech-cleanup-block">
+                <label class="checkline" for="reduce-silence-enabled">
+                  <input id="reduce-silence-enabled" type="checkbox" />
+                  <span>Reduce silence longer than <strong id="reduce-silence-value">1.0s</strong></span>
+                </label>
+                <input id="reduce-silence-seconds" type="range" min="0" max="4" step="0.25" value="1" />
+                <small class="field-note">Speech gaps longer than this are shortened to the same length.</small>
+              </div>
+              <label class="simple-check stack" for="remove-filler-words">
+                <span class="checkline">
+                  <input id="remove-filler-words" type="checkbox" />
+                  <span>Remove umms and ahhs</span>
+                </span>
+                <small id="speech-cleanup-status" class="field-note">Conservative cleanup of clear filler words between phrases.</small>
+              </label>
             </div>
           </section>
         </div>

@@ -22,8 +22,11 @@ def test_simple_enhance_request_accepts_valid_payload():
         input_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
         input_audio_filename="lecture.wav",
         output_format=OutputFormat.MP3,
+        max_silence_seconds=1.25,
+        remove_filler_words=True,
     )
     assert req.project_id == "proj1"
+    assert req.speech_cleanup_requested() is True
 
 
 def test_simple_enhance_request_rejects_missing_audio_payload():
@@ -33,6 +36,16 @@ def test_simple_enhance_request_rejects_missing_audio_payload():
             input_audio_b64="short",
             input_audio_filename="lecture.wav",
         )
+
+
+def test_simple_enhance_request_without_cleanup_flags_reports_disabled():
+    req = SimpleEnhanceRequest(
+        project_id="proj1",
+        input_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        input_audio_filename="lecture.wav",
+    )
+
+    assert req.speech_cleanup_requested() is False
 
 
 def test_resolve_command_prefers_sibling_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

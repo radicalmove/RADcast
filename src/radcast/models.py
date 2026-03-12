@@ -59,6 +59,8 @@ class SimpleEnhanceRequest(BaseModel):
     output_name: str | None = None
     output_format: OutputFormat = OutputFormat.MP3
     enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
+    max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
+    remove_filler_words: bool = False
 
     @model_validator(mode="after")
     def validate_audio_source(self) -> "SimpleEnhanceRequest":
@@ -69,6 +71,9 @@ class SimpleEnhanceRequest(BaseModel):
         if self.input_audio_b64 and not self.input_audio_filename:
             raise ValueError("input_audio_filename is required when input_audio_b64 is provided")
         return self
+
+    def speech_cleanup_requested(self) -> bool:
+        return self.max_silence_seconds is not None or bool(self.remove_filler_words)
 
 
 class ProjectSourceAudioUploadRequest(BaseModel):
@@ -83,6 +88,8 @@ class OutputMetadata(BaseModel):
     output_format: OutputFormat
     enhancement_model: EnhancementModel | None = None
     audio_tuning_label: str | None = None
+    max_silence_seconds: float | None = None
+    remove_filler_words: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     project_id: str
     job_id: str
@@ -158,6 +165,11 @@ class WorkerEnhanceEnqueueRequest(BaseModel):
     output_name: str | None = None
     output_format: OutputFormat = OutputFormat.MP3
     enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
+    max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
+    remove_filler_words: bool = False
+
+    def speech_cleanup_requested(self) -> bool:
+        return self.max_silence_seconds is not None or bool(self.remove_filler_words)
 
 
 class WorkerQueuedJob(BaseModel):

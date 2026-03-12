@@ -20,6 +20,8 @@ def test_ui_homepage_renders():
     assert "RADcast Studio" in response.text
     assert "Create project" in response.text
     assert "Recent projects" in response.text
+    assert "Reduce silence longer than" in response.text
+    assert "Remove umms and ahhs" in response.text
 
 
 def test_worker_invite_and_status_endpoints_render():
@@ -49,6 +51,7 @@ def test_worker_invite_and_status_endpoints_render():
     assert any(item["id"] == "deepfilternet" for item in models_payload["models"])
     assert any(item["id"] == "studio" for item in models_payload["models"])
     assert any(item["id"] == "studio_v18" for item in models_payload["models"])
+    assert "speech_cleanup" in models_payload
 
 
 def test_project_create_and_list_roundtrip():

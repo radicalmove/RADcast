@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import shutil
+import wave
+from pathlib import Path
+
+import numpy as np
+
+from radcast.models import OutputFormat
+from radcast.services.speech_cleanup import (
+    SpeechCleanupResult,
+    SpeechCleanupService,
+    TranscriptWordTiming,
+)
+
+
+def _write_test_wav(path: Path, samples: np.ndarray, *, sample_rate: int = 16000) -> None:
+    clipped = np.clip(samples, -1.0, 1.0 - (1.0 / 32768.0))
+    pcm = np.round(clipped * 32767.0).astype("<i2")
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(pcm.tobytes())
+
+
+def _wav_duration_seconds(path: Path) -> float:
+    with wave.open(str(path), "rb") as handle:
+        return handle.getnframes() / float(handle.getframerate())
+
+
+def test_cleanup_audio_file_shortens_long_speech_gap(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    tone_t = np.linspace(0.0, 0.35, int(sample_rate * 0.35), endpoint=False)
+    speech_a = 0.2 * np.sin(2.0 * np.pi * 220.0 * tone_t)
+    speech_b = 0.2 * np.sin(2.0 * np.pi * 330.0 * tone_t)
+    silence = np.zeros(int(sample_rate * 1.2), dtype=np.float32)
+    audio = np.concatenate([speech_a, silence, speech_b]).astype(np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+    original_duration = _wav_duration_seconds(audio_path)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda _path: (
+            [
+                TranscriptWordTiming(text="hello", start=0.0, end=0.34, probability=0.95),
+                TranscriptWordTiming(text="world", start=1.55, end=1.9, probability=0.95),
+            ],
+            [],
+        ),
+    )
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst, *, audio_filters=None: shutil.copy2(src, dst))
+    monkeypatch.setattr("radcast.services.speech_cleanup.probe_duration_seconds", _wav_duration_seconds)
+
+    result = service.cleanup_audio_file(
+        audio_path=audio_path,
+        output_format=OutputFormat.WAV,
+        max_silence_seconds=0.4,
+        remove_filler_words=False,
+    )
+
+    assert result.applied is True
+    assert result.removed_pause_count == 1
+    assert result.removed_filler_count == 0
+    assert result.duration_seconds < original_duration
+    assert 1.0 <= result.duration_seconds <= 1.2
+
+
+def test_cleanup_audio_file_removes_isolated_filler_word(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    tone_t = np.linspace(0.0, 0.35, int(sample_rate * 0.35), endpoint=False)
+    speech_a = 0.18 * np.sin(2.0 * np.pi * 220.0 * tone_t)
+    speech_b = 0.18 * np.sin(2.0 * np.pi * 330.0 * tone_t)
+    filler_t = np.linspace(0.0, 0.24, int(sample_rate * 0.24), endpoint=False)
+    filler = 0.12 * np.sin(2.0 * np.pi * 180.0 * filler_t)
+    gap_a = np.zeros(int(sample_rate * 0.16), dtype=np.float32)
+    gap_b = np.zeros(int(sample_rate * 0.18), dtype=np.float32)
+    audio = np.concatenate([speech_a, gap_a, filler, gap_b, speech_b]).astype(np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+    original_duration = _wav_duration_seconds(audio_path)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda _path: (
+            [
+                TranscriptWordTiming(text="hello", start=0.0, end=0.34, probability=0.93),
+                TranscriptWordTiming(text="um", start=0.50, end=0.73, probability=0.88),
+                TranscriptWordTiming(text="again", start=0.92, end=1.27, probability=0.91),
+            ],
+            [],
+        ),
+    )
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst, *, audio_filters=None: shutil.copy2(src, dst))
+    monkeypatch.setattr("radcast.services.speech_cleanup.probe_duration_seconds", _wav_duration_seconds)
+
+    result = service.cleanup_audio_file(
+        audio_path=audio_path,
+        output_format=OutputFormat.WAV,
+        max_silence_seconds=None,
+        remove_filler_words=True,
+    )
+
+    assert result.applied is True
+    assert result.removed_pause_count == 0
+    assert result.removed_filler_count == 1
+    assert result.duration_seconds < original_duration
+    assert result.duration_seconds < 1.25
+
+
+def test_cleanup_result_summary_text_formats_counts():
+    result = SpeechCleanupResult(applied=True, removed_pause_count=2, removed_filler_count=1, duration_seconds=9.5)
+
+    assert result.summary_text() == "Shortened 2 long pauses, removed 1 filler word."

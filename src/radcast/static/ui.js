@@ -23,6 +23,11 @@ const sourceAudioPreviewNode = document.getElementById("source-audio-preview");
 const outputFormatNode = document.getElementById("output-format");
 const enhancementModelNode = document.getElementById("enhancement-model");
 const enhancementModelStatusNode = document.getElementById("enhancement-model-status");
+const reduceSilenceEnabledNode = document.getElementById("reduce-silence-enabled");
+const reduceSilenceSecondsNode = document.getElementById("reduce-silence-seconds");
+const reduceSilenceValueNode = document.getElementById("reduce-silence-value");
+const removeFillerWordsNode = document.getElementById("remove-filler-words");
+const speechCleanupStatusNode = document.getElementById("speech-cleanup-status");
 
 const workerStatusPillNode = document.getElementById("worker-status-pill");
 const workerStatusDetailNode = document.getElementById("worker-status-detail");
@@ -58,6 +63,7 @@ const stageLabels = {
   fallback_local: "Switching to server",
   prepare: "Preparing audio",
   enhance: "Improving audio",
+  cleanup: "Cleaning speech",
   finalize: "Saving audio",
   completed: "Completed",
   failed: "Failed",
@@ -100,6 +106,8 @@ const state = {
   sourcePreviewObjectUrl: null,
   jobPollErrorCount: 0,
   enhancementModels: [],
+  speechCleanupAvailable: true,
+  speechCleanupDetail: "",
 };
 
 function escapeHtml(value) {
@@ -138,6 +146,12 @@ function setEnhancementModelStatus(message, isError = false) {
   if (!enhancementModelStatusNode) return;
   enhancementModelStatusNode.textContent = message || "";
   enhancementModelStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function setSpeechCleanupStatus(message, isError = false) {
+  if (!speechCleanupStatusNode) return;
+  speechCleanupStatusNode.textContent = message || "";
+  speechCleanupStatusNode.style.color = isError ? "#a73527" : "#555";
 }
 
 function setWorkerStatus(connected, detailText = "") {
@@ -245,6 +259,64 @@ function selectedEnhancementModelId() {
   return cleanOptional(enhancementModelNode?.value) || "resemble";
 }
 
+function formatSilenceThresholdLabel(value) {
+  const numeric = Number(value || 0);
+  const safe = Number.isFinite(numeric) ? Math.max(0, Math.min(4, numeric)) : 0;
+  return safe === 0 ? "0s" : `${safe.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1")}s`;
+}
+
+function selectedMaxSilenceSeconds() {
+  if (!reduceSilenceEnabledNode?.checked || !state.speechCleanupAvailable) return null;
+  const numeric = Number(reduceSilenceSecondsNode?.value ?? 1);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(0, Math.min(4, numeric));
+}
+
+function updateSpeechCleanupControls() {
+  const available = Boolean(state.speechCleanupAvailable);
+  if (reduceSilenceSecondsNode) {
+    reduceSilenceSecondsNode.disabled = !available || !reduceSilenceEnabledNode?.checked;
+  }
+  if (reduceSilenceEnabledNode) {
+    reduceSilenceEnabledNode.disabled = !available;
+  }
+  if (removeFillerWordsNode) {
+    removeFillerWordsNode.disabled = !available;
+  }
+  if (reduceSilenceValueNode) {
+    reduceSilenceValueNode.textContent = formatSilenceThresholdLabel(reduceSilenceSecondsNode?.value ?? 1);
+  }
+  const cleanupBlock = reduceSilenceEnabledNode?.closest(".speech-cleanup-block");
+  if (cleanupBlock) {
+    cleanupBlock.classList.toggle("speech-cleanup-disabled", !available);
+  }
+  const fillerBlock = removeFillerWordsNode?.closest(".simple-check");
+  if (fillerBlock) {
+    fillerBlock.classList.toggle("speech-cleanup-disabled", !available);
+  }
+}
+
+function updateSpeechCleanupStatusFromSelection() {
+  if (!state.speechCleanupAvailable) {
+    setSpeechCleanupStatus(state.speechCleanupDetail || "Speech cleanup is not available on this machine.", true);
+    return;
+  }
+  const parts = [];
+  const maxSilenceSeconds = selectedMaxSilenceSeconds();
+  if (maxSilenceSeconds !== null) {
+    parts.push(`Speech gaps over ${formatSilenceThresholdLabel(maxSilenceSeconds)} will be shortened.`);
+  }
+  if (removeFillerWordsNode?.checked) {
+    parts.push("Clear standalone filler words will be removed conservatively.");
+  }
+  if (!parts.length) {
+    parts.push(state.speechCleanupDetail || "Conservative cleanup of clear filler words between phrases.");
+  } else {
+    parts.push("This runs after enhancement, so the final save can take a little longer.");
+  }
+  setSpeechCleanupStatus(parts.join(" "));
+}
+
 function enhancementModelById(modelId) {
   return state.enhancementModels.find((item) => item && item.id === modelId) || null;
 }
@@ -264,11 +336,15 @@ async function loadEnhancementModels() {
   enhancementModelNode.disabled = true;
   enhancementModelNode.innerHTML = '<option value="resemble">Loading models...</option>';
   setEnhancementModelStatus("Checking available enhancement models...");
+  setSpeechCleanupStatus("Checking speech cleanup availability...");
 
   try {
     const data = await requestJSON("/enhancement/models", "GET");
     const models = Array.isArray(data.models) ? data.models : [];
     state.enhancementModels = models;
+    const speechCleanup = data.speech_cleanup && typeof data.speech_cleanup === "object" ? data.speech_cleanup : {};
+    state.speechCleanupAvailable = speechCleanup.available !== false;
+    state.speechCleanupDetail = String(speechCleanup.detail || "").trim();
 
     enhancementModelNode.innerHTML = "";
     for (const item of models) {
@@ -290,6 +366,8 @@ async function loadEnhancementModels() {
       if (firstEnabled) enhancementModelNode.value = firstEnabled.value;
     }
     updateEnhancementModelStatusFromSelection();
+    updateSpeechCleanupControls();
+    updateSpeechCleanupStatusFromSelection();
   } catch (err) {
     enhancementModelNode.innerHTML = '<option value="resemble">Resemble Enhance</option>';
     state.enhancementModels = [
@@ -301,7 +379,11 @@ async function loadEnhancementModels() {
         available: true,
       },
     ];
+    state.speechCleanupAvailable = false;
+    state.speechCleanupDetail = `Could not load speech cleanup availability: ${String(err)}`;
     setEnhancementModelStatus(`Could not load enhancement models: ${String(err)}`, true);
+    updateSpeechCleanupControls();
+    updateSpeechCleanupStatusFromSelection();
   } finally {
     enhancementModelNode.disabled = false;
   }
@@ -856,6 +938,9 @@ function runningStatusText() {
   if (state.currentStage === "queued_remote" && state.computeMode === "waiting_worker") {
     return `Waiting for helper pickup (${workerAvailabilitySummary()}).`;
   }
+  if (state.currentStage === "cleanup") {
+    return "Applying speech cleanup on the RADcast server (Mac mini).";
+  }
   if (state.computeMode === "worker") {
     if (state.currentStage === "prepare") return "Helper connected. Preparing enhancement on your local helper device.";
     if (state.currentStage === "enhance") return "Helper connected. Improving audio on your local helper device.";
@@ -875,6 +960,7 @@ function inferComputeMode(stage, logs) {
   const joinedLogs = Array.isArray(logs) ? logs.map((entry) => String(entry || "").toLowerCase()).join(" ") : "";
   const normalizedStage = String(stage || "").toLowerCase();
   if (normalizedStage === "queued_remote") return "waiting_worker";
+  if (normalizedStage === "cleanup") return "server";
   if (normalizedStage === "worker_running") return "worker";
   if (joinedLogs.includes("worker ") && joinedLogs.includes("started processing")) return "worker";
   if (joinedLogs.includes("local server fallback") || normalizedStage === "fallback_local") return "server";
@@ -1075,6 +1161,8 @@ async function handleGenerate() {
       project_id: state.activeProjectRef,
       output_format: String(outputFormatNode?.value || "mp3"),
       enhancement_model: selectedEnhancementModelId(),
+      max_silence_seconds: selectedMaxSilenceSeconds(),
+      remove_filler_words: Boolean(removeFillerWordsNode?.checked && state.speechCleanupAvailable),
     };
     if (selectedAudioHash) {
       payload.input_audio_hash = selectedAudioHash;
@@ -1459,7 +1547,26 @@ async function init() {
       updateEnhancementModelStatusFromSelection();
     });
   }
+  if (reduceSilenceEnabledNode) {
+    reduceSilenceEnabledNode.addEventListener("change", () => {
+      updateSpeechCleanupControls();
+      updateSpeechCleanupStatusFromSelection();
+    });
+  }
+  if (reduceSilenceSecondsNode) {
+    reduceSilenceSecondsNode.addEventListener("input", () => {
+      updateSpeechCleanupControls();
+      updateSpeechCleanupStatusFromSelection();
+    });
+  }
+  if (removeFillerWordsNode) {
+    removeFillerWordsNode.addEventListener("change", () => {
+      updateSpeechCleanupStatusFromSelection();
+    });
+  }
   bindOutputActions();
+  updateSpeechCleanupControls();
+  updateSpeechCleanupStatusFromSelection();
 
   void fetchWorkerStatus();
   void loadEnhancementModels();

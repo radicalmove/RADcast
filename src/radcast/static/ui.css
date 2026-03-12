@@ -679,6 +679,21 @@ body.modal-open {
   font-size: 0.92rem;
 }
 
+.slider-block input[type="range"] {
+  width: 100%;
+  box-shadow: none;
+  padding: 0;
+}
+
+.speech-cleanup-block {
+  display: grid;
+  gap: 8px;
+}
+
+.speech-cleanup-disabled {
+  opacity: 0.58;
+}
+
 input,
 select,
 textarea,
