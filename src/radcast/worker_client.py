@@ -187,6 +187,7 @@ class WorkerClient:
                     cleanup_eta_seconds = estimate_speech_cleanup_seconds(
                         probe_duration_seconds(input_path),
                         remove_filler_words=req.remove_filler_words,
+                        filler_removal_mode=req.filler_removal_mode,
                     )
                 except Exception:
                     cleanup_eta_seconds = None
@@ -273,6 +274,7 @@ class WorkerClient:
                         output_format=req.output_format,
                         max_silence_seconds=req.max_silence_seconds,
                         remove_filler_words=req.remove_filler_words,
+                        filler_removal_mode=req.filler_removal_mode,
                         on_stage=lambda progress, detail, eta_seconds: emit_progress(
                             map_cleanup_stage_progress(progress),
                             stage="cleanup",

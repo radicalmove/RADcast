@@ -17,7 +17,7 @@ from typing import Callable
 import numpy as np
 
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
-from radcast.models import OutputFormat
+from radcast.models import FillerRemovalMode, OutputFormat
 from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
 
 CleanupStageCallback = Callable[[float, str, int | None], None]
@@ -36,14 +36,6 @@ _FILLER_WORDS = {
 _MIN_COMPACTABLE_GAP_SECONDS = 0.35
 _FILLER_MIN_DURATION_SECONDS = 0.08
 _FILLER_MAX_DURATION_SECONDS = 1.35
-_FILLER_MIN_PROBABILITY = 0.18
-_FILLER_MIN_CONTEXT_GAP_SECONDS = 0.13
-_FILLER_MIN_STRONG_SIDE_GAP_SECONDS = 0.05
-_FILLER_SINGLE_SIDE_GAP_SECONDS = 0.12
-_FILLER_TWO_SIDED_CONTEXT_GAP_SECONDS = 0.07
-_FILLER_TWO_SIDED_MIN_GAP_SECONDS = 0.025
-_FILLER_RUN_MAX_INTERNAL_GAP_SECONDS = 0.24
-_FILLER_STRONG_PROBABILITY = 0.26
 _CUT_CROSSFADE_SECONDS = 0.012
 _TRANSCRIBE_PROGRESS_MIN_INTERVAL_SECONDS = 0.8
 _TOKEN_RE = re.compile(r"[^a-z']+")
@@ -82,9 +74,54 @@ class SpeechCleanupResult:
         return ", ".join(parts).capitalize() + "."
 
 
+@dataclass(frozen=True)
+class FillerRemovalHeuristics:
+    min_probability: float
+    min_context_gap_seconds: float
+    min_strong_side_gap_seconds: float
+    single_side_gap_seconds: float
+    two_sided_context_gap_seconds: float
+    two_sided_min_gap_seconds: float
+    run_max_internal_gap_seconds: float
+    strong_probability: float
+    lead_pad_cap_seconds: float
+    tail_pad_cap_seconds: float
+    lead_pad_ratio: float = 0.5
+    tail_pad_ratio: float = 0.5
+
+
+_NORMAL_FILLER_HEURISTICS = FillerRemovalHeuristics(
+    min_probability=0.28,
+    min_context_gap_seconds=0.14,
+    min_strong_side_gap_seconds=0.06,
+    single_side_gap_seconds=0.15,
+    two_sided_context_gap_seconds=0.1,
+    two_sided_min_gap_seconds=0.04,
+    run_max_internal_gap_seconds=0.18,
+    strong_probability=0.34,
+    lead_pad_cap_seconds=0.025,
+    tail_pad_cap_seconds=0.05,
+)
+
+_AGGRESSIVE_FILLER_HEURISTICS = FillerRemovalHeuristics(
+    min_probability=0.16,
+    min_context_gap_seconds=0.11,
+    min_strong_side_gap_seconds=0.04,
+    single_side_gap_seconds=0.1,
+    two_sided_context_gap_seconds=0.06,
+    two_sided_min_gap_seconds=0.018,
+    run_max_internal_gap_seconds=0.32,
+    strong_probability=0.22,
+    lead_pad_cap_seconds=0.035,
+    tail_pad_cap_seconds=0.07,
+    lead_pad_ratio=0.55,
+    tail_pad_ratio=0.55,
+)
+
+
 class SpeechCleanupService:
     def __init__(self) -> None:
-        self.model_size = os.environ.get("RADCAST_SPEECH_CLEANUP_MODEL", "base").strip() or "base"
+        self.model_size = os.environ.get("RADCAST_SPEECH_CLEANUP_MODEL", "small.en").strip() or "small.en"
         self.device = os.environ.get("RADCAST_SPEECH_CLEANUP_DEVICE", "auto").strip() or "auto"
         self.compute_type = os.environ.get("RADCAST_SPEECH_CLEANUP_COMPUTE_TYPE", "int8").strip() or "int8"
         self.beam_size = max(1, int(os.environ.get("RADCAST_SPEECH_CLEANUP_BEAM_SIZE", "3")))
@@ -100,10 +137,25 @@ class SpeechCleanupService:
             return False, "Install faster-whisper to enable long-silence trimming and filler-word cleanup."
         return True, f"Speech cleanup is available with faster-whisper ({self.model_size})."
 
-    def estimate_runtime_seconds(self, duration_seconds: float, *, remove_filler_words: bool) -> int:
+    def estimate_runtime_seconds(
+        self,
+        duration_seconds: float,
+        *,
+        remove_filler_words: bool,
+        filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE,
+    ) -> int:
         safe_duration = max(1.0, float(duration_seconds))
-        base_seconds = 8.0 if remove_filler_words else 6.0
-        per_second = 0.26 if remove_filler_words else 0.18
+        normalized_mode = _normalize_filler_mode(filler_removal_mode)
+        if remove_filler_words:
+            if normalized_mode == FillerRemovalMode.AGGRESSIVE:
+                base_seconds = 14.0
+                per_second = 0.42
+            else:
+                base_seconds = 11.0
+                per_second = 0.32
+        else:
+            base_seconds = 7.0
+            per_second = 0.22
         return max(6, min(int(round(base_seconds + (safe_duration * per_second))), 12 * 60))
 
     def cleanup_audio_file(
@@ -113,6 +165,7 @@ class SpeechCleanupService:
         output_format: OutputFormat,
         max_silence_seconds: float | None,
         remove_filler_words: bool,
+        filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE,
         on_stage: CleanupStageCallback | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> SpeechCleanupResult:
@@ -133,7 +186,11 @@ class SpeechCleanupService:
 
         input_duration = probe_duration_seconds(audio_path)
         cleanup_started_at = time.monotonic()
-        cleanup_eta_seconds = self.estimate_runtime_seconds(input_duration, remove_filler_words=remove_filler_words)
+        cleanup_eta_seconds = self.estimate_runtime_seconds(
+            input_duration,
+            remove_filler_words=remove_filler_words,
+            filler_removal_mode=filler_removal_mode,
+        )
         if on_stage:
             on_stage(
                 0.02,
@@ -168,6 +225,7 @@ class SpeechCleanupService:
             filler_intervals, filler_count = self._filler_intervals(
                 words=words,
                 remove_filler_words=remove_filler_words,
+                filler_removal_mode=filler_removal_mode,
             )
             silence_intervals, silence_count = self._silence_intervals(
                 words=words,
@@ -296,10 +354,12 @@ class SpeechCleanupService:
         *,
         words: list[TranscriptWordTiming],
         remove_filler_words: bool,
+        filler_removal_mode: FillerRemovalMode,
     ) -> tuple[list[tuple[float, float]], int]:
         if not remove_filler_words or not words:
             return [], 0
 
+        heuristics = _filler_heuristics_for_mode(filler_removal_mode)
         intervals: list[tuple[float, float]] = []
         count = 0
         idx = 0
@@ -310,14 +370,14 @@ class SpeechCleanupService:
                 idx += 1
                 continue
 
-            run_words, next_idx = _collect_filler_run(words, idx)
+            run_words, next_idx = _collect_filler_run(words, idx, heuristics=heuristics)
             run_start = run_words[0].start
             run_end = run_words[-1].end
             duration = max(0.0, run_end - run_start)
             if duration < _FILLER_MIN_DURATION_SECONDS or duration > _FILLER_MAX_DURATION_SECONDS:
                 idx = next_idx
                 continue
-            if not _filler_run_confident_enough(run_words):
+            if not _filler_run_confident_enough(run_words, heuristics=heuristics):
                 idx = next_idx
                 continue
 
@@ -326,12 +386,12 @@ class SpeechCleanupService:
             gap_before = max(0.0, run_start - prev_end)
             gap_after = max(0.0, next_start - run_end)
 
-            if not _filler_has_enough_context(gap_before, gap_after):
+            if not _filler_has_enough_context(gap_before, gap_after, heuristics=heuristics):
                 idx = next_idx
                 continue
 
-            lead_pad = min(0.03, gap_before * 0.5)
-            tail_pad = min(0.06, gap_after * 0.5)
+            lead_pad = min(heuristics.lead_pad_cap_seconds, gap_before * heuristics.lead_pad_ratio)
+            tail_pad = min(heuristics.tail_pad_cap_seconds, gap_after * heuristics.tail_pad_ratio)
             intervals.append((max(0.0, run_start - lead_pad), max(run_start, run_end + tail_pad)))
             count += len(run_words)
             idx = next_idx
@@ -433,21 +493,42 @@ def _is_filler_token(normalized: str) -> bool:
     )
 
 
-def _filler_has_enough_context(gap_before: float, gap_after: float) -> bool:
+def _normalize_filler_mode(value: FillerRemovalMode | str | None) -> FillerRemovalMode:
+    if isinstance(value, FillerRemovalMode):
+        return value
+    try:
+        return FillerRemovalMode(str(value or FillerRemovalMode.AGGRESSIVE.value).strip().lower())
+    except ValueError:
+        return FillerRemovalMode.AGGRESSIVE
+
+
+def _filler_heuristics_for_mode(mode: FillerRemovalMode | str | None) -> FillerRemovalHeuristics:
+    normalized_mode = _normalize_filler_mode(mode)
+    if normalized_mode == FillerRemovalMode.NORMAL:
+        return _NORMAL_FILLER_HEURISTICS
+    return _AGGRESSIVE_FILLER_HEURISTICS
+
+
+def _filler_has_enough_context(gap_before: float, gap_after: float, *, heuristics: FillerRemovalHeuristics) -> bool:
     total_gap = max(0.0, gap_before) + max(0.0, gap_after)
     strongest_gap = max(gap_before, gap_after)
-    if total_gap >= _FILLER_MIN_CONTEXT_GAP_SECONDS and strongest_gap >= _FILLER_MIN_STRONG_SIDE_GAP_SECONDS:
+    if total_gap >= heuristics.min_context_gap_seconds and strongest_gap >= heuristics.min_strong_side_gap_seconds:
         return True
     if (
-        total_gap >= _FILLER_TWO_SIDED_CONTEXT_GAP_SECONDS
-        and gap_before >= _FILLER_TWO_SIDED_MIN_GAP_SECONDS
-        and gap_after >= _FILLER_TWO_SIDED_MIN_GAP_SECONDS
+        total_gap >= heuristics.two_sided_context_gap_seconds
+        and gap_before >= heuristics.two_sided_min_gap_seconds
+        and gap_after >= heuristics.two_sided_min_gap_seconds
     ):
         return True
-    return strongest_gap >= _FILLER_SINGLE_SIDE_GAP_SECONDS
+    return strongest_gap >= heuristics.single_side_gap_seconds
 
 
-def _collect_filler_run(words: list[TranscriptWordTiming], start_idx: int) -> tuple[list[TranscriptWordTiming], int]:
+def _collect_filler_run(
+    words: list[TranscriptWordTiming],
+    start_idx: int,
+    *,
+    heuristics: FillerRemovalHeuristics,
+) -> tuple[list[TranscriptWordTiming], int]:
     run_words = [words[start_idx]]
     next_idx = start_idx + 1
     while next_idx < len(words):
@@ -455,20 +536,20 @@ def _collect_filler_run(words: list[TranscriptWordTiming], start_idx: int) -> tu
         normalized = _normalize_token(next_word.text)
         if not _is_filler_token(normalized):
             break
-        if max(0.0, next_word.start - run_words[-1].end) > _FILLER_RUN_MAX_INTERNAL_GAP_SECONDS:
+        if max(0.0, next_word.start - run_words[-1].end) > heuristics.run_max_internal_gap_seconds:
             break
         run_words.append(next_word)
         next_idx += 1
     return run_words, next_idx
 
 
-def _filler_run_confident_enough(words: list[TranscriptWordTiming]) -> bool:
+def _filler_run_confident_enough(words: list[TranscriptWordTiming], *, heuristics: FillerRemovalHeuristics) -> bool:
     probabilities = [float(word.probability) for word in words if word.probability is not None]
     if not probabilities:
         return True
     average_probability = sum(probabilities) / len(probabilities)
     strongest_probability = max(probabilities)
-    return average_probability >= _FILLER_MIN_PROBABILITY or strongest_probability >= _FILLER_STRONG_PROBABILITY
+    return average_probability >= heuristics.min_probability or strongest_probability >= heuristics.strong_probability
 
 
 def _remaining_cleanup_eta(started_at: float, cleanup_eta_seconds: int, *, floor_seconds: int) -> int:

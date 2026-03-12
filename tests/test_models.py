@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from radcast.constants import DEFAULT_ENHANCE_COMMAND, DEFAULT_STUDIO_COMMAND
-from radcast.models import EnhancementModel, OutputFormat, SimpleEnhanceRequest
+from radcast.models import EnhancementModel, FillerRemovalMode, OutputFormat, SimpleEnhanceRequest
 from radcast.services.enhance import (
     EnhanceService,
     _estimate_progress,
@@ -27,6 +27,7 @@ def test_simple_enhance_request_accepts_valid_payload():
     )
     assert req.project_id == "proj1"
     assert req.speech_cleanup_requested() is True
+    assert req.filler_removal_mode == FillerRemovalMode.AGGRESSIVE
 
 
 def test_simple_enhance_request_rejects_missing_audio_payload():
@@ -46,6 +47,18 @@ def test_simple_enhance_request_without_cleanup_flags_reports_disabled():
     )
 
     assert req.speech_cleanup_requested() is False
+
+
+def test_simple_enhance_request_accepts_explicit_filler_cleanup_mode():
+    req = SimpleEnhanceRequest(
+        project_id="proj1",
+        input_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        input_audio_filename="lecture.wav",
+        remove_filler_words=True,
+        filler_removal_mode=FillerRemovalMode.NORMAL,
+    )
+
+    assert req.filler_removal_mode == FillerRemovalMode.NORMAL
 
 
 def test_resolve_command_prefers_sibling_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

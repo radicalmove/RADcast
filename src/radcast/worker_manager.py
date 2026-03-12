@@ -381,6 +381,7 @@ class WorkerManager:
                 cleanup_eta_seconds = estimate_speech_cleanup_seconds(
                     req.duration_seconds,
                     remove_filler_words=payload.remove_filler_words,
+                    filler_removal_mode=payload.filler_removal_mode,
                 )
                 self._update_job_manifest(
                     project_id=payload.project_id,
@@ -456,6 +457,7 @@ class WorkerManager:
                     output_format=output_format,
                     max_silence_seconds=payload.max_silence_seconds,
                     remove_filler_words=payload.remove_filler_words,
+                    filler_removal_mode=payload.filler_removal_mode,
                     on_stage=lambda progress, detail, eta_seconds: self._update_job_manifest(
                         project_id=payload.project_id,
                         job_id=job_id,
@@ -477,6 +479,7 @@ class WorkerManager:
                 audio_tuning_label=current_audio_tuning_label(payload.enhancement_model),
                 max_silence_seconds=payload.max_silence_seconds,
                 remove_filler_words=payload.remove_filler_words,
+                filler_removal_mode=payload.filler_removal_mode,
                 project_id=payload.project_id,
                 job_id=job_id,
             )

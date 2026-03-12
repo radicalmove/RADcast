@@ -22,6 +22,7 @@ def test_ui_homepage_renders():
     assert "Recent projects" in response.text
     assert "Reduce silence longer than" in response.text
     assert "Remove umms and ahhs" in response.text
+    assert "Filler cleanup strength" in response.text
 
 
 def test_worker_invite_and_status_endpoints_render():
@@ -202,6 +203,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
             "reduce_silence_enabled": False,
             "max_silence_seconds": 1.0,
             "remove_filler_words": False,
+            "filler_removal_mode": "aggressive",
         }
 
         uploaded = client.post(
@@ -220,6 +222,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
                 "reduce_silence_enabled": True,
                 "max_silence_seconds": 2.25,
                 "remove_filler_words": True,
+                "filler_removal_mode": "normal",
             },
         )
         assert updated.status_code == 200
@@ -230,6 +233,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
             "reduce_silence_enabled": True,
             "max_silence_seconds": 2.25,
             "remove_filler_words": True,
+            "filler_removal_mode": "normal",
         }
 
         loaded = client.get(f"/projects/{project_id}/settings")

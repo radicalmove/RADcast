@@ -27,6 +27,7 @@ const reduceSilenceEnabledNode = document.getElementById("reduce-silence-enabled
 const reduceSilenceSecondsNode = document.getElementById("reduce-silence-seconds");
 const reduceSilenceValueNode = document.getElementById("reduce-silence-value");
 const removeFillerWordsNode = document.getElementById("remove-filler-words");
+const fillerRemovalModeNode = document.getElementById("filler-removal-mode");
 const speechCleanupStatusNode = document.getElementById("speech-cleanup-status");
 
 const workerStatusPillNode = document.getElementById("worker-status-pill");
@@ -132,6 +133,10 @@ function clampSilenceSeconds(value) {
   return Math.max(0, Math.min(4, numeric));
 }
 
+function normalizeFillerRemovalMode(value) {
+  return String(value || "").trim().toLowerCase() === "normal" ? "normal" : "aggressive";
+}
+
 function defaultProjectSettings() {
   return {
     selected_audio_hash: null,
@@ -140,6 +145,7 @@ function defaultProjectSettings() {
     reduce_silence_enabled: false,
     max_silence_seconds: 1,
     remove_filler_words: false,
+    filler_removal_mode: "aggressive",
   };
 }
 
@@ -156,6 +162,7 @@ function normalizeProjectSettings(payload) {
     reduce_silence_enabled: Boolean(data.reduce_silence_enabled),
     max_silence_seconds: clampSilenceSeconds(data.max_silence_seconds),
     remove_filler_words: Boolean(data.remove_filler_words),
+    filler_removal_mode: normalizeFillerRemovalMode(data.filler_removal_mode),
   };
 }
 
@@ -183,6 +190,9 @@ function applyProjectSettingsToControls(settings) {
   if (removeFillerWordsNode) {
     removeFillerWordsNode.checked = normalized.remove_filler_words;
   }
+  if (fillerRemovalModeNode) {
+    fillerRemovalModeNode.value = normalized.filler_removal_mode;
+  }
 
   updateEnhancementModelStatusFromSelection();
   updateSpeechCleanupControls();
@@ -201,6 +211,7 @@ function currentProjectSettingsPayload() {
     reduce_silence_enabled: Boolean(reduceSilenceEnabledNode?.checked),
     max_silence_seconds: reduceSilenceSecondsNode?.value ?? 1,
     remove_filler_words: Boolean(removeFillerWordsNode?.checked),
+    filler_removal_mode: fillerRemovalModeNode?.value,
   });
 }
 
@@ -407,6 +418,10 @@ function selectedMaxSilenceSeconds() {
   return Math.max(0, Math.min(4, numeric));
 }
 
+function selectedFillerRemovalMode() {
+  return normalizeFillerRemovalMode(fillerRemovalModeNode?.value);
+}
+
 function updateSpeechCleanupControls() {
   const available = Boolean(state.speechCleanupAvailable);
   if (reduceSilenceSecondsNode) {
@@ -417,6 +432,9 @@ function updateSpeechCleanupControls() {
   }
   if (removeFillerWordsNode) {
     removeFillerWordsNode.disabled = !available;
+  }
+  if (fillerRemovalModeNode) {
+    fillerRemovalModeNode.disabled = !available || !removeFillerWordsNode?.checked;
   }
   if (reduceSilenceValueNode) {
     reduceSilenceValueNode.textContent = formatSilenceThresholdLabel(reduceSilenceSecondsNode?.value ?? 1);
@@ -442,10 +460,14 @@ function updateSpeechCleanupStatusFromSelection() {
     parts.push(`Speech gaps over ${formatSilenceThresholdLabel(maxSilenceSeconds)} will be shortened.`);
   }
   if (removeFillerWordsNode?.checked) {
-    parts.push("Clear standalone filler words will be removed conservatively.");
+    if (selectedFillerRemovalMode() === "aggressive") {
+      parts.push("Aggressive filler cleanup will remove more hesitation runs and low-confidence umms and ahhs.");
+    } else {
+      parts.push("Normal filler cleanup will remove clearer standalone umms and ahhs.");
+    }
   }
   if (!parts.length) {
-    parts.push(state.speechCleanupDetail || "Conservative cleanup of clear filler words between phrases.");
+    parts.push(state.speechCleanupDetail || "Speech cleanup can shorten long pauses and remove filler words after enhancement.");
   } else {
     parts.push("This runs after enhancement, so the final save can take a little longer.");
   }
@@ -1330,6 +1352,7 @@ async function handleGenerate() {
       enhancement_model: selectedEnhancementModelId(),
       max_silence_seconds: selectedMaxSilenceSeconds(),
       remove_filler_words: Boolean(removeFillerWordsNode?.checked && state.speechCleanupAvailable),
+      filler_removal_mode: selectedFillerRemovalMode(),
     };
     if (selectedAudioHash) {
       payload.input_audio_hash = selectedAudioHash;
@@ -1738,6 +1761,13 @@ async function init() {
   }
   if (removeFillerWordsNode) {
     removeFillerWordsNode.addEventListener("change", () => {
+      updateSpeechCleanupControls();
+      updateSpeechCleanupStatusFromSelection();
+      queueProjectSettingsSave();
+    });
+  }
+  if (fillerRemovalModeNode) {
+    fillerRemovalModeNode.addEventListener("change", () => {
       updateSpeechCleanupStatusFromSelection();
       queueProjectSettingsSave();
     });

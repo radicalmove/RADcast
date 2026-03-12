@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+from radcast.models import FillerRemovalMode
 
-def estimate_speech_cleanup_seconds(duration_seconds: float | None, *, remove_filler_words: bool) -> int:
+
+def estimate_speech_cleanup_seconds(
+    duration_seconds: float | None,
+    *,
+    remove_filler_words: bool,
+    filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE,
+) -> int:
     safe_duration = max(1.0, float(duration_seconds or 1.0))
-    base_seconds = 8.0 if remove_filler_words else 6.0
-    per_second = 0.26 if remove_filler_words else 0.18
+    if remove_filler_words:
+        if filler_removal_mode == FillerRemovalMode.AGGRESSIVE:
+            base_seconds = 14.0
+            per_second = 0.42
+        else:
+            base_seconds = 11.0
+            per_second = 0.32
+    else:
+        base_seconds = 7.0
+        per_second = 0.22
     return max(6, min(int(round(base_seconds + (safe_duration * per_second))), 12 * 60))
 
 

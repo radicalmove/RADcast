@@ -21,6 +21,7 @@ from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
 from radcast.manifests import ManifestStore
 from radcast.models import (
     EnhancementModel,
+    FillerRemovalMode,
     JobRecord,
     JobStatus,
     OutputFormat,
@@ -261,6 +262,12 @@ def _coerce_project_settings(payload: object) -> ProjectUiSettings:
         max_silence_seconds = 1.0
     max_silence_seconds = max(0.0, min(4.0, max_silence_seconds))
 
+    filler_removal_mode_raw = str(data.get("filler_removal_mode") or FillerRemovalMode.AGGRESSIVE.value).strip().lower()
+    try:
+        filler_removal_mode = FillerRemovalMode(filler_removal_mode_raw)
+    except ValueError:
+        filler_removal_mode = FillerRemovalMode.AGGRESSIVE
+
     return ProjectUiSettings(
         selected_audio_hash=selected_audio_hash,
         output_format=output_format,
@@ -268,6 +275,7 @@ def _coerce_project_settings(payload: object) -> ProjectUiSettings:
         reduce_silence_enabled=bool(data.get("reduce_silence_enabled", False)),
         max_silence_seconds=max_silence_seconds,
         remove_filler_words=bool(data.get("remove_filler_words", False)),
+        filler_removal_mode=filler_removal_mode,
     )
 
 
@@ -703,6 +711,7 @@ def _run_enhancement_job(
     enhancement_model: EnhancementModel,
     max_silence_seconds: float | None = None,
     remove_filler_words: bool = False,
+    filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE,
 ) -> None:
     paths = project_manager.ensure_project(scoped_project_id)
     manifests_dir = paths.manifests
@@ -713,6 +722,7 @@ def _run_enhancement_job(
             cleanup_eta_seconds = estimate_speech_cleanup_seconds(
                 probe_duration_seconds(input_audio_path),
                 remove_filler_words=remove_filler_words,
+                filler_removal_mode=filler_removal_mode,
             )
         except Exception:
             cleanup_eta_seconds = None
@@ -753,6 +763,7 @@ def _run_enhancement_job(
             output_format=output_format,
             max_silence_seconds=max_silence_seconds,
             remove_filler_words=remove_filler_words,
+            filler_removal_mode=filler_removal_mode,
             on_stage=lambda progress, detail, eta_seconds: _update_job(
                 manifests_dir,
                 job_id=job_id,
@@ -775,6 +786,7 @@ def _run_enhancement_job(
             audio_tuning_label=enhance_service.output_tuning_label_for_model(enhancement_model),
             max_silence_seconds=max_silence_seconds,
             remove_filler_words=remove_filler_words,
+            filler_removal_mode=filler_removal_mode,
             project_id=scoped_project_id,
             job_id=job_id,
         )
@@ -864,6 +876,7 @@ def _run_local_enhancement_from_worker_payload(
         enhancement_model=worker_payload.enhancement_model,
         max_silence_seconds=worker_payload.max_silence_seconds,
         remove_filler_words=worker_payload.remove_filler_words,
+        filler_removal_mode=worker_payload.filler_removal_mode,
     )
 
 
@@ -1269,6 +1282,7 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         enhancement_model=selected_model,
         max_silence_seconds=req.max_silence_seconds,
         remove_filler_words=req.remove_filler_words,
+        filler_removal_mode=req.filler_removal_mode,
     )
     job_id = worker_manager.enqueue_enhance_job(worker_req)
     worker_snapshot = _worker_availability_snapshot()

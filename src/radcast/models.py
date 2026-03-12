@@ -24,6 +24,11 @@ class EnhancementModel(str, Enum):
     STUDIO_V18 = "studio_v18"
 
 
+class FillerRemovalMode(str, Enum):
+    NORMAL = "normal"
+    AGGRESSIVE = "aggressive"
+
+
 class WorkerCapability(str, Enum):
     ENHANCE = "enhance"
 
@@ -61,6 +66,7 @@ class SimpleEnhanceRequest(BaseModel):
     enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
     remove_filler_words: bool = False
+    filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE
 
     @model_validator(mode="after")
     def validate_audio_source(self) -> "SimpleEnhanceRequest":
@@ -88,6 +94,7 @@ class ProjectUiSettings(BaseModel):
     reduce_silence_enabled: bool = False
     max_silence_seconds: float = Field(default=1.0, ge=0.0, le=4.0)
     remove_filler_words: bool = False
+    filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE
 
 
 class OutputMetadata(BaseModel):
@@ -99,6 +106,7 @@ class OutputMetadata(BaseModel):
     audio_tuning_label: str | None = None
     max_silence_seconds: float | None = None
     remove_filler_words: bool = False
+    filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     project_id: str
     job_id: str
@@ -176,6 +184,7 @@ class WorkerEnhanceEnqueueRequest(BaseModel):
     enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
     remove_filler_words: bool = False
+    filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE
 
     def speech_cleanup_requested(self) -> bool:
         return self.max_silence_seconds is not None or bool(self.remove_filler_words)

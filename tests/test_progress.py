@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from radcast.models import FillerRemovalMode
 from radcast.progress import (
     estimate_speech_cleanup_seconds,
     extend_eta_with_cleanup,
@@ -11,9 +12,20 @@ from radcast.progress import (
 def test_cleanup_eta_estimate_scales_with_duration():
     short_eta = estimate_speech_cleanup_seconds(10, remove_filler_words=False)
     long_eta = estimate_speech_cleanup_seconds(120, remove_filler_words=True)
+    normal_eta = estimate_speech_cleanup_seconds(
+        120,
+        remove_filler_words=True,
+        filler_removal_mode=FillerRemovalMode.NORMAL,
+    )
+    aggressive_eta = estimate_speech_cleanup_seconds(
+        120,
+        remove_filler_words=True,
+        filler_removal_mode=FillerRemovalMode.AGGRESSIVE,
+    )
 
     assert short_eta >= 6
     assert long_eta > short_eta
+    assert aggressive_eta > normal_eta
 
 
 def test_worker_progress_reserves_band_when_cleanup_enabled():

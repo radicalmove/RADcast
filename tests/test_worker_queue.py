@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from radcast.api import app
 from radcast.exceptions import JobCancelledError
+from radcast.models import FillerRemovalMode
 from radcast.services.speech_cleanup import SpeechCleanupResult
 from radcast.worker_client import WorkerClient
 
@@ -127,6 +128,7 @@ def test_worker_completion_applies_server_side_speech_cleanup(monkeypatch):
     def fake_cleanup(**kwargs):
         captured["max_silence_seconds"] = kwargs.get("max_silence_seconds")
         captured["remove_filler_words"] = kwargs.get("remove_filler_words")
+        captured["filler_removal_mode"] = kwargs.get("filler_removal_mode")
         return SpeechCleanupResult(applied=True, removed_pause_count=1, removed_filler_count=1, duration_seconds=2.1)
 
     monkeypatch.setattr("radcast.worker_manager.speech_cleanup_service.cleanup_audio_file", fake_cleanup)
@@ -162,6 +164,7 @@ def test_worker_completion_applies_server_side_speech_cleanup(monkeypatch):
                 "enhancement_model": "deepfilternet",
                 "max_silence_seconds": 0.5,
                 "remove_filler_words": True,
+                "filler_removal_mode": "normal",
             },
         )
         assert queued.status_code == 200
@@ -187,6 +190,7 @@ def test_worker_completion_applies_server_side_speech_cleanup(monkeypatch):
         assert captured == {
             "max_silence_seconds": 0.5,
             "remove_filler_words": True,
+            "filler_removal_mode": FillerRemovalMode.NORMAL,
         }
         for _ in range(20):
             payload = client.get(f"/jobs/{job_id}", params={"project_id": project_id}).json()
@@ -242,6 +246,7 @@ def test_worker_completion_skips_server_cleanup_when_helper_already_applied_it(m
                 "enhancement_model": "deepfilternet",
                 "max_silence_seconds": 0.5,
                 "remove_filler_words": True,
+                "filler_removal_mode": "aggressive",
             },
         )
         job_id = queued.json()["job_id"]
@@ -437,6 +442,7 @@ def test_worker_client_applies_speech_cleanup_locally_when_available(monkeypatch
         "enhancement_model": "deepfilternet",
         "max_silence_seconds": 1.0,
         "remove_filler_words": True,
+        "filler_removal_mode": "normal",
     }
 
     result = client._process_enhance_job("job_test", payload)
@@ -445,4 +451,5 @@ def test_worker_client_applies_speech_cleanup_locally_when_available(monkeypatch
     assert result["cleanup_summary"] == "Shortened 1 long pause, removed 1 filler word."
     assert result["duration_seconds"] == 4.0
     assert cleanup_calls
+    assert cleanup_calls[0]["filler_removal_mode"] == FillerRemovalMode.NORMAL
     assert any(stage == "cleanup" and detail and "local helper device" in detail.lower() for _, stage, detail, _ in progress_updates)
