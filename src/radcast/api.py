@@ -207,6 +207,31 @@ def _display_project_id(project_id: str) -> str:
     return value
 
 
+def _path_mtime(path: Path) -> datetime | None:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except FileNotFoundError:
+        return None
+
+
+def _project_last_activity_at(scoped_project_id: str) -> datetime:
+    paths = project_manager.get_paths(scoped_project_id)
+    timestamps: list[datetime] = []
+
+    root_mtime = _path_mtime(paths.root)
+    if root_mtime is not None:
+        timestamps.append(root_mtime)
+
+    for manifest_path in paths.manifests.glob("*.json"):
+        manifest_mtime = _path_mtime(manifest_path)
+        if manifest_mtime is not None:
+            timestamps.append(manifest_mtime)
+
+    if not timestamps:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    return max(timestamps)
+
+
 def _inferred_owner_key_from_project_id(scoped_project_id: str) -> str:
     if "__" not in scoped_project_id:
         return ""
@@ -923,7 +948,7 @@ def list_source_audio(request: Request, project_id: str):
 @app.get("/projects")
 def list_projects(request: Request):
     _require_auth(request)
-    projects: list[dict[str, object]] = []
+    projects: list[tuple[datetime, dict[str, object]]] = []
     for scoped_project_id in project_manager.list_projects():
         access = _resolve_access_for_user(request, scoped_project_id)
         if not bool(access.get("can_access")):
@@ -932,16 +957,22 @@ def list_projects(request: Request):
         visible_project_id = _display_project_id(scoped_project_id)
         owner = access.get("owner") if isinstance(access.get("owner"), dict) else {}
         owner_label = str(owner.get("display_name") or owner.get("email") or owner.get("user_key") or "")
+        last_activity_at = _project_last_activity_at(scoped_project_id)
         projects.append(
-            {
-                "project_id": visible_project_id,
-                "project_ref": scoped_project_id,
-                "shared": not bool(access.get("is_owner")),
-                "owner_label": owner_label,
-            }
+            (
+                last_activity_at,
+                {
+                    "project_id": visible_project_id,
+                    "project_ref": scoped_project_id,
+                    "shared": not bool(access.get("is_owner")),
+                    "owner_label": owner_label,
+                    "updated_at": last_activity_at.isoformat(),
+                },
+            )
         )
 
-    return {"projects": projects}
+    projects.sort(key=lambda item: (item[0], str(item[1].get("project_id") or "")), reverse=True)
+    return {"projects": [payload for _, payload in projects]}
 
 
 @app.get("/projects/{project_id}/access")
@@ -1189,22 +1220,27 @@ def list_project_outputs(request: Request, project_id: str):
     store = ManifestStore(paths.manifests)
 
     outputs: list[dict[str, object]] = []
-    for item in reversed(store.list_outputs()):
+    rows = store.list_outputs()
+    total_outputs = len(rows)
+    for reverse_index, item in enumerate(reversed(rows)):
         try:
             output_path = str(item.get("output_file") or "")
             if not output_path:
                 continue
             encoded_path = quote(output_path, safe="")
             suffix = Path(output_path).suffix.lower().replace(".", "") or "wav"
+            folder_path = str(Path(output_path).parent)
             outputs.append(
                 {
                     "output_name": Path(output_path).name,
                     "output_format": suffix,
                     "output_path": output_path,
+                    "folder_path": folder_path,
                     "created_at": str(item.get("created_at") or ""),
                     "duration_seconds": float(item.get("duration_seconds") or 0.0),
                     "enhancement_model": str(item.get("enhancement_model") or ""),
                     "audio_tuning_label": str(item.get("audio_tuning_label") or ""),
+                    "version_number": total_outputs - reverse_index,
                     "download_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=true",
                     "play_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=false",
                 }

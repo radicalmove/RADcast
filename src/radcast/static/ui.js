@@ -6,6 +6,7 @@ const activeProjectChip = document.getElementById("active-project-chip");
 const activeProjectLabelNode = document.getElementById("active-project-label");
 
 const existingProjectSelectNode = document.getElementById("existing-project-select");
+const recentProjectListNode = document.getElementById("recent-project-list");
 const refreshProjectsBtn = document.getElementById("refresh-projects-btn");
 const projectGatewayStatusNode = document.getElementById("project-gateway-status");
 
@@ -210,6 +211,31 @@ function formatDisplayDateTime(value) {
   }).format(parsed);
 
   formatted = formatted.replace(",", "");
+  formatted = formatted.replace(/\s+([AP]M)$/i, (_, meridiem) => meridiem.toLowerCase());
+  formatted = formatted.replace(/(\d)\s([ap]m)$/i, "$1$2");
+  return formatted;
+}
+
+function formatOutputDate(value) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(parsed);
+}
+
+function formatOutputTime(value) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  let formatted = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(parsed);
   formatted = formatted.replace(/\s+([AP]M)$/i, (_, meridiem) => meridiem.toLowerCase());
   formatted = formatted.replace(/(\d)\s([ap]m)$/i, "$1$2");
   return formatted;
@@ -597,6 +623,10 @@ async function saveSelectedAudioFile(file) {
 async function loadProjects(preferredProjectRef = null) {
   if (!existingProjectSelectNode) return;
   existingProjectSelectNode.disabled = true;
+  existingProjectSelectNode.innerHTML = '<option value="">Loading projects...</option>';
+  if (recentProjectListNode) {
+    recentProjectListNode.innerHTML = '<p class="recent-project-empty">Loading recent projects...</p>';
+  }
   setGatewayStatus("Loading projects...");
 
   try {
@@ -604,6 +634,7 @@ async function loadProjects(preferredProjectRef = null) {
     const projects = Array.isArray(data.projects) ? data.projects : [];
 
     existingProjectSelectNode.innerHTML = "";
+    renderRecentProjects(projects);
     const placeholder = document.createElement("option");
     placeholder.value = "";
     placeholder.textContent = projects.length ? "Select a project" : "No projects yet";
@@ -611,11 +642,13 @@ async function loadProjects(preferredProjectRef = null) {
 
     projects.forEach((project) => {
       const option = document.createElement("option");
-      option.value = String(project.project_ref || "");
+      const projectRef = String(project.project_ref || "");
       const projectLabel = String(project.project_id || "");
       const shared = Boolean(project.shared);
       const ownerLabel = String(project.owner_label || "").trim();
       const sharedSuffix = shared ? ` (shared${ownerLabel ? ` from ${ownerLabel}` : ""})` : "";
+      option.value = projectRef;
+      option.dataset.projectLabel = projectLabel;
       option.textContent = `${projectLabel}${sharedSuffix}`;
       existingProjectSelectNode.appendChild(option);
     });
@@ -627,9 +660,69 @@ async function loadProjects(preferredProjectRef = null) {
     setGatewayStatus(projects.length ? "Choose a project to open." : "Create your first project.");
   } catch (err) {
     existingProjectSelectNode.innerHTML = '<option value="">Unable to load projects</option>';
+    if (recentProjectListNode) {
+      recentProjectListNode.innerHTML = '<p class="recent-project-empty">Could not load recent projects.</p>';
+    }
     setGatewayStatus(`Could not load projects: ${String(err)}`, true);
   } finally {
     existingProjectSelectNode.disabled = false;
+  }
+}
+
+function openProject(projectRef, projectLabel = projectRef) {
+  if (!projectRef) return;
+  if (existingProjectSelectNode) {
+    existingProjectSelectNode.value = projectRef;
+  }
+  markWorkspaceReady(projectRef, projectLabel || projectRef);
+}
+
+function renderRecentProjects(projects) {
+  if (!recentProjectListNode) return;
+  const items = Array.isArray(projects) ? projects.slice(0, 5) : [];
+
+  if (!items.length) {
+    recentProjectListNode.innerHTML = '<p class="recent-project-empty">No recent projects yet.</p>';
+    return;
+  }
+
+  recentProjectListNode.innerHTML = "";
+  for (const project of items) {
+    const projectRef = String(project.project_ref || "");
+    const projectLabel = String(project.project_id || projectRef);
+    const shared = Boolean(project.shared);
+    const ownerLabel = String(project.owner_label || "").trim();
+    const updatedAt = cleanOptional(project.updated_at);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "recent-project-btn";
+    button.dataset.projectRef = projectRef;
+    button.dataset.projectLabel = projectLabel;
+
+    const title = document.createElement("span");
+    title.className = "recent-project-title";
+    title.textContent = projectLabel;
+    button.appendChild(title);
+
+    const metaParts = [];
+    if (shared) {
+      metaParts.push(`shared${ownerLabel ? ` from ${ownerLabel}` : ""}`);
+    }
+    if (updatedAt) {
+      metaParts.push(`updated ${formatDisplayDateTime(updatedAt)}`);
+    }
+    if (metaParts.length) {
+      const meta = document.createElement("span");
+      meta.className = "recent-project-meta";
+      meta.textContent = metaParts.join(" | ");
+      button.appendChild(meta);
+    }
+
+    button.addEventListener("click", () => {
+      openProject(projectRef, projectLabel);
+    });
+    recentProjectListNode.appendChild(button);
   }
 }
 
@@ -637,8 +730,8 @@ async function openSelectedProject() {
   const projectRef = cleanOptional(existingProjectSelectNode?.value);
   if (!projectRef) return;
   const selected = existingProjectSelectNode?.selectedOptions?.[0];
-  const label = selected ? selected.textContent.replace(/\s*\(shared.*\)$/i, "") : projectRef;
-  markWorkspaceReady(projectRef, label || projectRef);
+  const label = selected?.dataset?.projectLabel || projectRef;
+  openProject(projectRef, label);
 }
 
 async function refreshProjectAccessInfo() {
@@ -1023,71 +1116,145 @@ async function loadOutputs() {
       return;
     }
 
-    outputListNode.innerHTML = outputs
-      .map((item, idx) => {
-        const meta = formatOutputMeta(item);
-        const playId = `play-${idx}`;
-        const playerId = `player-${idx}`;
-        return `
-          <li class="output-item">
-            <div class="output-header">
-              <div class="output-meta">
-                <strong class="output-name">${escapeHtml(item.output_name || "enhanced-audio")}</strong>
-                ${meta ? `<span class="output-date">${escapeHtml(meta)}</span>` : ""}
-              </div>
-              <div class="output-actions">
-                <button type="button" class="output-play-btn" data-play-id="${playId}" data-player-id="${playerId}" data-src="${escapeHtml(item.play_url || "")}">Play audio</button>
-                <a href="${escapeHtml(item.download_url || "#")}" target="_blank" rel="noopener">Save audio as</a>
-              </div>
-            </div>
-            <audio id="${playerId}" controls hidden></audio>
-            <code>${escapeHtml(item.output_path || "")}</code>
-          </li>
-        `;
-      })
-      .join("");
+    const rows = outputs.map((item, index) => {
+      const actions = [];
+      const outputId = `output-${index}`;
+      const playUrl = String(item.play_url || item.download_url || "");
+      const versionNumber = Number(item.version_number || 0);
+      const summaryLabel = formatOutputSummary(item);
 
-    bindOutputPlayButtons();
+      if (item.download_url) {
+        if (playUrl) {
+          actions.push(
+            `<button class="play-audio-btn" data-output-id="${escapeHtml(outputId)}" type="button" aria-expanded="false">Play audio</button>`
+          );
+        }
+        actions.push(`<a href="${escapeHtml(item.download_url)}" download>Save audio as</a>`);
+      }
+      if (item.folder_path) {
+        actions.push(`<button class="copy-folder-btn" data-folder="${escapeHtml(item.folder_path)}" type="button">Copy folder path</button>`);
+      }
+
+      return `
+        <li class="output-item">
+          <div class="output-meta">
+            <div class="output-meta-main">
+              <span class="output-name">${escapeHtml(item.output_name || "enhanced-audio")}</span>
+              ${versionNumber > 0 ? `<span class="output-version-badge">Version ${escapeHtml(versionNumber)}</span>` : ""}
+            </div>
+            ${summaryLabel ? `<span class="output-summary">${escapeHtml(summaryLabel)}</span>` : ""}
+          </div>
+          <div class="output-actions">${actions.join(" ")}</div>
+          ${
+            playUrl
+              ? `<div class="output-audio-player" data-output-id="${escapeHtml(outputId)}" hidden>
+                   <audio controls preload="metadata" src="${escapeHtml(playUrl)}"></audio>
+                 </div>`
+              : ""
+          }
+          <div class="folder-line">${escapeHtml(item.folder_path || item.output_path || "")}</div>
+        </li>
+      `;
+    });
+
+    outputListNode.innerHTML = rows.join("");
   } catch (err) {
     outputListNode.innerHTML = `<li class="output-item">Could not load outputs: ${escapeHtml(String(err))}</li>`;
   }
 }
 
-function bindOutputPlayButtons() {
-  document.querySelectorAll(".output-play-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const playerId = String(btn.getAttribute("data-player-id") || "");
-      const src = String(btn.getAttribute("data-src") || "");
-      if (!playerId || !src) return;
-
-      const player = document.getElementById(playerId);
-      if (!(player instanceof HTMLAudioElement)) return;
-
-      if (player.hidden || !player.src) {
-        player.src = src;
-        player.hidden = false;
-        void player.play().catch(() => {});
-        btn.textContent = "Hide player";
-      } else {
-        player.pause();
-        player.hidden = true;
-        btn.textContent = "Play audio";
-      }
-    });
-  });
-}
-
-function formatOutputMeta(item) {
+function formatOutputSummary(item) {
   const parts = [];
   const duration = Number(item.duration_seconds || 0);
-  if (Number.isFinite(duration) && duration > 0) parts.push(`Length: ${formatDurationSeconds(duration)}`);
-  if (item.created_at) {
-    const created = formatDisplayDateTime(item.created_at);
-    if (created) parts.push(`Created: ${created}`);
+  if (Number.isFinite(duration) && duration > 0) {
+    parts.push(formatDurationSeconds(duration));
   }
-  const tuningLabel = cleanOptional(item.audio_tuning_label);
-  if (tuningLabel) parts.push(`Tuning: ${tuningLabel}`);
-  return parts.join(" ");
+  const dateText = formatOutputDate(item.created_at);
+  if (dateText) {
+    parts.push(dateText);
+  }
+  const timeText = formatOutputTime(item.created_at);
+  if (timeText) {
+    parts.push(timeText);
+  }
+  return parts.join(" | ");
+}
+
+function toggleOutputAudioPlayer(button) {
+  if (!outputListNode) return;
+  const outputId = button.dataset.outputId || "";
+  if (!outputId) return;
+
+  const playerWrap = Array.from(outputListNode.querySelectorAll(".output-audio-player")).find((node) => {
+    return node instanceof HTMLElement && node.dataset.outputId === outputId;
+  });
+  if (!(playerWrap instanceof HTMLElement)) return;
+  const audio = playerWrap.querySelector("audio");
+  if (!(audio instanceof HTMLAudioElement)) return;
+
+  const isOpen = !playerWrap.hidden;
+  if (isOpen) {
+    audio.pause();
+    playerWrap.hidden = true;
+    button.textContent = "Play audio";
+    button.setAttribute("aria-expanded", "false");
+    return;
+  }
+
+  for (const wrapNode of outputListNode.querySelectorAll(".output-audio-player")) {
+    if (!(wrapNode instanceof HTMLElement)) continue;
+    if (wrapNode.dataset.outputId === outputId) continue;
+    const otherAudio = wrapNode.querySelector("audio");
+    if (otherAudio instanceof HTMLAudioElement) {
+      otherAudio.pause();
+    }
+    wrapNode.hidden = true;
+  }
+
+  for (const otherBtn of outputListNode.querySelectorAll(".play-audio-btn")) {
+    if (!(otherBtn instanceof HTMLButtonElement)) continue;
+    if (otherBtn.dataset.outputId === outputId) continue;
+    otherBtn.textContent = "Play audio";
+    otherBtn.setAttribute("aria-expanded", "false");
+  }
+
+  playerWrap.hidden = false;
+  button.textContent = "Hide player";
+  button.setAttribute("aria-expanded", "true");
+  const playPromise = audio.play();
+  if (playPromise && typeof playPromise.catch === "function") {
+    playPromise.catch(() => {});
+  }
+}
+
+function bindOutputActions() {
+  if (!outputListNode) return;
+
+  outputListNode.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    const playButton = target.closest(".play-audio-btn");
+    if (playButton instanceof HTMLButtonElement) {
+      toggleOutputAudioPlayer(playButton);
+      return;
+    }
+
+    const copyButton = target.closest(".copy-folder-btn");
+    if (!(copyButton instanceof HTMLButtonElement)) return;
+
+    const folderPath = copyButton.dataset.folder || "";
+    if (!folderPath) return;
+
+    navigator.clipboard
+      .writeText(folderPath)
+      .then(() => {
+        setGenerateStatus("Folder path copied to clipboard.");
+      })
+      .catch(() => {
+        setGenerateStatus("Could not copy folder path.", true);
+      });
+  });
 }
 
 async function shareProjectPrompt() {
@@ -1292,6 +1459,7 @@ async function init() {
       updateEnhancementModelStatusFromSelection();
     });
   }
+  bindOutputActions();
 
   void fetchWorkerStatus();
   void loadEnhancementModels();

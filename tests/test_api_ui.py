@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -18,6 +19,7 @@ def test_ui_homepage_renders():
     assert response.status_code == 200
     assert "RADcast Studio" in response.text
     assert "Create project" in response.text
+    assert "Recent projects" in response.text
 
 
 def test_worker_invite_and_status_endpoints_render():
@@ -76,6 +78,45 @@ def test_project_create_and_list_roundtrip():
                 shutil.rmtree(path)
         if project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_projects_endpoint_returns_recent_activity_first():
+    client = TestClient(app)
+    older_project_id = f"radcast-old-{uuid.uuid4().hex[:8]}"
+    newer_project_id = f"radcast-new-{uuid.uuid4().hex[:8]}"
+    created_roots: list[Path] = []
+
+    try:
+        older_created = client.post("/projects", json={"project_id": older_project_id})
+        newer_created = client.post("/projects", json={"project_id": newer_project_id})
+        assert older_created.status_code == 200
+        assert newer_created.status_code == 200
+
+        older_root = Path(older_created.json()["project_root"])
+        newer_root = Path(newer_created.json()["project_root"])
+        created_roots.extend([older_root, newer_root])
+
+        older_ts = 1_700_000_000
+        newer_ts = 1_800_000_000
+        for path in older_root.joinpath("manifests").glob("*.json"):
+            os.utime(path, (older_ts, older_ts))
+        os.utime(older_root, (older_ts, older_ts))
+
+        for path in newer_root.joinpath("manifests").glob("*.json"):
+            os.utime(path, (newer_ts, newer_ts))
+        os.utime(newer_root, (newer_ts, newer_ts))
+
+        listed = client.get("/projects")
+        assert listed.status_code == 200
+        rows = listed.json()["projects"]
+        older_index = next(idx for idx, row in enumerate(rows) if row["project_id"] == older_project_id)
+        newer_index = next(idx for idx, row in enumerate(rows) if row["project_id"] == newer_project_id)
+        assert newer_index < older_index
+        assert rows[newer_index]["updated_at"]
+    finally:
+        for root in created_roots:
+            if root.exists():
+                shutil.rmtree(root)
 
 
 def test_source_audio_upload_list_and_enhance_by_hash(monkeypatch):
@@ -139,7 +180,7 @@ def test_source_audio_upload_list_and_enhance_by_hash(monkeypatch):
             shutil.rmtree(project_root)
 
 
-def test_project_outputs_endpoint_includes_tuning_label():
+def test_project_outputs_endpoint_includes_output_card_metadata():
     client = TestClient(app)
     project_id = f"radcast-{uuid.uuid4().hex[:8]}"
     project_root = Path("projects") / project_id
@@ -173,6 +214,8 @@ def test_project_outputs_endpoint_includes_tuning_label():
         payload = outputs.json()
         assert len(payload["outputs"]) == 1
         assert payload["outputs"][0]["audio_tuning_label"] == "Version 7"
+        assert payload["outputs"][0]["version_number"] == 1
+        assert payload["outputs"][0]["folder_path"].endswith("/assets/enhanced_audio")
     finally:
         for path in Path("projects").glob(f"*__{project_id}"):
             if path.exists():

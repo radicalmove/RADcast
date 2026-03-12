@@ -494,6 +494,46 @@ body.modal-open {
   margin-top: 10px;
 }
 
+.recent-projects-block {
+  margin-bottom: 10px;
+}
+
+.recent-project-list {
+  display: grid;
+  gap: 8px;
+}
+
+.recent-project-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--uc-grey-300);
+  border-radius: var(--uc-radius-md);
+  background: #fafafa;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.recent-project-btn:hover {
+  border-color: var(--uc-red);
+  background: #fff7f5;
+  transform: translateY(-1px);
+}
+
+.recent-project-title {
+  font-weight: 600;
+  color: #222;
+}
+
+.recent-project-meta,
+.recent-project-empty {
+  font-size: 0.82rem;
+  color: #666;
+}
+
 .script-version-block {
   margin-top: 10px;
 }
@@ -837,55 +877,58 @@ button.worker-mini-btn {
   padding: 10px;
 }
 
-.output-header {
+.output-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
   margin-bottom: 8px;
 }
 
-.output-meta {
+.output-meta-main {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
-  flex-wrap: wrap;
+  flex: 1 1 auto;
 }
 
 .output-name {
   font-weight: 700;
+  min-width: 0;
+  word-break: break-word;
 }
 
-.output-date {
+.output-version-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef3ff;
+  color: #204a93;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.output-summary {
   font-size: 0.82rem;
   color: #666;
-}
-
-.output-header .output-actions {
-  flex-shrink: 0;
-}
-
-.output-header .output-actions a,
-.output-header .output-actions button {
+  line-height: 1.4;
+  word-break: break-word;
   white-space: nowrap;
+  text-align: right;
+  flex: 0 1 auto;
 }
 
 .folder-line,
 .output-item code {
-  display: block;
   margin-top: 8px;
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.75rem;
   color: #4b4b4b;
   word-break: break-all;
-}
-
-@media (max-width: 760px) {
-  .output-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
 }
 
 .output-audio-player {
@@ -922,6 +965,11 @@ button.worker-mini-btn {
 }
 
 @media (max-width: 760px) {
+  .output-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .topbar {
     padding: 12px 14px;
   }
