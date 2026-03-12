@@ -17,8 +17,9 @@ import requests
 
 from radcast.exceptions import JobCancelledError
 from radcast.models import OutputFormat, WorkerEnhanceEnqueueRequest
-from radcast.progress import estimate_speech_cleanup_seconds, extend_eta_with_cleanup, map_worker_stage_progress
+from radcast.progress import estimate_speech_cleanup_seconds, extend_eta_with_cleanup, map_cleanup_stage_progress, map_worker_stage_progress
 from radcast.services.enhance import EnhanceService
+from radcast.services.speech_cleanup import SpeechCleanupService
 from radcast.utils.audio import probe_duration_seconds
 
 LOG = logging.getLogger("radcast.worker")
@@ -45,6 +46,7 @@ class WorkerClient:
 
         self.session = requests.Session()
         self.enhance_service = EnhanceService()
+        self.speech_cleanup_service = SpeechCleanupService()
 
     def _post_json(self, path: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
         url = f"{self.server_url}{path}"
@@ -177,8 +179,10 @@ class WorkerClient:
             input_path = tmp_path / req.input_audio_filename
             input_path.write_bytes(base64.b64decode(req.input_audio_b64.encode("utf-8")))
             cleanup_requested = req.speech_cleanup_requested()
+            cleanup_available = False
             cleanup_eta_seconds = None
             if cleanup_requested:
+                cleanup_available, _cleanup_detail = self.speech_cleanup_service.capability_status()
                 try:
                     cleanup_eta_seconds = estimate_speech_cleanup_seconds(
                         probe_duration_seconds(input_path),
@@ -230,6 +234,7 @@ class WorkerClient:
             heartbeat_thread.start()
             try:
                 started_at = time.monotonic()
+                cleanup_result = None
 
                 def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
                     emit_progress(
@@ -255,19 +260,50 @@ class WorkerClient:
                 )
                 if cancel_requested.is_set():
                     raise JobCancelledError("job cancelled")
-                stage_durations_seconds["total"] = round(time.monotonic() - started_at, 3)
-                emit_progress(
-                    0.72 if cleanup_requested else 0.97,
-                    stage="finalize",
-                    detail="Uploading enhanced audio for server-side speech cleanup" if cleanup_requested else "Saving enhanced audio",
-                    eta_seconds=max(8, cleanup_eta_seconds or 8),
-                )
+                if cleanup_requested and cleanup_available:
+                    cleanup_started_at = time.monotonic()
+                    emit_progress(
+                        0.72,
+                        stage="cleanup",
+                        detail="Applying speech cleanup on your local helper device.",
+                        eta_seconds=cleanup_eta_seconds,
+                    )
+                    cleanup_result = self.speech_cleanup_service.cleanup_audio_file(
+                        audio_path=final_path,
+                        output_format=req.output_format,
+                        max_silence_seconds=req.max_silence_seconds,
+                        remove_filler_words=req.remove_filler_words,
+                        on_stage=lambda progress, detail, eta_seconds: emit_progress(
+                            map_cleanup_stage_progress(progress),
+                            stage="cleanup",
+                            detail=f"{detail} On your local helper device.",
+                            eta_seconds=eta_seconds,
+                        ),
+                        cancel_check=lambda: cancel_requested.is_set(),
+                    )
+                    stage_durations_seconds["cleanup"] = round(time.monotonic() - cleanup_started_at, 3)
+                    emit_progress(
+                        map_cleanup_stage_progress(0.98),
+                        stage="cleanup",
+                        detail="Uploading cleaned audio from your local helper device.",
+                        eta_seconds=5,
+                    )
+                else:
+                    emit_progress(
+                        0.72 if cleanup_requested else 0.97,
+                        stage="finalize",
+                        detail="Uploading enhanced audio for server-side speech cleanup" if cleanup_requested else "Saving enhanced audio",
+                        eta_seconds=max(8, cleanup_eta_seconds or 8),
+                    )
                 if cancel_requested.is_set():
                     raise JobCancelledError("job cancelled")
+                stage_durations_seconds["total"] = round(time.monotonic() - started_at, 3)
                 return {
                     "output_audio_b64": base64.b64encode(final_path.read_bytes()).decode("utf-8"),
                     "output_format": OutputFormat(req.output_format).value,
                     "duration_seconds": probe_duration_seconds(final_path),
+                    "cleanup_applied": bool(cleanup_result and cleanup_result.applied),
+                    "cleanup_summary": cleanup_result.summary_text() if cleanup_result else None,
                     "stage_durations_seconds": stage_durations_seconds,
                 }
             finally:

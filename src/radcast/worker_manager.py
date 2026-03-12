@@ -377,7 +377,7 @@ class WorkerManager:
             input_path = paths.assets_source_audio / f"{payload.output_name}_{input_filename}"
             input_path.parent.mkdir(parents=True, exist_ok=True)
             input_path.write_bytes(base64.b64decode(payload.input_audio_b64.encode("utf-8")))
-            if payload.speech_cleanup_requested():
+            if payload.speech_cleanup_requested() and not req.cleanup_applied:
                 cleanup_eta_seconds = estimate_speech_cleanup_seconds(
                     req.duration_seconds,
                     remove_filler_words=payload.remove_filler_words,
@@ -415,6 +415,8 @@ class WorkerManager:
                 output_format=OutputFormat(req.output_format),
                 worker_id=req.worker_id,
                 duration_seconds=req.duration_seconds,
+                cleanup_already_applied=req.cleanup_applied,
+                cleanup_summary=req.cleanup_summary,
             )
             return "completed"
         except Exception as exc:
@@ -440,13 +442,15 @@ class WorkerManager:
         output_format: OutputFormat,
         worker_id: str,
         duration_seconds: float,
+        cleanup_already_applied: bool = False,
+        cleanup_summary: str | None = None,
     ) -> None:
         try:
             paths = self.project_manager.ensure_project(payload.project_id)
             store = ManifestStore(paths.manifests)
             cleanup_result = None
             final_duration_seconds = duration_seconds
-            if payload.speech_cleanup_requested():
+            if payload.speech_cleanup_requested() and not cleanup_already_applied:
                 cleanup_result = speech_cleanup_service.cleanup_audio_file(
                     audio_path=output_path,
                     output_format=output_format,
@@ -492,7 +496,11 @@ class WorkerManager:
                 stage="completed",
                 progress=1.0,
                 outputs=outputs,
-                log=cleanup_result.summary_text() if cleanup_result and cleanup_result.applied else f"worker {worker_id} completed job",
+                log=(
+                    cleanup_summary
+                    or (cleanup_result.summary_text() if cleanup_result and cleanup_result.applied else None)
+                    or f"worker {worker_id} completed job"
+                ),
             )
         except Exception as exc:
             self._mark_queue_job(job_id, status="failed", error=str(exc))

@@ -1099,6 +1099,9 @@ function runningStatusText() {
     return `Waiting for helper pickup (${workerAvailabilitySummary()}).`;
   }
   if (state.currentStage === "cleanup") {
+    if (state.computeMode === "worker") {
+      return "Helper connected. Applying speech cleanup on your local helper device.";
+    }
     return "Helper enhancement is done. Applying speech cleanup on the RADcast server (Mac mini).";
   }
   if (state.computeMode === "worker") {
@@ -1120,7 +1123,11 @@ function inferComputeMode(stage, logs) {
   const joinedLogs = Array.isArray(logs) ? logs.map((entry) => String(entry || "").toLowerCase()).join(" ") : "";
   const normalizedStage = String(stage || "").toLowerCase();
   if (normalizedStage === "queued_remote") return "waiting_worker";
-  if (normalizedStage === "cleanup") return "server";
+  if (normalizedStage === "cleanup") {
+    if (joinedLogs.includes("local helper device")) return "worker";
+    if (joinedLogs.includes("radcast server")) return "server";
+    return state.computeMode === "worker" ? "worker" : "server";
+  }
   if (normalizedStage === "worker_running") return "worker";
   if (joinedLogs.includes("worker ") && joinedLogs.includes("started processing")) return "worker";
   if (joinedLogs.includes("local server fallback") || normalizedStage === "fallback_local") return "server";

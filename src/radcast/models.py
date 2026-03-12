@@ -198,6 +198,8 @@ class WorkerJobCompleteRequest(BaseModel):
     output_audio_b64: str = Field(min_length=32)
     output_format: OutputFormat
     duration_seconds: float = Field(gt=0)
+    cleanup_applied: bool = False
+    cleanup_summary: str | None = None
     stage_durations_seconds: dict[str, float] = Field(default_factory=dict)
 
 
