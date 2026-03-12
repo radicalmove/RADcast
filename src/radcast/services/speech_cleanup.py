@@ -34,8 +34,11 @@ _FILLER_WORDS = {
 }
 _MIN_COMPACTABLE_GAP_SECONDS = 0.35
 _FILLER_MIN_DURATION_SECONDS = 0.08
-_FILLER_MAX_DURATION_SECONDS = 1.15
-_FILLER_MIN_PROBABILITY = 0.45
+_FILLER_MAX_DURATION_SECONDS = 1.35
+_FILLER_MIN_PROBABILITY = 0.32
+_FILLER_MIN_CONTEXT_GAP_SECONDS = 0.13
+_FILLER_MIN_STRONG_SIDE_GAP_SECONDS = 0.05
+_FILLER_SINGLE_SIDE_GAP_SECONDS = 0.14
 _CUT_CROSSFADE_SECONDS = 0.012
 _TOKEN_RE = re.compile(r"[^a-z']+")
 
@@ -250,7 +253,7 @@ class SpeechCleanupService:
         count = 0
         for idx, word in enumerate(words):
             normalized = _normalize_token(word.text)
-            if normalized not in _FILLER_WORDS:
+            if not _is_filler_token(normalized):
                 continue
 
             duration = max(0.0, word.end - word.start)
@@ -264,11 +267,11 @@ class SpeechCleanupService:
             gap_before = max(0.0, word.start - prev_end)
             gap_after = max(0.0, next_start - word.end)
 
-            if gap_before < 0.08 or gap_after < 0.08:
+            if not _filler_has_enough_context(gap_before, gap_after):
                 continue
 
-            lead_pad = min(0.02, gap_before * 0.4)
-            tail_pad = min(0.04, gap_after * 0.4)
+            lead_pad = min(0.025, gap_before * 0.45)
+            tail_pad = min(0.05, gap_after * 0.45)
             intervals.append((max(0.0, word.start - lead_pad), max(word.start, word.end + tail_pad)))
             count += 1
         return intervals, count
@@ -353,6 +356,28 @@ class SpeechCleanupService:
 def _normalize_token(text: str) -> str:
     cleaned = _TOKEN_RE.sub("", str(text or "").strip().lower())
     return cleaned.strip("'")
+
+
+def _is_filler_token(normalized: str) -> bool:
+    if normalized in _FILLER_WORDS:
+        return True
+    if not normalized:
+        return False
+    return bool(
+        re.fullmatch(r"u+m+", normalized)
+        or re.fullmatch(r"u+h+", normalized)
+        or re.fullmatch(r"u+h+m+", normalized)
+        or re.fullmatch(r"e+r+m+", normalized)
+        or re.fullmatch(r"a+h+", normalized)
+    )
+
+
+def _filler_has_enough_context(gap_before: float, gap_after: float) -> bool:
+    total_gap = max(0.0, gap_before) + max(0.0, gap_after)
+    strongest_gap = max(gap_before, gap_after)
+    if total_gap >= _FILLER_MIN_CONTEXT_GAP_SECONDS and strongest_gap >= _FILLER_MIN_STRONG_SIDE_GAP_SECONDS:
+        return True
+    return strongest_gap >= _FILLER_SINGLE_SIDE_GAP_SECONDS
 
 
 def _merge_touching_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
