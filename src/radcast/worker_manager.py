@@ -288,6 +288,28 @@ class WorkerManager:
         )
         return True
 
+    def cancel_job(self, job_id: str, *, reason: str) -> bool:
+        with self._lock:
+            jobs = self._read_list(self.jobs_path)
+            entry = next((item for item in jobs if item.get("job_id") == job_id), None)
+            if not entry or entry.get("status") not in {"queued", "running", "fallback_local"}:
+                return False
+            entry["status"] = "cancelled"
+            entry["error"] = reason
+            entry["updated_at"] = _now_iso()
+            self._write_list(self.jobs_path, jobs)
+
+        self._update_job_manifest(
+            project_id=str(entry["project_id"]),
+            job_id=job_id,
+            status=JobStatus.CANCELLED,
+            stage="cancelled",
+            progress=0.0,
+            error=reason,
+            log=reason,
+        )
+        return True
+
     def pull_job(self, req: WorkerPullRequest) -> WorkerQueuedJob | None:
         with self._lock:
             worker = self._authenticate_worker(req)

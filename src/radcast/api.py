@@ -1238,7 +1238,7 @@ def cancel_job(request: Request, job_id: str, project_id: str = Query(..., min_l
 
     _cancelled_jobs.add(job_id)
     enhance_service.cancel(job_id)
-    worker_manager.cancel_queued_job(job_id, reason="Cancellation requested before worker pickup.")
+    worker_manager.cancel_job(job_id, reason="Cancellation requested.")
 
     _update_job(
         paths.manifests,

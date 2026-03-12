@@ -15,6 +15,7 @@ from typing import Any
 
 import requests
 
+from radcast.exceptions import JobCancelledError
 from radcast.models import OutputFormat, WorkerEnhanceEnqueueRequest
 from radcast.progress import estimate_speech_cleanup_seconds, extend_eta_with_cleanup, map_worker_stage_progress
 from radcast.services.enhance import EnhanceService
@@ -127,8 +128,15 @@ class WorkerClient:
             try:
                 complete_payload = self._process_enhance_job(job_id, payload)
                 complete_payload.update({"worker_id": self.worker_id, "api_key": self.api_key})
-                self._post_json(f"/workers/jobs/{job_id}/complete", complete_payload, timeout=1800)
+                response = self._post_json(f"/workers/jobs/{job_id}/complete", complete_payload, timeout=1800)
+                if str(response.get("status") or "").lower() in {"ignored", "cancelled"}:
+                    LOG.info("job %s was cancelled or reassigned before completion acknowledgement", job_id)
+                    if once:
+                        return
+                    continue
                 LOG.info("completed job job_id=%s", job_id)
+            except JobCancelledError:
+                LOG.info("job cancelled on server while helper was processing job_id=%s", job_id)
             except Exception as exc:
                 error_text = str(exc).strip() or f"{exc.__class__.__name__}: {exc!r}"
                 LOG.exception("job failed job_id=%s error=%s", job_id, error_text)
@@ -147,7 +155,7 @@ class WorkerClient:
         stage: str | None = None,
         detail: str | None = None,
         eta_seconds: int | None = None,
-    ) -> None:
+    ) -> str | None:
         assert self.worker_id and self.api_key
         payload = {"worker_id": self.worker_id, "api_key": self.api_key, "progress": max(0.0, min(1.0, float(progress)))}
         if stage:
@@ -157,9 +165,10 @@ class WorkerClient:
         if eta_seconds is not None:
             payload["eta_seconds"] = max(0, int(eta_seconds))
         try:
-            self._post_json(f"/workers/jobs/{job_id}/progress", payload, timeout=60)
+            response = self._post_json(f"/workers/jobs/{job_id}/progress", payload, timeout=60)
+            return str(response.get("status") or "").strip().lower() or None
         except Exception:
-            return
+            return None
 
     def _process_enhance_job(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         req = WorkerEnhanceEnqueueRequest(**payload)
@@ -182,6 +191,13 @@ class WorkerClient:
             progress_state = {"progress": 0.18, "stage": "worker_running", "detail": None, "eta_seconds": None}
             progress_lock = threading.Lock()
             stop_heartbeat = threading.Event()
+            cancel_requested = threading.Event()
+
+            def mark_cancel_requested() -> None:
+                if cancel_requested.is_set():
+                    return
+                cancel_requested.set()
+                self.enhance_service.cancel(job_id)
 
             def emit_progress(
                 progress: float,
@@ -195,7 +211,9 @@ class WorkerClient:
                     progress_state["stage"] = stage or progress_state["stage"]
                     progress_state["detail"] = detail
                     progress_state["eta_seconds"] = None if eta_seconds is None else max(0, int(eta_seconds))
-                self._post_progress_update(job_id, progress=progress, stage=stage, detail=detail, eta_seconds=eta_seconds)
+                status = self._post_progress_update(job_id, progress=progress, stage=stage, detail=detail, eta_seconds=eta_seconds)
+                if status in {"ignored", "cancelled"}:
+                    mark_cancel_requested()
 
             def heartbeat_worker() -> None:
                 while not stop_heartbeat.wait(10):
@@ -203,7 +221,10 @@ class WorkerClient:
                         progress = float(progress_state["progress"])
                         stage = str(progress_state["stage"] or "worker_running")
                         eta_seconds = progress_state["eta_seconds"]
-                    self._post_progress_update(job_id, progress=progress, stage=stage, eta_seconds=eta_seconds)
+                    status = self._post_progress_update(job_id, progress=progress, stage=stage, eta_seconds=eta_seconds)
+                    if status in {"ignored", "cancelled"}:
+                        mark_cancel_requested()
+                        return
 
             heartbeat_thread = threading.Thread(target=heartbeat_worker, name="radcast-worker-heartbeat", daemon=True)
             heartbeat_thread.start()
@@ -230,8 +251,10 @@ class WorkerClient:
                     output_format=req.output_format,
                     output_base_path=output_base,
                     on_stage=on_stage,
-                    cancel_check=lambda: False,
+                    cancel_check=lambda: cancel_requested.is_set(),
                 )
+                if cancel_requested.is_set():
+                    raise JobCancelledError("job cancelled")
                 stage_durations_seconds["total"] = round(time.monotonic() - started_at, 3)
                 emit_progress(
                     0.72 if cleanup_requested else 0.97,
@@ -239,6 +262,8 @@ class WorkerClient:
                     detail="Uploading enhanced audio for server-side speech cleanup" if cleanup_requested else "Saving enhanced audio",
                     eta_seconds=max(8, cleanup_eta_seconds or 8),
                 )
+                if cancel_requested.is_set():
+                    raise JobCancelledError("job cancelled")
                 return {
                     "output_audio_b64": base64.b64encode(final_path.read_bytes()).decode("utf-8"),
                     "output_format": OutputFormat(req.output_format).value,

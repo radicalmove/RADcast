@@ -6,10 +6,13 @@ import time
 import uuid
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from radcast.api import app
+from radcast.exceptions import JobCancelledError
 from radcast.services.speech_cleanup import SpeechCleanupResult
+from radcast.worker_client import WorkerClient
 
 
 def test_worker_queue_round_trip_completes_job():
@@ -199,3 +202,109 @@ def test_worker_completion_applies_server_side_speech_cleanup(monkeypatch):
         project_root = Path("projects") / project_id
         if project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_cancel_endpoint_marks_running_worker_job_cancelled():
+    client = TestClient(app)
+    project_id = f"radcast-worker-{uuid.uuid4().hex[:8]}"
+    sample_b64 = base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8")
+    from radcast import api as api_module
+
+    original_is_model_available = api_module.enhance_service.is_model_available
+    api_module.enhance_service.is_model_available = lambda _model: True
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        invite = client.post("/workers/invite", json={"capabilities": ["enhance"]})
+        token = invite.json()["invite_token"]
+        register = client.post(
+            "/workers/register",
+            json={"invite_token": token, "worker_name": "test-worker", "capabilities": ["enhance"]},
+        )
+        worker_id = register.json()["worker_id"]
+        api_key = register.json()["api_key"]
+
+        queued = client.post(
+            "/enhance/simple",
+            json={
+                "project_id": project_id,
+                "input_audio_b64": sample_b64,
+                "input_audio_filename": "lecture.wav",
+                "output_format": "mp3",
+                "enhancement_model": "deepfilternet",
+            },
+        )
+        job_id = queued.json()["job_id"]
+
+        pull = client.post("/workers/pull", json={"worker_id": worker_id, "api_key": api_key})
+        assert pull.status_code == 200
+
+        cancelled = client.post(f"/jobs/{job_id}/cancel", params={"project_id": project_id})
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancel_requested"
+
+        progress = client.post(
+            f"/workers/jobs/{job_id}/progress",
+            json={"worker_id": worker_id, "api_key": api_key, "progress": 0.4, "stage": "enhance"},
+        )
+        assert progress.status_code == 200
+        assert progress.json()["status"] == "ignored"
+    finally:
+        api_module.enhance_service.is_model_available = original_is_model_available
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        project_root = Path("projects") / project_id
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_worker_client_cancels_local_run_when_server_ignores_progress(monkeypatch, tmp_path: Path):
+    client = WorkerClient(
+        server_url="http://example.invalid",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=1,
+    )
+    cancel_calls: list[str] = []
+
+    class FakeEnhanceService:
+        def cancel(self, job_id: str) -> None:
+            cancel_calls.append(job_id)
+
+        def enhance(self, **kwargs):
+            kwargs["on_stage"]("prepare", 0.12, "Preparing enhancement", 12)
+            deadline = time.monotonic() + 0.3
+            while time.monotonic() < deadline:
+                if kwargs["cancel_check"]():
+                    raise JobCancelledError("job cancelled")
+                time.sleep(0.01)
+            raise AssertionError("cancel_check was not triggered")
+
+    client.enhance_service = FakeEnhanceService()
+    monkeypatch.setattr("radcast.worker_client.probe_duration_seconds", lambda _path: 5.0)
+    progress_calls = {"count": 0}
+
+    def fake_post_progress_update(*args, **kwargs):
+        progress_calls["count"] += 1
+        return "ignored"
+
+    monkeypatch.setattr(client, "_post_progress_update", fake_post_progress_update)
+
+    payload = {
+        "project_id": "proj1",
+        "input_audio_b64": base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8"),
+        "input_audio_filename": "lecture.wav",
+        "output_name": "enhanced-audio",
+        "output_format": "mp3",
+        "enhancement_model": "deepfilternet",
+    }
+
+    with pytest.raises(JobCancelledError):
+        client._process_enhance_job("job_test", payload)
+
+    assert progress_calls["count"] >= 1
+    assert cancel_calls == ["job_test"]
