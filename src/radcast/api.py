@@ -43,6 +43,7 @@ from radcast.models import (
     touch_job_update,
 )
 from radcast.project import ProjectManager
+from radcast.progress import estimate_speech_cleanup_seconds, extend_eta_with_cleanup, map_cleanup_stage_progress, map_local_stage_progress
 from radcast.services.enhance import EnhanceService
 from radcast.services.speech_cleanup import SpeechCleanupService
 from radcast.utils.audio import probe_duration_seconds
@@ -656,6 +657,16 @@ def _run_enhancement_job(
 ) -> None:
     paths = project_manager.ensure_project(scoped_project_id)
     manifests_dir = paths.manifests
+    cleanup_requested = speech_cleanup_service.cleanup_requested(max_silence_seconds, remove_filler_words)
+    cleanup_eta_seconds = None
+    if cleanup_requested:
+        try:
+            cleanup_eta_seconds = estimate_speech_cleanup_seconds(
+                probe_duration_seconds(input_audio_path),
+                remove_filler_words=remove_filler_words,
+            )
+        except Exception:
+            cleanup_eta_seconds = None
 
     def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
         _update_job(
@@ -663,8 +674,12 @@ def _run_enhancement_job(
             job_id=job_id,
             status=JobStatus.RUNNING,
             stage=stage,
-            progress=progress,
-            eta_seconds=eta_seconds,
+            progress=map_local_stage_progress(stage, progress, reserve_cleanup_band=cleanup_requested),
+            eta_seconds=extend_eta_with_cleanup(
+                eta_seconds,
+                cleanup_eta_seconds,
+                reserve_cleanup_band=cleanup_requested and stage in {"prepare", "enhance", "finalize"},
+            ),
             log=detail,
         )
 
@@ -689,7 +704,15 @@ def _run_enhancement_job(
             output_format=output_format,
             max_silence_seconds=max_silence_seconds,
             remove_filler_words=remove_filler_words,
-            on_stage=lambda progress, detail, eta_seconds: on_stage("cleanup", progress, detail, eta_seconds),
+            on_stage=lambda progress, detail, eta_seconds: _update_job(
+                manifests_dir,
+                job_id=job_id,
+                status=JobStatus.RUNNING,
+                stage="cleanup",
+                progress=map_cleanup_stage_progress(progress),
+                eta_seconds=eta_seconds,
+                log=detail,
+            ),
             cancel_check=lambda: _cancel_requested(job_id),
         )
 

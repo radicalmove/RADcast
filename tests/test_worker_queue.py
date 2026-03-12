@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -178,11 +179,18 @@ def test_worker_completion_applies_server_side_speech_cleanup(monkeypatch):
             },
         )
         assert complete.status_code == 200
-        assert complete.json()["status"] == "completed"
+        assert complete.json()["status"] == "accepted"
         assert captured == {
             "max_silence_seconds": 0.5,
             "remove_filler_words": True,
         }
+        for _ in range(20):
+            payload = client.get(f"/jobs/{job_id}", params={"project_id": project_id}).json()
+            if payload["status"] == "completed":
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("worker cleanup finalization did not complete in time")
     finally:
         api_module.enhance_service.is_model_available = original_is_model_available
         for path in Path("projects").glob(f"*__{project_id}"):

@@ -16,6 +16,7 @@ from typing import Any
 import requests
 
 from radcast.models import OutputFormat, WorkerEnhanceEnqueueRequest
+from radcast.progress import estimate_speech_cleanup_seconds, extend_eta_with_cleanup, map_worker_stage_progress
 from radcast.services.enhance import EnhanceService
 from radcast.utils.audio import probe_duration_seconds
 
@@ -166,6 +167,16 @@ class WorkerClient:
             tmp_path = Path(tmp)
             input_path = tmp_path / req.input_audio_filename
             input_path.write_bytes(base64.b64decode(req.input_audio_b64.encode("utf-8")))
+            cleanup_requested = req.speech_cleanup_requested()
+            cleanup_eta_seconds = None
+            if cleanup_requested:
+                try:
+                    cleanup_eta_seconds = estimate_speech_cleanup_seconds(
+                        probe_duration_seconds(input_path),
+                        remove_filler_words=req.remove_filler_words,
+                    )
+                except Exception:
+                    cleanup_eta_seconds = None
 
             stage_durations_seconds: dict[str, float] = {}
             progress_state = {"progress": 0.18, "stage": "worker_running", "detail": None, "eta_seconds": None}
@@ -200,14 +211,16 @@ class WorkerClient:
                 started_at = time.monotonic()
 
                 def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
-                    mapped_progress = progress
-                    if stage == "prepare":
-                        mapped_progress = min(0.22, max(0.14, progress))
-                    elif stage == "enhance":
-                        mapped_progress = min(0.88, max(0.24, progress))
-                    elif stage == "finalize":
-                        mapped_progress = min(0.96, max(0.9, progress))
-                    emit_progress(mapped_progress, stage=stage, detail=detail, eta_seconds=eta_seconds)
+                    emit_progress(
+                        map_worker_stage_progress(stage, progress, reserve_cleanup_band=cleanup_requested),
+                        stage=stage,
+                        detail=detail,
+                        eta_seconds=extend_eta_with_cleanup(
+                            eta_seconds,
+                            cleanup_eta_seconds,
+                            reserve_cleanup_band=cleanup_requested and stage in {"prepare", "enhance", "finalize"},
+                        ),
+                    )
 
                 output_base = tmp_path / req.output_name
                 final_path = self.enhance_service.enhance(
@@ -220,7 +233,12 @@ class WorkerClient:
                     cancel_check=lambda: False,
                 )
                 stage_durations_seconds["total"] = round(time.monotonic() - started_at, 3)
-                emit_progress(0.97, stage="finalize", detail="Saving enhanced audio", eta_seconds=8)
+                emit_progress(
+                    0.84 if cleanup_requested else 0.97,
+                    stage="finalize",
+                    detail="Uploading enhanced audio for server-side speech cleanup" if cleanup_requested else "Saving enhanced audio",
+                    eta_seconds=max(8, cleanup_eta_seconds or 8),
+                )
                 return {
                     "output_audio_b64": base64.b64encode(final_path.read_bytes()).decode("utf-8"),
                     "output_format": OutputFormat(req.output_format).value,

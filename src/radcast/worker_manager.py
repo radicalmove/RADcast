@@ -33,6 +33,7 @@ from radcast.models import (
     WorkerSummary,
 )
 from radcast.project import ProjectManager
+from radcast.progress import estimate_speech_cleanup_seconds, map_cleanup_stage_progress
 from radcast.services.enhance import current_audio_tuning_label
 from radcast.services.speech_cleanup import SpeechCleanupService
 from radcast.utils.audio import probe_duration_seconds
@@ -344,10 +345,8 @@ class WorkerManager:
 
         payload = WorkerEnhanceEnqueueRequest(**entry["payload"])
         try:
-            paths = self.project_manager.ensure_project(payload.project_id)
-            store = ManifestStore(paths.manifests)
-
             output_suffix = req.output_format.value
+            paths = self.project_manager.ensure_project(payload.project_id)
             output_path = paths.assets_enhanced_audio / f"{payload.output_name}.{output_suffix}"
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_bytes(base64.b64decode(req.output_audio_b64.encode("utf-8")))
@@ -356,13 +355,79 @@ class WorkerManager:
             input_path = paths.assets_source_audio / f"{payload.output_name}_{input_filename}"
             input_path.parent.mkdir(parents=True, exist_ok=True)
             input_path.write_bytes(base64.b64decode(payload.input_audio_b64.encode("utf-8")))
+            if payload.speech_cleanup_requested():
+                cleanup_eta_seconds = estimate_speech_cleanup_seconds(
+                    req.duration_seconds,
+                    remove_filler_words=payload.remove_filler_words,
+                )
+                self._update_job_manifest(
+                    project_id=payload.project_id,
+                    job_id=job_id,
+                    status=JobStatus.RUNNING,
+                    stage="cleanup",
+                    progress=0.84,
+                    eta_seconds=cleanup_eta_seconds,
+                    log="Applying speech cleanup on the RADcast server.",
+                )
+                threading.Thread(
+                    target=self._finalize_worker_output,
+                    kwargs={
+                        "job_id": job_id,
+                        "payload": payload,
+                        "output_path": output_path,
+                        "input_path": input_path,
+                        "output_format": OutputFormat(req.output_format),
+                        "worker_id": req.worker_id,
+                        "duration_seconds": req.duration_seconds,
+                    },
+                    name=f"radcast-worker-finalize-{job_id}",
+                    daemon=True,
+                ).start()
+                return "accepted"
 
+            self._finalize_worker_output(
+                job_id=job_id,
+                payload=payload,
+                output_path=output_path,
+                input_path=input_path,
+                output_format=OutputFormat(req.output_format),
+                worker_id=req.worker_id,
+                duration_seconds=req.duration_seconds,
+            )
+            return "completed"
+        except Exception as exc:
+            self._mark_queue_job(job_id, status="failed", error=str(exc))
+            self._update_job_manifest(
+                project_id=payload.project_id,
+                job_id=job_id,
+                status=JobStatus.FAILED,
+                stage="failed",
+                progress=1.0,
+                error=str(exc),
+                log=f"worker {req.worker_id} failed while finalizing output: {exc}",
+            )
+            raise
+
+    def _finalize_worker_output(
+        self,
+        *,
+        job_id: str,
+        payload: WorkerEnhanceEnqueueRequest,
+        output_path: Path,
+        input_path: Path,
+        output_format: OutputFormat,
+        worker_id: str,
+        duration_seconds: float,
+    ) -> None:
+        try:
+            paths = self.project_manager.ensure_project(payload.project_id)
+            store = ManifestStore(paths.manifests)
             cleanup_result = None
-            duration_seconds = req.duration_seconds
+            final_duration_seconds = duration_seconds
             if payload.speech_cleanup_requested():
                 cleanup_result = speech_cleanup_service.cleanup_audio_file(
                     audio_path=output_path,
-                    output_format=OutputFormat(req.output_format),
+                    output_format=output_format,
                     max_silence_seconds=payload.max_silence_seconds,
                     remove_filler_words=payload.remove_filler_words,
                     on_stage=lambda progress, detail, eta_seconds: self._update_job_manifest(
@@ -370,17 +435,18 @@ class WorkerManager:
                         job_id=job_id,
                         status=JobStatus.RUNNING,
                         stage="cleanup",
-                        progress=progress,
+                        progress=map_cleanup_stage_progress(progress),
                         eta_seconds=eta_seconds if eta_seconds is not None else _UNSET,
                         log=detail,
                     ),
                 )
-                duration_seconds = cleanup_result.duration_seconds or probe_duration_seconds(output_path)
+                final_duration_seconds = cleanup_result.duration_seconds or probe_duration_seconds(output_path)
+
             metadata = OutputMetadata(
                 output_file=output_path,
                 input_file=input_path,
-                duration_seconds=duration_seconds,
-                output_format=OutputFormat(req.output_format),
+                duration_seconds=final_duration_seconds,
+                output_format=output_format,
                 enhancement_model=payload.enhancement_model,
                 audio_tuning_label=current_audio_tuning_label(payload.enhancement_model),
                 max_silence_seconds=payload.max_silence_seconds,
@@ -404,9 +470,8 @@ class WorkerManager:
                 stage="completed",
                 progress=1.0,
                 outputs=outputs,
-                log=cleanup_result.summary_text() if cleanup_result and cleanup_result.applied else f"worker {req.worker_id} completed job",
+                log=cleanup_result.summary_text() if cleanup_result and cleanup_result.applied else f"worker {worker_id} completed job",
             )
-            return "completed"
         except Exception as exc:
             self._mark_queue_job(job_id, status="failed", error=str(exc))
             self._update_job_manifest(
@@ -416,9 +481,8 @@ class WorkerManager:
                 stage="failed",
                 progress=1.0,
                 error=str(exc),
-                log=f"worker {req.worker_id} failed while finalizing output: {exc}",
+                log=f"worker {worker_id} failed while finalizing output: {exc}",
             )
-            raise
 
     def progress_job(self, job_id: str, req: WorkerJobProgressRequest) -> str:
         pull_req = WorkerPullRequest(worker_id=req.worker_id, api_key=req.api_key)
