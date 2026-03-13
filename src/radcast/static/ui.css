@@ -220,16 +220,16 @@ body {
 }
 
 .topbar-btn.topbar-btn-app-radcast {
-  background: var(--uc-grey-200);
-  border-color: var(--uc-grey-200);
-  color: var(--uc-black);
+  background: var(--uc-grey-600);
+  border-color: var(--uc-grey-600);
+  color: var(--uc-white);
 }
 
 .topbar-btn.topbar-btn-app-radcast:hover,
 .topbar-btn.topbar-btn-app-radcast:active {
-  background: var(--uc-grey-300);
-  border-color: var(--uc-grey-300);
-  color: var(--uc-black);
+  background: #444b50;
+  border-color: #444b50;
+  color: var(--uc-white);
 }
 
 .topbar-btn.topbar-btn-app-radtts {
