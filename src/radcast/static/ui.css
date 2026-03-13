@@ -257,8 +257,9 @@ body {
   color: var(--uc-white);
   border: 1px solid rgba(255, 255, 255, 0.9);
   border-radius: 8px;
-  width: 44px;
-  height: 34px;
+  width: 38px;
+  height: 28px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -268,8 +269,8 @@ body {
 }
 
 .theme-icon {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
   pointer-events: none;
   transition: filter 0.25s ease;
 }
