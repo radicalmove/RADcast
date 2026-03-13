@@ -56,7 +56,7 @@ def test_caption_progress_uses_tail_after_cleanup():
     caption_start = map_postprocess_stage_progress(0.0, stage="captions", cleanup_requested=True, caption_requested=True)
 
     assert cleanup_end <= caption_start
-    assert caption_start >= 0.86
+    assert caption_start >= 0.82
 
 
 def test_postprocess_eta_extension_adds_cleanup_and_caption_time():

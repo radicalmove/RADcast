@@ -329,6 +329,8 @@ class SpeechCleanupService:
                 filler_removal_mode=FillerRemovalMode.AGGRESSIVE,
                 transcribe_detail="Transcribing speech for captions.",
                 cancel_check=cancel_check,
+                force_windowed=True,
+                preserve_fillers=False,
             )
 
             if cancel_check and cancel_check():
@@ -390,9 +392,12 @@ class SpeechCleanupService:
         filler_removal_mode: FillerRemovalMode,
         transcribe_detail: str = "Transcribing speech timing for cleanup.",
         cancel_check: Callable[[], bool] | None = None,
+        force_windowed: bool = False,
+        preserve_fillers: bool = False,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         normalized_mode = _normalize_filler_mode(filler_removal_mode)
-        if remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE:
+        should_use_windowed = force_windowed or (remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE)
+        if should_use_windowed:
             return self._transcribe_windowed_timeline(
                 audio_path,
                 total_duration=total_duration,
@@ -401,6 +406,7 @@ class SpeechCleanupService:
                 on_stage=on_stage,
                 transcribe_detail=transcribe_detail,
                 cancel_check=cancel_check,
+                preserve_fillers=preserve_fillers or (remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE),
             )
 
         if cancel_check and cancel_check():
@@ -410,7 +416,7 @@ class SpeechCleanupService:
         words: list[TranscriptWordTiming] = []
         segments: list[TranscriptSegmentTiming] = []
         last_progress_emit_at = 0.0
-        for seg in self._transcribe_file(model, audio_path, preserve_fillers=False):
+        for seg in self._transcribe_file(model, audio_path, preserve_fillers=preserve_fillers):
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
             start = max(0.0, float(seg.start))
@@ -459,6 +465,7 @@ class SpeechCleanupService:
         on_stage: CleanupStageCallback | None,
         transcribe_detail: str = "Transcribing speech timing for cleanup.",
         cancel_check: Callable[[], bool] | None = None,
+        preserve_fillers: bool = False,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         if cancel_check and cancel_check():
             raise JobCancelledError("job cancelled")
@@ -486,7 +493,7 @@ class SpeechCleanupService:
                 end_idx = max(start_idx, min(len(waveform), int(round(window_end * sample_rate))))
                 window_path = tmp_path / f"window_{int(round(window_start * 1000)):06d}.wav"
                 _write_pcm16_wav(window_path, waveform[start_idx:end_idx], sample_rate=sample_rate)
-                transcribed_segments = self._transcribe_file(model, window_path, preserve_fillers=True)
+                transcribed_segments = self._transcribe_file(model, window_path, preserve_fillers=preserve_fillers)
 
                 left_guard_seconds = 0.0 if window_index == 0 else overlap_seconds / 2.0
                 right_guard_seconds = 0.0 if window_end >= total_duration - 1e-6 else overlap_seconds / 2.0
@@ -736,10 +743,17 @@ def _transcription_eta_seconds(*, elapsed_seconds: float, cleanup_eta_seconds: i
     safe_coverage = max(0.0, min(1.0, float(coverage)))
     if safe_coverage >= 0.08:
         projected_total = max(float(cleanup_eta_seconds), safe_elapsed / safe_coverage)
+        if safe_coverage < 0.45:
+            projected_total *= 1.14
+        elif safe_coverage < 0.75:
+            projected_total *= 1.08
+        elif safe_coverage < 0.92:
+            projected_total *= 1.04
         remaining = projected_total - safe_elapsed
     else:
         remaining = float(cleanup_eta_seconds) - safe_elapsed
-    return max(2, int(round(max(1.0, remaining))))
+    floor_seconds = 4 if safe_coverage < 0.95 else 2
+    return max(floor_seconds, int(round(max(1.0, remaining))))
 
 
 def _collect_timing_rows(

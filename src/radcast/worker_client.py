@@ -187,12 +187,14 @@ class WorkerClient:
             cleanup_requested = req.speech_cleanup_requested()
             caption_requested = req.caption_requested()
             postprocess_requested = cleanup_requested or caption_requested
-            cleanup_available = False
+            postprocess_available = False
+            caption_generation_available = False
             cleanup_eta_seconds = None
             caption_eta_seconds = None
             input_duration_seconds = None
             if postprocess_requested:
-                cleanup_available, _cleanup_detail = self.speech_cleanup_service.capability_status()
+                postprocess_available, _cleanup_detail = self.speech_cleanup_service.capability_status()
+                caption_generation_available = callable(getattr(self.speech_cleanup_service, "generate_caption_file", None))
                 try:
                     input_duration_seconds = probe_duration_seconds(input_path)
                     if cleanup_requested:
@@ -251,6 +253,7 @@ class WorkerClient:
             try:
                 started_at = time.monotonic()
                 cleanup_result = None
+                caption_b64 = None
 
                 def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
                     emit_progress(
@@ -277,7 +280,7 @@ class WorkerClient:
                 )
                 if cancel_requested.is_set():
                     raise JobCancelledError("job cancelled")
-                if cleanup_requested and cleanup_available:
+                if cleanup_requested and postprocess_available:
                     cleanup_started_at = time.monotonic()
                     emit_progress(
                         map_postprocess_stage_progress(
@@ -328,24 +331,81 @@ class WorkerClient:
                             caption_requested=caption_requested,
                         ),
                         stage="cleanup",
-                        detail="Uploading cleaned audio from your local helper device.",
+                        detail="Saving cleaned audio on your local helper device.",
                         eta_seconds=max(5, caption_eta_seconds or 5),
                     )
-                else:
+                elif cleanup_requested:
                     emit_progress(
                         map_worker_stage_progress("finalize", 0.96, reserve_cleanup_band=postprocess_requested),
                         stage="finalize",
-                        detail=(
-                            "Uploading audio for server-side post-processing"
-                            if postprocess_requested
-                            else "Saving enhanced audio"
-                        ),
+                        detail="Uploading audio for server-side post-processing",
                         eta_seconds=max(8, int((cleanup_eta_seconds or 0) + (caption_eta_seconds or 0) or 8)),
                     )
+                elif not caption_requested:
+                    emit_progress(
+                        map_worker_stage_progress("finalize", 0.96, reserve_cleanup_band=False),
+                        stage="finalize",
+                        detail="Saving enhanced audio",
+                        eta_seconds=8,
+                    )
+
+                if cancel_requested.is_set():
+                    raise JobCancelledError("job cancelled")
+
+                if caption_requested and req.caption_format is not None and postprocess_available and caption_generation_available:
+                    caption_started_at = time.monotonic()
+                    emit_progress(
+                        map_postprocess_stage_progress(
+                            0.0,
+                            stage="captions",
+                            cleanup_requested=cleanup_requested,
+                            caption_requested=True,
+                        ),
+                        stage="captions",
+                        detail="Generating captions on your local helper device.",
+                        eta_seconds=max(1, int(caption_eta_seconds or 1)),
+                    )
+                    caption_result = self.speech_cleanup_service.generate_caption_file(
+                        audio_path=final_path,
+                        caption_format=req.caption_format,
+                        on_stage=lambda progress, detail, eta_seconds: emit_progress(
+                            map_postprocess_stage_progress(
+                                progress,
+                                stage="captions",
+                                cleanup_requested=cleanup_requested,
+                                caption_requested=True,
+                            ),
+                            stage="captions",
+                            detail=f"{detail} On your local helper device.",
+                            eta_seconds=eta_seconds,
+                        ),
+                        cancel_check=lambda: cancel_requested.is_set(),
+                    )
+                    stage_durations_seconds["captions"] = round(time.monotonic() - caption_started_at, 3)
+                    caption_b64 = base64.b64encode(caption_result.caption_path.read_bytes()).decode("utf-8")
+                    emit_progress(
+                        map_postprocess_stage_progress(
+                            0.99,
+                            stage="captions",
+                            cleanup_requested=cleanup_requested,
+                            caption_requested=True,
+                        ),
+                        stage="captions",
+                        detail="Uploading audio and captions from your local helper device.",
+                        eta_seconds=5,
+                    )
+                elif caption_requested:
+                    emit_progress(
+                        map_worker_stage_progress("finalize", 0.96, reserve_cleanup_band=postprocess_requested),
+                        stage="finalize",
+                        detail="Uploading audio for server-side caption generation",
+                        eta_seconds=max(8, int((caption_eta_seconds or 0) or 8)),
+                    )
+
                 if cancel_requested.is_set():
                     raise JobCancelledError("job cancelled")
                 stage_durations_seconds["total"] = round(time.monotonic() - started_at, 3)
-                return {
+                response = {
                     "output_audio_b64": base64.b64encode(final_path.read_bytes()).decode("utf-8"),
                     "output_format": OutputFormat(req.output_format).value,
                     "duration_seconds": probe_duration_seconds(final_path),
@@ -353,6 +413,9 @@ class WorkerClient:
                     "cleanup_summary": cleanup_result.summary_text() if cleanup_result else None,
                     "stage_durations_seconds": stage_durations_seconds,
                 }
+                if caption_b64 is not None:
+                    response["caption_b64"] = caption_b64
+                return response
             finally:
                 stop_heartbeat.set()
                 heartbeat_thread.join(timeout=1)

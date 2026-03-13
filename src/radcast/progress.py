@@ -27,7 +27,7 @@ def estimate_speech_cleanup_seconds(
 
 def estimate_caption_seconds(duration_seconds: float | None) -> int:
     safe_duration = max(1.0, float(duration_seconds or 1.0))
-    return max(5, min(int(round(6.0 + (safe_duration * 0.18))), 8 * 60))
+    return max(12, min(int(round(14.0 + (safe_duration * 0.55))), 12 * 60))
 
 
 def map_local_stage_progress(stage: str, progress: float, *, reserve_cleanup_band: bool) -> float:
@@ -88,12 +88,12 @@ def map_postprocess_stage_progress(
     normalized = str(stage or "").strip().lower()
     if normalized == "cleanup":
         if caption_requested:
-            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.86)
+            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.82)
         return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.96)
     if normalized == "captions":
         if cleanup_requested:
-            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.86, target_end=0.96)
-        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.96)
+            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.82, target_end=0.97)
+        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.97)
     return clamped
 
 

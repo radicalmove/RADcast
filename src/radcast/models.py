@@ -226,6 +226,7 @@ class WorkerJobCompleteRequest(BaseModel):
     worker_id: str
     api_key: str
     output_audio_b64: str = Field(min_length=32)
+    caption_b64: str | None = None
     output_format: OutputFormat
     duration_seconds: float = Field(gt=0)
     cleanup_applied: bool = False

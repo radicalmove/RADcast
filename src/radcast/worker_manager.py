@@ -382,8 +382,12 @@ class WorkerManager:
             input_path = paths.assets_source_audio / f"{payload.output_name}_{input_filename}"
             input_path.parent.mkdir(parents=True, exist_ok=True)
             input_path.write_bytes(base64.b64decode(payload.input_audio_b64.encode("utf-8")))
+            helper_caption_path = None
+            if req.caption_b64 and payload.caption_format is not None:
+                helper_caption_path = output_path.with_suffix(f".{payload.caption_format.value}")
+                helper_caption_path.write_bytes(base64.b64decode(req.caption_b64.encode("utf-8")))
             cleanup_requested = payload.speech_cleanup_requested() and not req.cleanup_applied
-            caption_requested = payload.caption_requested()
+            caption_requested = payload.caption_requested() and helper_caption_path is None
             cleanup_band_reserved = payload.speech_cleanup_requested()
             if cleanup_requested or caption_requested:
                 cleanup_eta_seconds = (
@@ -435,6 +439,7 @@ class WorkerManager:
                         "duration_seconds": req.duration_seconds,
                         "cleanup_already_applied": req.cleanup_applied,
                         "cleanup_summary": req.cleanup_summary,
+                        "helper_caption_path": helper_caption_path,
                     },
                     name=f"radcast-worker-finalize-{job_id}",
                     daemon=True,
@@ -451,6 +456,7 @@ class WorkerManager:
                 duration_seconds=req.duration_seconds,
                 cleanup_already_applied=req.cleanup_applied,
                 cleanup_summary=req.cleanup_summary,
+                helper_caption_path=helper_caption_path,
             )
             return "completed"
         except Exception as exc:
@@ -478,13 +484,14 @@ class WorkerManager:
         duration_seconds: float,
         cleanup_already_applied: bool = False,
         cleanup_summary: str | None = None,
+        helper_caption_path: Path | None = None,
     ) -> None:
         try:
             paths = self.project_manager.ensure_project(payload.project_id)
             store = ManifestStore(paths.manifests)
             cleanup_result = None
             cleanup_requested = payload.speech_cleanup_requested() and not cleanup_already_applied
-            caption_requested = payload.caption_requested()
+            caption_requested = payload.caption_requested() and helper_caption_path is None
             cleanup_band_reserved = payload.speech_cleanup_requested()
             caption_eta_seconds = estimate_caption_seconds(duration_seconds) if caption_requested else None
             final_duration_seconds = duration_seconds
@@ -519,7 +526,8 @@ class WorkerManager:
                 )
                 final_duration_seconds = cleanup_result.duration_seconds or probe_duration_seconds(output_path)
 
-            caption_result = None
+            caption_path = helper_caption_path
+            caption_format = payload.caption_format if helper_caption_path is not None else None
             if caption_requested and payload.caption_format is not None:
                 caption_result = speech_cleanup_service.generate_caption_file(
                     audio_path=output_path,
@@ -539,14 +547,16 @@ class WorkerManager:
                         log=detail,
                     ),
                 )
+                caption_path = caption_result.caption_path
+                caption_format = caption_result.caption_format
 
             metadata = OutputMetadata(
                 output_file=output_path,
                 input_file=input_path,
                 duration_seconds=final_duration_seconds,
                 output_format=output_format,
-                caption_file=caption_result.caption_path if caption_result else None,
-                caption_format=payload.caption_format,
+                caption_file=caption_path,
+                caption_format=caption_format,
                 enhancement_model=payload.enhancement_model,
                 audio_tuning_label=current_audio_tuning_label(payload.enhancement_model),
                 max_silence_seconds=payload.max_silence_seconds,
@@ -563,9 +573,9 @@ class WorkerManager:
                 "audio_path": str(output_path),
                 "metadata_path": str(metadata_path),
             }
-            if caption_result is not None:
-                outputs["caption_path"] = str(caption_result.caption_path)
-                outputs["caption_format"] = caption_result.caption_format.value
+            if caption_path is not None and caption_format is not None:
+                outputs["caption_path"] = str(caption_path)
+                outputs["caption_format"] = caption_format.value
             self._mark_queue_job(job_id, status="completed")
             self._update_job_manifest(
                 project_id=payload.project_id,
@@ -576,15 +586,15 @@ class WorkerManager:
                 outputs=outputs,
                 log=(
                     (
-                        f"{cleanup_summary.rstrip('.')} Generated {caption_result.caption_format.value.upper()} captions."
-                        if cleanup_summary and caption_result is not None
+                        f"{cleanup_summary.rstrip('.')} Generated {caption_format.value.upper()} captions."
+                        if cleanup_summary and caption_format is not None
                         else cleanup_summary
                     )
                     or _completed_output_log(
                         enhancement_model=payload.enhancement_model,
                         cleanup_result=cleanup_result,
                         cleanup_already_applied=cleanup_already_applied,
-                        caption_format=caption_result.caption_format if caption_result else payload.caption_format,
+                        caption_format=caption_format,
                     )
                     or f"worker {worker_id} completed job"
                 ),

@@ -82,6 +82,8 @@ const stageLabels = {
   cancelled: "Cancelled",
 };
 
+const flexibleEtaStages = new Set(["cleanup", "captions"]);
+
 const state = {
   activeProjectRef: null,
   activeProjectLabel: null,
@@ -1469,7 +1471,7 @@ function syncEtaFromJob(nextStage, nextEtaSeconds) {
   }
 
   const currentRemaining = currentEtaRemainingSeconds();
-  const allowEtaIncrease = nextStage === "cleanup" || state.etaStage === "cleanup";
+  const allowEtaIncrease = flexibleEtaStages.has(nextStage) || flexibleEtaStages.has(state.etaStage);
   if (
     currentRemaining === null ||
     nextEtaSeconds <= currentRemaining - 3 ||
@@ -1504,7 +1506,7 @@ function renderEtaText() {
   }
 
   if (remaining <= 0) {
-    if (state.currentStage === "cleanup") {
+    if (flexibleEtaStages.has(state.currentStage)) {
       progressEtaNode.textContent = "Time left to process: recalculating...";
       return;
     }
@@ -1525,6 +1527,12 @@ function runningStatusText() {
     }
     return "Helper enhancement is done. Applying speech cleanup on the RADcast server (Mac mini).";
   }
+  if (state.currentStage === "captions") {
+    if (state.computeMode === "worker") {
+      return "Helper connected. Generating captions on your local helper device.";
+    }
+    return "Audio processing is done. Generating captions on the RADcast server (Mac mini).";
+  }
   if (state.computeMode === "worker") {
     if (state.currentStage === "prepare") return "Helper connected. Preparing enhancement on your local helper device.";
     if (state.currentStage === "enhance") return "Helper connected. Improving audio on your local helper device.";
@@ -1541,15 +1549,24 @@ function runningStatusText() {
 }
 
 function inferComputeMode(stage, logs) {
-  const joinedLogs = Array.isArray(logs) ? logs.map((entry) => String(entry || "").toLowerCase()).join(" ") : "";
+  const rows = Array.isArray(logs) ? logs.map((entry) => String(entry || "").toLowerCase()) : [];
+  const joinedLogs = rows.join(" ");
+  const latestLog = rows.length ? rows[rows.length - 1] : "";
   const normalizedStage = String(stage || "").toLowerCase();
   if (normalizedStage === "queued_remote") return "waiting_worker";
   if (normalizedStage === "cleanup") {
-    if (joinedLogs.includes("local helper device")) return "worker";
-    if (joinedLogs.includes("radcast server")) return "server";
+    if (latestLog.includes("local helper device")) return "worker";
+    if (latestLog.includes("radcast server")) return "server";
     return state.computeMode === "worker" ? "worker" : "server";
   }
+  if (normalizedStage === "captions") {
+    if (latestLog.includes("local helper device")) return "worker";
+    if (latestLog.includes("radcast server")) return "server";
+    return "server";
+  }
   if (normalizedStage === "worker_running") return "worker";
+  if (latestLog.includes("local helper device")) return "worker";
+  if (latestLog.includes("radcast server")) return "server";
   if (joinedLogs.includes("worker ") && joinedLogs.includes("started processing")) return "worker";
   if (joinedLogs.includes("local server fallback") || normalizedStage === "fallback_local") return "server";
   if (state.expectedRemoteWorker && !["completed", "failed", "cancelled"].includes(normalizedStage) && state.computeMode !== "server") {
