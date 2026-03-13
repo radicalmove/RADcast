@@ -719,6 +719,7 @@ function updateSpeechCleanupStatusFromSelection() {
     return;
   }
   const parts = [];
+  const cleanupOnly = selectedEnhancementModelId() === "none";
   const maxSilenceSeconds = selectedMaxSilenceSeconds();
   if (maxSilenceSeconds !== null) {
     parts.push(`Speech gaps over ${formatSilenceThresholdLabel(maxSilenceSeconds)} will be shortened.`);
@@ -731,9 +732,17 @@ function updateSpeechCleanupStatusFromSelection() {
     }
   }
   if (!parts.length) {
-    parts.push(state.speechCleanupDetail || "Speech cleanup can shorten long pauses and remove filler words after enhancement.");
+    parts.push(
+      cleanupOnly
+        ? "Speech cleanup can shorten long pauses and remove filler words without changing the enhancement model."
+        : (state.speechCleanupDetail || "Speech cleanup can shorten long pauses and remove filler words after enhancement.")
+    );
   } else {
-    parts.push("This runs after enhancement, so the final save can take a little longer.");
+    parts.push(
+      cleanupOnly
+        ? "This runs without enhancement, so only the cleanup options will change the audio."
+        : "This runs after enhancement, so the final save can take a little longer."
+    );
   }
   setSpeechCleanupStatus(parts.join(" "));
 }

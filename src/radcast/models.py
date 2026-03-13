@@ -18,6 +18,7 @@ class OutputFormat(str, Enum):
 
 
 class EnhancementModel(str, Enum):
+    NONE = "none"
     RESEMBLE = "resemble"
     DEEPFILTERNET = "deepfilternet"
     STUDIO = "studio"

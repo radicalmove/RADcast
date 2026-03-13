@@ -44,8 +44,9 @@ def test_ui_homepage_renders():
     assert "Filler cleanup strength" in response.text
 
 
-def test_worker_invite_and_status_endpoints_render():
+def test_worker_invite_and_status_endpoints_render(monkeypatch):
     client = TestClient(app)
+    monkeypatch.setattr(radcast_api.worker_manager, "list_workers", lambda: [])
     invite = client.post("/workers/invite", json={"capabilities": ["enhance"]})
     assert invite.status_code == 200
     payload = invite.json()
@@ -67,6 +68,7 @@ def test_worker_invite_and_status_endpoints_render():
     assert models.status_code == 200
     models_payload = models.json()
     assert models_payload["default_model"] in {"resemble", "deepfilternet", "studio"}
+    assert any(item["id"] == "none" for item in models_payload["models"])
     assert any(item["id"] == "resemble" for item in models_payload["models"])
     assert any(item["id"] == "deepfilternet" for item in models_payload["models"])
     assert any(item["id"] == "studio" for item in models_payload["models"])
@@ -146,6 +148,7 @@ def test_source_audio_upload_list_and_enhance_by_hash(monkeypatch):
     client = TestClient(app)
     project_id = f"radcast-{uuid.uuid4().hex[:8]}"
     sample_b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw"
+    monkeypatch.setattr(radcast_api.worker_manager, "list_workers", lambda: [])
 
     def fake_enhance(*, output_base_path, on_stage, **kwargs):
         on_stage("enhance", 0.65, "Improving audio", 12)
@@ -237,7 +240,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
             json={
                 "selected_audio_hash": audio_hash,
                 "output_format": "wav",
-                "enhancement_model": "deepfilternet",
+                "enhancement_model": "none",
                 "reduce_silence_enabled": True,
                 "max_silence_seconds": 2.25,
                 "remove_filler_words": True,
@@ -248,7 +251,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
         assert updated.json()["settings"] == {
             "selected_audio_hash": audio_hash,
             "output_format": "wav",
-            "enhancement_model": "deepfilternet",
+            "enhancement_model": "none",
             "reduce_silence_enabled": True,
             "max_silence_seconds": 2.25,
             "remove_filler_words": True,

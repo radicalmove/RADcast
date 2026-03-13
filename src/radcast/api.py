@@ -814,7 +814,12 @@ def _run_enhancement_job(
         )
 
     try:
-        on_stage("prepare", 0.08, f"Preparing enhancement with {enhancement_model.value}")
+        prepare_detail = (
+            "Preparing source audio without enhancement."
+            if enhancement_model == EnhancementModel.NONE
+            else f"Preparing enhancement with {enhancement_model.value}"
+        )
+        on_stage("prepare", 0.08, prepare_detail)
         output_base = paths.assets_enhanced_audio / output_name
         final_path = enhance_service.enhance(
             job_id=job_id,

@@ -16,12 +16,13 @@ from radcast.services.speech_cleanup import SpeechCleanupResult
 from radcast.worker_client import WorkerClient
 
 
-def test_worker_queue_round_trip_completes_job():
+def test_worker_queue_round_trip_completes_job(monkeypatch):
     client = TestClient(app)
     project_id = f"radcast-worker-{uuid.uuid4().hex[:8]}"
     sample_b64 = base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8")
     from radcast import api as api_module
 
+    monkeypatch.setattr(api_module.worker_manager, "list_workers", lambda: [])
     original_is_model_available = api_module.enhance_service.is_model_available
     api_module.enhance_service.is_model_available = lambda _model: True
 
@@ -122,6 +123,7 @@ def test_worker_completion_applies_server_side_speech_cleanup(monkeypatch):
     sample_b64 = base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8")
     from radcast import api as api_module
 
+    monkeypatch.setattr(api_module.worker_manager, "list_workers", lambda: [])
     original_is_model_available = api_module.enhance_service.is_model_available
     captured: dict[str, object] = {}
 
@@ -215,6 +217,7 @@ def test_worker_completion_skips_server_cleanup_when_helper_already_applied_it(m
     sample_b64 = base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8")
     from radcast import api as api_module
 
+    monkeypatch.setattr(api_module.worker_manager, "list_workers", lambda: [])
     original_is_model_available = api_module.enhance_service.is_model_available
 
     def fail_cleanup(**kwargs):
@@ -283,12 +286,13 @@ def test_worker_completion_skips_server_cleanup_when_helper_already_applied_it(m
             shutil.rmtree(project_root)
 
 
-def test_cancel_endpoint_marks_running_worker_job_cancelled():
+def test_cancel_endpoint_marks_running_worker_job_cancelled(monkeypatch):
     client = TestClient(app)
     project_id = f"radcast-worker-{uuid.uuid4().hex[:8]}"
     sample_b64 = base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8")
     from radcast import api as api_module
 
+    monkeypatch.setattr(api_module.worker_manager, "list_workers", lambda: [])
     original_is_model_available = api_module.enhance_service.is_model_available
     api_module.enhance_service.is_model_available = lambda _model: True
 

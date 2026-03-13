@@ -43,6 +43,7 @@ from radcast.models import EnhancementModel, OutputFormat
 from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
 
 MODEL_LABELS = {
+    EnhancementModel.NONE: "Do not enhance",
     EnhancementModel.RESEMBLE: "Resemble Enhance",
     EnhancementModel.DEEPFILTERNET: "DeepFilterNet3",
     EnhancementModel.STUDIO: "Studio Cleanup",
@@ -50,6 +51,7 @@ MODEL_LABELS = {
 }
 
 MODEL_DESCRIPTIONS = {
+    EnhancementModel.NONE: "Keeps the original audio quality and only applies optional silence or filler cleanup.",
     EnhancementModel.RESEMBLE: "Current RADcast backend. Strong cleanup, but can sound more processed.",
     EnhancementModel.DEEPFILTERNET: "Official DeepFilterNet3 speech enhancement. Usually more natural and less compressed.",
     EnhancementModel.STUDIO: "Custom late-reverb suppression plus Resemble Enhance. Built to chase a drier studio-mic sound.",
@@ -57,7 +59,9 @@ MODEL_DESCRIPTIONS = {
 }
 
 
-def current_audio_tuning_label(model: EnhancementModel | None = None) -> str:
+def current_audio_tuning_label(model: EnhancementModel | None = None) -> str | None:
+    if model == EnhancementModel.NONE:
+        return None
     if model == EnhancementModel.STUDIO_V18:
         raw = str(os.environ.get("RADCAST_STUDIO_V18_TUNING_LABEL", DEFAULT_STUDIO_V18_TUNING_LABEL)).strip()
         return raw or DEFAULT_STUDIO_V18_TUNING_LABEL
@@ -149,6 +153,17 @@ class EnhanceService:
         if cancel_check():
             raise JobCancelledError("job cancelled")
 
+        if model == EnhancementModel.NONE:
+            on_stage("prepare", 0.12, "Preparing source audio without enhancement.", 4)
+            on_stage("enhance", 0.82, "Skipping enhancement and keeping the original audio quality.", 2)
+            final_path = self._write_passthrough_output(
+                input_audio_path=input_audio_path,
+                output_format=output_format,
+                output_base_path=output_base_path,
+            )
+            on_stage("finalize", 0.96, "Saving audio without enhancement.", 2)
+            return final_path
+
         with tempfile.TemporaryDirectory(prefix=f"radcast_{job_id}_") as tmp:
             tmp_path = Path(tmp)
             in_dir = tmp_path / "in"
@@ -230,7 +245,33 @@ class EnhanceService:
             run_ffmpeg_convert(enhanced_wav, final_path, audio_filters=output_filter)
             return final_path
 
+    def _write_passthrough_output(
+        self,
+        *,
+        input_audio_path: Path,
+        output_format: OutputFormat,
+        output_base_path: Path,
+    ) -> Path:
+        output_base_path.parent.mkdir(parents=True, exist_ok=True)
+        input_suffix = input_audio_path.suffix.lower()
+        if output_format == OutputFormat.WAV:
+            final_path = output_base_path.with_suffix(".wav")
+            if input_suffix == ".wav":
+                shutil.copy2(input_audio_path, final_path)
+            else:
+                run_ffmpeg_convert(input_audio_path, final_path)
+            return final_path
+
+        final_path = output_base_path.with_suffix(".mp3")
+        if input_suffix == ".mp3":
+            shutil.copy2(input_audio_path, final_path)
+        else:
+            run_ffmpeg_convert(input_audio_path, final_path)
+        return final_path
+
     def _availability_for_model(self, model: EnhancementModel) -> tuple[bool, str]:
+        if model == EnhancementModel.NONE:
+            return True, "Runs optional silence and filler cleanup without changing the enhancement model."
         if model == EnhancementModel.RESEMBLE:
             available = _command_available(self.resemble_command)
             return available, "Install resemble-enhance to enable it." if not available else "Installed."
@@ -363,7 +404,7 @@ class EnhanceService:
             return "DeepFilterNet command not found. Install deepfilternet or set RADCAST_DEEPFILTERNET_COMMAND."
         return "Enhancement command not found. Install resemble-enhance or set RADCAST_ENHANCE_COMMAND."
 
-    def output_tuning_label_for_model(self, model: EnhancementModel) -> str:
+    def output_tuning_label_for_model(self, model: EnhancementModel) -> str | None:
         return current_audio_tuning_label(model)
 
     def _output_filter_for_model(self, model: EnhancementModel) -> str:
@@ -444,6 +485,10 @@ def _estimate_runtime_seconds(duration_seconds: float, *, device: str, nfe: int,
     normalized_device = (device or DEFAULT_ENHANCE_DEVICE).strip().lower()
     accelerated = normalized_device.startswith("cuda") or normalized_device == "mps"
 
+    if enhancement_model == EnhancementModel.NONE:
+        estimate = 2.0 + (safe_duration * 0.12)
+        return max(3, min(int(round(estimate)), 30))
+
     if enhancement_model == EnhancementModel.DEEPFILTERNET:
         if accelerated:
             base_seconds = 6.0
@@ -509,6 +554,10 @@ def _progress_detail_for_model(
     expected_runtime_seconds: int,
     eta_seconds: int | None,
 ) -> str:
+    if model == EnhancementModel.NONE:
+        if eta_seconds is None:
+            return "Keeping the original audio quality. Finishing soon."
+        return "Keeping the original audio quality."
     label = MODEL_LABELS[model]
     warmup_seconds = min(10.0, expected_runtime_seconds * 0.18)
     if elapsed_seconds < warmup_seconds:

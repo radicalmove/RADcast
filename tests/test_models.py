@@ -108,6 +108,15 @@ def test_estimate_runtime_seconds_scales_with_duration():
     assert long_runtime > short_runtime
 
 
+def test_no_enhance_runtime_estimate_stays_small():
+    short_runtime = _estimate_runtime_seconds(5, device="cpu", nfe=32, enhancement_model=EnhancementModel.NONE)
+    long_runtime = _estimate_runtime_seconds(30, device="cpu", nfe=32, enhancement_model=EnhancementModel.NONE)
+
+    assert short_runtime >= 3
+    assert long_runtime > short_runtime
+    assert long_runtime < 30
+
+
 def test_studio_runtime_estimate_is_slower_than_resemble_for_same_input():
     resemble_runtime = _estimate_runtime_seconds(30, device="cpu", nfe=32, enhancement_model=EnhancementModel.RESEMBLE)
     studio_runtime = _estimate_runtime_seconds(30, device="cpu", nfe=32, enhancement_model=EnhancementModel.STUDIO)
@@ -176,6 +185,38 @@ def test_enhance_service_applies_prefilter_before_enhancement(
 
     assert final_path.suffix == ".wav"
     assert calls[0] == service.prefilter
+
+
+def test_no_enhance_model_skips_backend_and_copies_matching_format(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    service = EnhanceService()
+    source = tmp_path / "input.mp3"
+    source_bytes = b"fake-mp3"
+    source.write_bytes(source_bytes)
+    backend_called = False
+
+    def fail_backend(*args, **kwargs):
+        nonlocal backend_called
+        backend_called = True
+        raise AssertionError("backend process should not run for the no-enhance model")
+
+    monkeypatch.setattr("radcast.services.enhance.subprocess.Popen", fail_backend)
+
+    final_path = service.enhance(
+        job_id="job1",
+        enhancement_model=EnhancementModel.NONE,
+        input_audio_path=source,
+        output_format=OutputFormat.MP3,
+        output_base_path=tmp_path / "out" / "result",
+        on_stage=lambda *args: None,
+        cancel_check=lambda: False,
+    )
+
+    assert backend_called is False
+    assert final_path.suffix == ".mp3"
+    assert final_path.read_bytes() == source_bytes
 
 
 def test_studio_model_uses_studio_postfilter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -269,3 +310,4 @@ def test_studio_v18_model_uses_studio_v18_postfilter(monkeypatch: pytest.MonkeyP
     assert calls[0] == service.prefilter
     assert calls[-1] == service.studio_v18_postfilter
     assert service.output_tuning_label_for_model(EnhancementModel.STUDIO_V18) == "Version 18"
+    assert service.output_tuning_label_for_model(EnhancementModel.NONE) is None
