@@ -16,6 +16,7 @@ const audioDropzoneTitleNode = document.getElementById("audio-dropzone-title");
 const audioFileNameNode = document.getElementById("audio-file-name");
 const savedSourceAudioSelectNode = document.getElementById("saved-source-audio-select");
 const refreshSourceAudioBtn = document.getElementById("refresh-source-audio-btn");
+const deleteSourceAudioBtn = document.getElementById("delete-source-audio-btn");
 const savedSourceAudioStatusNode = document.getElementById("saved-source-audio-status");
 const sourcePreviewLabelNode = document.getElementById("source-preview-label");
 const sourceAudioPreviewNode = document.getElementById("source-audio-preview");
@@ -1087,6 +1088,7 @@ function updateAudioSelection(file) {
   if (savedSourceAudioSelectNode) {
     savedSourceAudioSelectNode.value = "";
   }
+  updateSourceAudioDeleteButtonState();
   setSourcePreviewFile(file || null);
   if (!file) {
     if (audioDropzoneTitleNode) audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
@@ -1113,10 +1115,16 @@ function findSavedSourceAudioByHash(audioHash) {
   return null;
 }
 
+function updateSourceAudioDeleteButtonState() {
+  if (!deleteSourceAudioBtn || !savedSourceAudioSelectNode) return;
+  deleteSourceAudioBtn.disabled = !cleanOptional(savedSourceAudioSelectNode.value);
+}
+
 function applySavedSourceAudioSelection(audioHash) {
   const sample = findSavedSourceAudioByHash(audioHash);
   if (!sample) {
     setSavedSourceAudioStatus("Saved audio file not found. Refresh and try again.", true);
+    updateSourceAudioDeleteButtonState();
     return;
   }
 
@@ -1136,6 +1144,7 @@ function applySavedSourceAudioSelection(audioHash) {
     audioFileNameNode.textContent = `${sample.source_filename || "saved-audio"} (${stamped}${durationHint})`;
   }
   setSavedSourceAudioStatus(`Using saved project audio: ${sample.source_filename || sample.audio_hash.slice(0, 8)}.`);
+  updateSourceAudioDeleteButtonState();
 }
 
 async function loadSourceAudioSamples(preferredHash = null) {
@@ -1145,6 +1154,7 @@ async function loadSourceAudioSamples(preferredHash = null) {
   savedSourceAudioSelectNode.innerHTML = '<option value="">Loading saved audio files...</option>';
   savedSourceAudioSelectNode.disabled = true;
   if (refreshSourceAudioBtn) refreshSourceAudioBtn.disabled = true;
+  if (deleteSourceAudioBtn) deleteSourceAudioBtn.disabled = true;
   setSavedSourceAudioStatus("Loading saved audio files...");
 
   try {
@@ -1157,6 +1167,7 @@ async function loadSourceAudioSamples(preferredHash = null) {
       savedSourceAudioSelectNode.innerHTML = '<option value="">No saved audio files yet</option>';
       savedSourceAudioSelectNode.value = "";
       setSavedSourceAudioStatus("No saved audio files in this project yet.");
+      updateSourceAudioDeleteButtonState();
       return;
     }
 
@@ -1178,6 +1189,7 @@ async function loadSourceAudioSamples(preferredHash = null) {
       applySavedSourceAudioSelection(selectedHash);
     } else {
       setSavedSourceAudioStatus(`Loaded ${samples.length} saved audio file${samples.length === 1 ? "" : "s"}.`);
+      updateSourceAudioDeleteButtonState();
     }
   } catch (err) {
     savedSourceAudioSelectNode.innerHTML = '<option value="">Unable to load saved audio files</option>';
@@ -1185,6 +1197,58 @@ async function loadSourceAudioSamples(preferredHash = null) {
   } finally {
     savedSourceAudioSelectNode.disabled = false;
     if (refreshSourceAudioBtn) refreshSourceAudioBtn.disabled = false;
+    updateSourceAudioDeleteButtonState();
+  }
+}
+
+async function handleDeleteSavedSourceAudio() {
+  if (!state.activeProjectRef || !savedSourceAudioSelectNode) return;
+
+  const selectedHash = cleanOptional(savedSourceAudioSelectNode.value);
+  if (!selectedHash) return;
+  const sample = findSavedSourceAudioByHash(selectedHash);
+  if (!sample) {
+    setSavedSourceAudioStatus("Saved audio file not found. Refresh and try again.", true);
+    updateSourceAudioDeleteButtonState();
+    return;
+  }
+
+  const sampleLabel = sample.source_filename || sample.audio_hash?.slice(0, 8) || "selected audio";
+  const confirmed = window.confirm(`Delete this saved audio file?\n\n${sampleLabel}`);
+  if (!confirmed) return;
+
+  if (deleteSourceAudioBtn) deleteSourceAudioBtn.disabled = true;
+  setSavedSourceAudioStatus("Deleting saved audio file...");
+
+  try {
+    await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/source-audio/delete`,
+      "POST",
+      { audio_hash: sample.audio_hash }
+    );
+
+    if (state.selectedAudioHash === sample.audio_hash) {
+      state.selectedAudioHash = null;
+      if (!state.selectedAudioFile) {
+        if (savedSourceAudioSelectNode) {
+          savedSourceAudioSelectNode.value = "";
+        }
+        if (audioDropzoneTitleNode) {
+          audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
+        }
+        if (audioFileNameNode) {
+          audioFileNameNode.textContent = "No file selected.";
+        }
+        setSourcePreviewFile(null);
+      }
+      queueProjectSettingsSave();
+    }
+
+    await loadSourceAudioSamples();
+    setSavedSourceAudioStatus("Saved audio file deleted.");
+  } catch (err) {
+    setSavedSourceAudioStatus(`Could not delete saved audio file: ${String(err)}`, true);
+    updateSourceAudioDeleteButtonState();
   }
 }
 
@@ -1983,6 +2047,12 @@ async function init() {
     });
   }
 
+  if (deleteSourceAudioBtn) {
+    deleteSourceAudioBtn.addEventListener("click", () => {
+      void handleDeleteSavedSourceAudio();
+    });
+  }
+
   if (workerRefreshBtn) {
     workerRefreshBtn.addEventListener("click", () => {
       void fetchWorkerStatus();
@@ -2042,10 +2112,12 @@ async function init() {
           if (audioFileNameNode) audioFileNameNode.textContent = "No file selected.";
         }
         setSavedSourceAudioStatus("Uploaded audio files are saved to this project for reuse.");
+        updateSourceAudioDeleteButtonState();
         queueProjectSettingsSave();
         return;
       }
       applySavedSourceAudioSelection(audioHash);
+      updateSourceAudioDeleteButtonState();
       queueProjectSettingsSave();
     });
   }

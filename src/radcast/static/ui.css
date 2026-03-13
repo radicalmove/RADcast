@@ -751,8 +751,9 @@ body.modal-open {
 
 .saved-sample-row {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
+  align-items: center;
 }
 
 .script-version-row {
@@ -768,6 +769,14 @@ body.modal-open {
 
 .script-version-row select {
   margin: 0;
+}
+
+.icon-bin-btn {
+  min-width: 40px !important;
+  width: 40px;
+  padding: 10px 0;
+  font-size: 1rem;
+  line-height: 1;
 }
 
 #refresh-samples-btn {

@@ -207,6 +207,48 @@ def test_source_audio_upload_list_and_enhance_by_hash(monkeypatch):
             shutil.rmtree(project_root)
 
 
+def test_source_audio_delete_removes_saved_file(monkeypatch):
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    sample_b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw"
+
+    monkeypatch.setattr("radcast.api.probe_duration_seconds", lambda path: 4.2)
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        uploaded = client.post(
+            f"/projects/{project_id}/source-audio",
+            json={"filename": "lecture.wav", "audio_b64": sample_b64},
+        )
+        assert uploaded.status_code == 200
+        uploaded_payload = uploaded.json()
+
+        saved_path = Path(uploaded_payload["saved_path"])
+        assert saved_path.exists()
+
+        deleted = client.post(
+            f"/projects/{project_id}/source-audio/delete",
+            json={"audio_hash": uploaded_payload["audio_hash"]},
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"] is True
+        assert deleted.json()["removed_file"] is True
+        assert not saved_path.exists()
+
+        listed = client.get(f"/projects/{project_id}/source-audio")
+        assert listed.status_code == 200
+        assert listed.json()["samples"] == []
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        project_root = Path("projects") / project_id
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_project_settings_roundtrip_persists_last_used_options():
     client = TestClient(app)
     project_id = f"radcast-{uuid.uuid4().hex[:8]}"

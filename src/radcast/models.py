@@ -97,6 +97,10 @@ class ProjectSourceAudioUploadRequest(BaseModel):
     audio_b64: str = Field(min_length=32)
 
 
+class ProjectSourceAudioDeleteRequest(BaseModel):
+    audio_hash: str = Field(min_length=16, max_length=128)
+
+
 class ProjectUiSettings(BaseModel):
     selected_audio_hash: str | None = None
     output_format: OutputFormat = OutputFormat.MP3

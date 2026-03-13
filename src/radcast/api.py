@@ -32,6 +32,7 @@ from radcast.models import (
     ProjectAccessGrantRequest,
     ProjectAccessRevokeRequest,
     ProjectCreateRequest,
+    ProjectSourceAudioDeleteRequest,
     ProjectSourceAudioUploadRequest,
     ProjectUiSettings,
     SimpleEnhanceRequest,
@@ -1191,6 +1192,42 @@ def list_source_audio(request: Request, project_id: str):
     return {
         "project_id": _display_project_id(scoped_project_id),
         "samples": _list_source_audio_entries(request, scoped_project_id=scoped_project_id),
+    }
+
+
+@app.post("/projects/{project_id}/source-audio/delete")
+def delete_source_audio(request: Request, project_id: str, req: ProjectSourceAudioDeleteRequest):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    paths = project_manager.ensure_project(scoped_project_id)
+
+    audio_hash = req.audio_hash.strip().lower()
+    items = _load_source_audio_index(paths)
+    entry = next((item for item in items if str(item.get("audio_hash") or "").strip().lower() == audio_hash), None)
+    if not isinstance(entry, dict):
+        raise HTTPException(status_code=404, detail="saved audio file not found")
+
+    saved_path = str(entry.get("audio_path") or "")
+    next_items = [item for item in items if str(item.get("audio_hash") or "").strip().lower() != audio_hash]
+    _write_source_audio_index(paths, next_items)
+
+    removed_file = False
+    if saved_path:
+        candidate_path = Path(saved_path)
+        try:
+            resolved = candidate_path.resolve()
+            resolved.relative_to(paths.root.resolve())
+        except (FileNotFoundError, ValueError):
+            resolved = None
+        if resolved is not None and resolved.exists():
+            resolved.unlink(missing_ok=True)
+            removed_file = True
+
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "deleted": True,
+        "audio_hash": audio_hash,
+        "removed_file": removed_file,
     }
 
 
