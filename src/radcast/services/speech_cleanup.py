@@ -776,19 +776,36 @@ def _merge_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, 
 
 
 def _read_pcm16_wav(path: Path) -> tuple[np.ndarray, int]:
-    with wave.open(str(path), "rb") as handle:
-        sample_rate = handle.getframerate()
-        channels = handle.getnchannels()
-        sample_width = handle.getsampwidth()
-        frames = handle.readframes(handle.getnframes())
+    try:
+        with wave.open(str(path), "rb") as handle:
+            sample_rate = handle.getframerate()
+            channels = handle.getnchannels()
+            sample_width = handle.getsampwidth()
+            frames = handle.readframes(handle.getnframes())
+    except wave.Error:
+        return _read_wav_with_soundfile(path)
     if sample_width != 2:
-        raise EnhancementRuntimeError("Speech cleanup expects a PCM16 WAV analysis file.")
+        return _read_wav_with_soundfile(path)
     pcm = np.frombuffer(frames, dtype="<i2").astype(np.float32)
     if channels > 1:
         pcm = pcm.reshape(-1, channels)
     else:
         pcm = pcm.reshape(-1, 1)
     return pcm / 32768.0, sample_rate
+
+
+def _read_wav_with_soundfile(path: Path) -> tuple[np.ndarray, int]:
+    try:
+        import soundfile as sf
+    except ImportError as exc:  # pragma: no cover - dependency should already be installed
+        raise EnhancementRuntimeError(
+            "Speech cleanup could not read this WAV variant. Install soundfile or regenerate the helper audio."
+        ) from exc
+    try:
+        samples, sample_rate = sf.read(str(path), dtype="float32", always_2d=True)
+    except Exception as exc:  # pragma: no cover - surfaced as runtime error
+        raise EnhancementRuntimeError(f"Speech cleanup could not read analysis WAV: {exc}") from exc
+    return np.asarray(samples, dtype=np.float32), int(sample_rate)
 
 
 def _write_pcm16_wav(path: Path, samples: np.ndarray, *, sample_rate: int) -> None:

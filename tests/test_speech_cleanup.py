@@ -12,6 +12,7 @@ from radcast.services.speech_cleanup import (
     SpeechCleanupResult,
     SpeechCleanupService,
     TranscriptWordTiming,
+    _read_pcm16_wav,
 )
 
 
@@ -28,6 +29,25 @@ def _write_test_wav(path: Path, samples: np.ndarray, *, sample_rate: int = 16000
 def _wav_duration_seconds(path: Path) -> float:
     with wave.open(str(path), "rb") as handle:
         return handle.getnframes() / float(handle.getframerate())
+
+
+def test_read_pcm16_wav_falls_back_to_soundfile_on_wave_error(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    tone_t = np.linspace(0.0, 0.25, int(sample_rate * 0.25), endpoint=False)
+    audio = (0.2 * np.sin(2.0 * np.pi * 220.0 * tone_t)).astype(np.float32)
+    audio_path = tmp_path / "analysis.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    def fake_wave_open(*args, **kwargs):
+        raise wave.Error("unknown format: 65534")
+
+    monkeypatch.setattr("radcast.services.speech_cleanup.wave.open", fake_wave_open)
+
+    waveform, detected_sample_rate = _read_pcm16_wav(audio_path)
+
+    assert detected_sample_rate == sample_rate
+    assert waveform.shape == (audio.shape[0], 1)
+    assert np.isclose(float(np.max(np.abs(waveform))), 0.2, atol=0.02)
 
 
 def test_cleanup_audio_file_shortens_long_speech_gap(monkeypatch, tmp_path: Path):
