@@ -384,6 +384,7 @@ class WorkerManager:
             input_path.write_bytes(base64.b64decode(payload.input_audio_b64.encode("utf-8")))
             cleanup_requested = payload.speech_cleanup_requested() and not req.cleanup_applied
             caption_requested = payload.caption_requested()
+            cleanup_band_reserved = payload.speech_cleanup_requested()
             if cleanup_requested or caption_requested:
                 cleanup_eta_seconds = (
                     estimate_speech_cleanup_seconds(
@@ -395,12 +396,22 @@ class WorkerManager:
                     else None
                 )
                 caption_eta_seconds = estimate_caption_seconds(req.duration_seconds) if caption_requested else None
+                self._mark_queue_job(job_id, status="server_finalizing")
                 self._update_job_manifest(
                     project_id=payload.project_id,
                     job_id=job_id,
                     status=JobStatus.RUNNING,
                     stage="cleanup" if cleanup_requested else "captions",
-                    progress=0.72,
+                    progress=(
+                        0.72
+                        if cleanup_requested
+                        else map_postprocess_stage_progress(
+                            0.0,
+                            stage="captions",
+                            cleanup_requested=cleanup_band_reserved,
+                            caption_requested=caption_requested,
+                        )
+                    ),
                     eta_seconds=max(1, int((cleanup_eta_seconds or 0) + (caption_eta_seconds or 0))),
                     log=(
                         "Helper enhancement is done. Applying speech cleanup and captions on the RADcast server."
@@ -422,6 +433,8 @@ class WorkerManager:
                         "output_format": OutputFormat(req.output_format),
                         "worker_id": req.worker_id,
                         "duration_seconds": req.duration_seconds,
+                        "cleanup_already_applied": req.cleanup_applied,
+                        "cleanup_summary": req.cleanup_summary,
                     },
                     name=f"radcast-worker-finalize-{job_id}",
                     daemon=True,
@@ -472,6 +485,7 @@ class WorkerManager:
             cleanup_result = None
             cleanup_requested = payload.speech_cleanup_requested() and not cleanup_already_applied
             caption_requested = payload.caption_requested()
+            cleanup_band_reserved = payload.speech_cleanup_requested()
             caption_eta_seconds = estimate_caption_seconds(duration_seconds) if caption_requested else None
             final_duration_seconds = duration_seconds
             if cleanup_requested:
@@ -489,7 +503,7 @@ class WorkerManager:
                         progress=map_postprocess_stage_progress(
                             progress,
                             stage="cleanup",
-                            cleanup_requested=cleanup_requested,
+                            cleanup_requested=cleanup_band_reserved,
                             caption_requested=caption_requested,
                         ),
                         eta_seconds=extend_eta_with_postprocess(
@@ -518,7 +532,7 @@ class WorkerManager:
                         progress=map_postprocess_stage_progress(
                             progress,
                             stage="captions",
-                            cleanup_requested=cleanup_requested,
+                            cleanup_requested=cleanup_band_reserved,
                             caption_requested=caption_requested,
                         ),
                         eta_seconds=eta_seconds if eta_seconds is not None else _UNSET,

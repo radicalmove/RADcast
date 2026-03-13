@@ -1,4 +1,4 @@
-"""Speech-aware post-processing for long silences and filler words."""
+"""Speech-aware post-processing for long silences, filler words, and captions."""
 
 from __future__ import annotations
 
@@ -226,6 +226,7 @@ class SpeechCleanupService:
                 on_stage=on_stage,
                 remove_filler_words=remove_filler_words,
                 filler_removal_mode=filler_removal_mode,
+                cancel_check=cancel_check,
             )
 
             if cancel_check and cancel_check():
@@ -327,6 +328,7 @@ class SpeechCleanupService:
                 remove_filler_words=False,
                 filler_removal_mode=FillerRemovalMode.AGGRESSIVE,
                 transcribe_detail="Transcribing speech for captions.",
+                cancel_check=cancel_check,
             )
 
             if cancel_check and cancel_check():
@@ -364,7 +366,7 @@ class SpeechCleanupService:
             self._model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
         return self._model
 
-    def _transcribe_file(self, model, audio_path: Path, *, preserve_fillers: bool) -> list[object]:
+    def _transcribe_file(self, model, audio_path: Path, *, preserve_fillers: bool):
         kwargs = {
             "beam_size": self.beam_size,
             "word_timestamps": True,
@@ -374,7 +376,7 @@ class SpeechCleanupService:
         if preserve_fillers:
             kwargs["initial_prompt"] = _AGGRESSIVE_FILLER_PROMPT
         segment_iter, _info = model.transcribe(str(audio_path), **kwargs)
-        return list(segment_iter)
+        return segment_iter
 
     def _transcribe_timeline(
         self,
@@ -387,6 +389,7 @@ class SpeechCleanupService:
         remove_filler_words: bool,
         filler_removal_mode: FillerRemovalMode,
         transcribe_detail: str = "Transcribing speech timing for cleanup.",
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         normalized_mode = _normalize_filler_mode(filler_removal_mode)
         if remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE:
@@ -397,15 +400,19 @@ class SpeechCleanupService:
                 cleanup_eta_seconds=cleanup_eta_seconds,
                 on_stage=on_stage,
                 transcribe_detail=transcribe_detail,
+                cancel_check=cancel_check,
             )
 
+        if cancel_check and cancel_check():
+            raise JobCancelledError("job cancelled")
         model = self._load_model()
-        transcribed_segments = self._transcribe_file(model, audio_path, preserve_fillers=False)
 
         words: list[TranscriptWordTiming] = []
         segments: list[TranscriptSegmentTiming] = []
         last_progress_emit_at = 0.0
-        for seg in transcribed_segments:
+        for seg in self._transcribe_file(model, audio_path, preserve_fillers=False):
+            if cancel_check and cancel_check():
+                raise JobCancelledError("job cancelled")
             start = max(0.0, float(seg.start))
             end = max(start, float(seg.end))
             text = str(seg.text or "").strip()
@@ -451,7 +458,10 @@ class SpeechCleanupService:
         cleanup_eta_seconds: int,
         on_stage: CleanupStageCallback | None,
         transcribe_detail: str = "Transcribing speech timing for cleanup.",
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
+        if cancel_check and cancel_check():
+            raise JobCancelledError("job cancelled")
         model = self._load_model()
         waveform, sample_rate = _read_pcm16_wav(audio_path)
         total_duration = max(0.0, float(total_duration))
@@ -469,6 +479,8 @@ class SpeechCleanupService:
             window_start = 0.0
             window_index = 0
             while True:
+                if cancel_check and cancel_check():
+                    raise JobCancelledError("job cancelled")
                 window_end = min(total_duration, window_start + window_seconds)
                 start_idx = max(0, min(len(waveform), int(round(window_start * sample_rate))))
                 end_idx = max(start_idx, min(len(waveform), int(round(window_end * sample_rate))))

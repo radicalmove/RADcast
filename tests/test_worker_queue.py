@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import shutil
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -294,6 +295,119 @@ def test_worker_completion_generates_server_side_captions(monkeypatch):
             shutil.rmtree(project_root)
 
 
+def test_worker_progress_is_ignored_after_server_caption_finalization_starts(monkeypatch):
+    client = TestClient(app)
+    project_id = f"radcast-worker-{uuid.uuid4().hex[:8]}"
+    sample_b64 = base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8")
+    from radcast import api as api_module
+
+    monkeypatch.setattr(api_module.worker_manager, "list_workers", lambda: [])
+    original_is_model_available = api_module.enhance_service.is_model_available
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_generate_caption_file(*, audio_path: Path, caption_format: CaptionFormat, **kwargs):
+        started.set()
+        assert release.wait(timeout=1.0)
+        caption_path = audio_path.with_suffix(f".{caption_format.value}")
+        caption_path.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello world\n", encoding="utf-8")
+        return SimpleNamespace(caption_path=caption_path, caption_format=caption_format, segment_count=1)
+
+    monkeypatch.setattr("radcast.worker_manager.speech_cleanup_service.generate_caption_file", fake_generate_caption_file)
+    api_module.enhance_service.is_model_available = lambda _model: True
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        invite = client.post("/workers/invite", json={"capabilities": ["enhance"]})
+        token = invite.json()["invite_token"]
+        register = client.post(
+            "/workers/register",
+            json={"invite_token": token, "worker_name": "test-worker", "capabilities": ["enhance"]},
+        )
+        worker_id = register.json()["worker_id"]
+        api_key = register.json()["api_key"]
+
+        queued = client.post(
+            "/enhance/simple",
+            json={
+                "project_id": project_id,
+                "input_audio_b64": sample_b64,
+                "input_audio_filename": "lecture.wav",
+                "output_format": "mp3",
+                "caption_format": "vtt",
+                "enhancement_model": "deepfilternet",
+                "max_silence_seconds": 1.0,
+                "remove_filler_words": True,
+                "filler_removal_mode": "aggressive",
+            },
+        )
+        assert queued.status_code == 200
+        job_id = queued.json()["job_id"]
+
+        pull = client.post("/workers/pull", json={"worker_id": worker_id, "api_key": api_key})
+        assert pull.status_code == 200
+
+        complete = client.post(
+            f"/workers/jobs/{job_id}/complete",
+            json={
+                "worker_id": worker_id,
+                "api_key": api_key,
+                "output_audio_b64": base64.b64encode(b"fake-mp3" * 8).decode("utf-8"),
+                "output_format": "mp3",
+                "duration_seconds": 5.2,
+                "cleanup_applied": True,
+                "cleanup_summary": "Shortened 1 long pause, removed 1 filler word.",
+                "stage_durations_seconds": {"total": 7.1, "cleanup": 1.2},
+            },
+        )
+        assert complete.status_code == 200
+        assert complete.json()["status"] == "accepted"
+        assert started.wait(timeout=2.5)
+
+        in_progress = client.get(f"/jobs/{job_id}", params={"project_id": project_id}).json()
+        assert in_progress["stage"] == "captions"
+        assert in_progress["progress"] == pytest.approx(0.86)
+
+        stale_progress = client.post(
+            f"/workers/jobs/{job_id}/progress",
+            json={
+                "worker_id": worker_id,
+                "api_key": api_key,
+                "progress": 0.96,
+                "stage": "cleanup",
+                "detail": "Transcribing speech timing for cleanup.",
+                "eta_seconds": 5539,
+            },
+        )
+        assert stale_progress.status_code == 200
+        assert stale_progress.json()["status"] == "ignored"
+
+        after_stale_update = client.get(f"/jobs/{job_id}", params={"project_id": project_id}).json()
+        assert after_stale_update["stage"] == "captions"
+        assert after_stale_update["progress"] == pytest.approx(0.86)
+
+        release.set()
+        for _ in range(20):
+            payload = client.get(f"/jobs/{job_id}", params={"project_id": project_id}).json()
+            if payload["status"] == "completed":
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("worker caption finalization did not complete in time")
+    finally:
+        release.set()
+        api_module.enhance_service.is_model_available = original_is_model_available
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        project_root = Path("projects") / project_id
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_worker_completion_skips_server_cleanup_when_helper_already_applied_it(monkeypatch):
     client = TestClient(app)
     project_id = f"radcast-worker-{uuid.uuid4().hex[:8]}"
@@ -540,3 +654,63 @@ def test_worker_client_applies_speech_cleanup_locally_when_available(monkeypatch
     assert cleanup_calls
     assert cleanup_calls[0]["filler_removal_mode"] == FillerRemovalMode.NORMAL
     assert any(stage == "cleanup" and detail and "local helper device" in detail.lower() for _, stage, detail, _ in progress_updates)
+
+
+def test_worker_client_reserves_caption_band_after_local_cleanup(monkeypatch, tmp_path: Path):
+    client = WorkerClient(
+        server_url="http://example.invalid",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=1,
+    )
+
+    output_bytes = b"fake-mp3-output" * 8
+
+    class FakeEnhanceService:
+        def enhance(self, **kwargs):
+            output_path = kwargs["output_base_path"].with_suffix(".mp3")
+            output_path.write_bytes(output_bytes)
+            kwargs["on_stage"]("enhance", 0.5, "Improving audio", 12)
+            return output_path
+
+        def cancel(self, job_id: str) -> None:
+            raise AssertionError(f"cancel should not be called for {job_id}")
+
+    class FakeSpeechCleanupService:
+        def capability_status(self):
+            return True, "ready"
+
+        def cleanup_audio_file(self, **kwargs):
+            kwargs["on_stage"](0.98, "Saving cleaned audio.", 5)
+            return SpeechCleanupResult(applied=True, removed_pause_count=1, removed_filler_count=1, duration_seconds=2.2)
+
+    progress_updates: list[tuple[float, str | None, str | None, int | None]] = []
+
+    def fake_post_progress_update(job_id, *, progress, stage=None, detail=None, eta_seconds=None):
+        progress_updates.append((progress, stage, detail, eta_seconds))
+        return "running"
+
+    monkeypatch.setattr("radcast.worker_client.probe_duration_seconds", lambda _path: 4.0)
+    client.enhance_service = FakeEnhanceService()
+    client.speech_cleanup_service = FakeSpeechCleanupService()
+    monkeypatch.setattr(client, "_post_progress_update", fake_post_progress_update)
+
+    payload = {
+        "project_id": "proj1",
+        "input_audio_b64": base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8"),
+        "input_audio_filename": "lecture.wav",
+        "output_name": "enhanced-audio",
+        "output_format": "mp3",
+        "enhancement_model": "none",
+        "max_silence_seconds": 1.0,
+        "remove_filler_words": True,
+        "filler_removal_mode": "aggressive",
+        "caption_format": "vtt",
+    }
+
+    client._process_enhance_job("job_test", payload)
+
+    cleanup_progresses = [progress for progress, stage, _detail, _eta in progress_updates if stage == "cleanup"]
+    assert cleanup_progresses
+    assert max(cleanup_progresses) < 0.87

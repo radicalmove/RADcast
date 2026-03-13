@@ -17,7 +17,13 @@ import requests
 
 from radcast.exceptions import JobCancelledError
 from radcast.models import OutputFormat, WorkerEnhanceEnqueueRequest
-from radcast.progress import estimate_speech_cleanup_seconds, extend_eta_with_cleanup, map_cleanup_stage_progress, map_worker_stage_progress
+from radcast.progress import (
+    estimate_caption_seconds,
+    estimate_speech_cleanup_seconds,
+    extend_eta_with_postprocess,
+    map_postprocess_stage_progress,
+    map_worker_stage_progress,
+)
 from radcast.services.enhance import EnhanceService
 from radcast.services.speech_cleanup import SpeechCleanupService
 from radcast.utils.audio import probe_duration_seconds
@@ -179,18 +185,27 @@ class WorkerClient:
             input_path = tmp_path / req.input_audio_filename
             input_path.write_bytes(base64.b64decode(req.input_audio_b64.encode("utf-8")))
             cleanup_requested = req.speech_cleanup_requested()
+            caption_requested = req.caption_requested()
+            postprocess_requested = cleanup_requested or caption_requested
             cleanup_available = False
             cleanup_eta_seconds = None
-            if cleanup_requested:
+            caption_eta_seconds = None
+            input_duration_seconds = None
+            if postprocess_requested:
                 cleanup_available, _cleanup_detail = self.speech_cleanup_service.capability_status()
                 try:
-                    cleanup_eta_seconds = estimate_speech_cleanup_seconds(
-                        probe_duration_seconds(input_path),
-                        remove_filler_words=req.remove_filler_words,
-                        filler_removal_mode=req.filler_removal_mode,
-                    )
+                    input_duration_seconds = probe_duration_seconds(input_path)
+                    if cleanup_requested:
+                        cleanup_eta_seconds = estimate_speech_cleanup_seconds(
+                            input_duration_seconds,
+                            remove_filler_words=req.remove_filler_words,
+                            filler_removal_mode=req.filler_removal_mode,
+                        )
+                    if caption_requested:
+                        caption_eta_seconds = estimate_caption_seconds(input_duration_seconds)
                 except Exception:
                     cleanup_eta_seconds = None
+                    caption_eta_seconds = None
 
             stage_durations_seconds: dict[str, float] = {}
             progress_state = {"progress": 0.18, "stage": "worker_running", "detail": None, "eta_seconds": None}
@@ -239,13 +254,14 @@ class WorkerClient:
 
                 def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
                     emit_progress(
-                        map_worker_stage_progress(stage, progress, reserve_cleanup_band=cleanup_requested),
+                        map_worker_stage_progress(stage, progress, reserve_cleanup_band=postprocess_requested),
                         stage=stage,
                         detail=detail,
-                        eta_seconds=extend_eta_with_cleanup(
+                        eta_seconds=extend_eta_with_postprocess(
                             eta_seconds,
-                            cleanup_eta_seconds,
-                            reserve_cleanup_band=cleanup_requested and stage in {"prepare", "enhance", "finalize"},
+                            cleanup_eta_seconds if cleanup_requested else None,
+                            caption_eta_seconds if caption_requested else None,
+                            reserve_postprocess_band=postprocess_requested and stage in {"prepare", "enhance", "finalize"},
                         ),
                     )
 
@@ -264,10 +280,18 @@ class WorkerClient:
                 if cleanup_requested and cleanup_available:
                     cleanup_started_at = time.monotonic()
                     emit_progress(
-                        0.72,
+                        map_postprocess_stage_progress(
+                            0.0,
+                            stage="cleanup",
+                            cleanup_requested=True,
+                            caption_requested=caption_requested,
+                        ),
                         stage="cleanup",
                         detail="Applying speech cleanup on your local helper device.",
-                        eta_seconds=cleanup_eta_seconds,
+                        eta_seconds=max(
+                            1,
+                            int((cleanup_eta_seconds or 0) + (caption_eta_seconds or 0)),
+                        ),
                     )
                     cleanup_result = self.speech_cleanup_service.cleanup_audio_file(
                         audio_path=final_path,
@@ -276,26 +300,47 @@ class WorkerClient:
                         remove_filler_words=req.remove_filler_words,
                         filler_removal_mode=req.filler_removal_mode,
                         on_stage=lambda progress, detail, eta_seconds: emit_progress(
-                            map_cleanup_stage_progress(progress),
+                            map_postprocess_stage_progress(
+                                progress,
+                                stage="cleanup",
+                                cleanup_requested=True,
+                                caption_requested=caption_requested,
+                            ),
                             stage="cleanup",
                             detail=f"{detail} On your local helper device.",
-                            eta_seconds=eta_seconds,
+                            eta_seconds=extend_eta_with_postprocess(
+                                eta_seconds,
+                                None,
+                                caption_eta_seconds if caption_requested else None,
+                                reserve_postprocess_band=caption_requested,
+                            )
+                            if eta_seconds is not None or caption_requested
+                            else None,
                         ),
                         cancel_check=lambda: cancel_requested.is_set(),
                     )
                     stage_durations_seconds["cleanup"] = round(time.monotonic() - cleanup_started_at, 3)
                     emit_progress(
-                        map_cleanup_stage_progress(0.98),
+                        map_postprocess_stage_progress(
+                            0.98,
+                            stage="cleanup",
+                            cleanup_requested=True,
+                            caption_requested=caption_requested,
+                        ),
                         stage="cleanup",
                         detail="Uploading cleaned audio from your local helper device.",
-                        eta_seconds=5,
+                        eta_seconds=max(5, caption_eta_seconds or 5),
                     )
                 else:
                     emit_progress(
-                        0.72 if cleanup_requested else 0.97,
+                        map_worker_stage_progress("finalize", 0.96, reserve_cleanup_band=postprocess_requested),
                         stage="finalize",
-                        detail="Uploading enhanced audio for server-side speech cleanup" if cleanup_requested else "Saving enhanced audio",
-                        eta_seconds=max(8, cleanup_eta_seconds or 8),
+                        detail=(
+                            "Uploading audio for server-side post-processing"
+                            if postprocess_requested
+                            else "Saving enhanced audio"
+                        ),
+                        eta_seconds=max(8, int((cleanup_eta_seconds or 0) + (caption_eta_seconds or 0) or 8)),
                     )
                 if cancel_requested.is_set():
                     raise JobCancelledError("job cancelled")
