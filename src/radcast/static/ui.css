@@ -658,7 +658,7 @@ body.modal-open {
   justify-content: center;
   align-items: center;
   gap: 6px;
-  min-height: 185px;
+  min-height: 160px;
   padding: 14px;
   border: 2px dashed var(--border-color);
   border-radius: var(--uc-radius-lg);
@@ -687,15 +687,15 @@ body.modal-open {
 
 .preview-label {
   display: block;
-  margin-top: 10px;
-  margin-bottom: 6px;
+  margin-top: 8px;
+  margin-bottom: 4px;
   font-size: 0.84rem;
   font-weight: 700;
   color: var(--text-secondary);
 }
 
 .saved-sample-block {
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .recent-projects-block {
@@ -857,20 +857,55 @@ body.modal-open {
 
 .options-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(120px, 0.85fr) minmax(220px, 1.18fr) minmax(180px, 1fr);
   gap: 12px;
+  align-items: start;
+  grid-auto-flow: dense;
+}
+
+.settings-compact-field {
+  align-self: start;
+}
+
+.settings-control-output {
+  grid-column: 1;
+}
+
+.settings-control-model {
+  grid-column: 2;
+}
+
+.settings-control-captions {
+  grid-column: 3;
+}
+
+.settings-control-silence {
+  grid-column: 1 / span 2;
+}
+
+.settings-control-filler {
+  grid-column: 3;
+}
+
+.options-grid .field-note {
+  margin-top: 4px;
+  line-height: 1.18;
+  max-width: 42ch;
 }
 
 .simple-check {
-  min-height: 42px;
+  min-height: 0;
   border: 1px solid var(--uc-grey-200);
   border-radius: var(--uc-radius-md);
   padding: 8px 10px;
   background: #fafafa;
 }
 
+.simple-check .stack {
+  gap: 6px;
+}
+
 .slider-block {
-  grid-column: 1 / -1;
   border: 1px solid var(--uc-grey-200);
   border-radius: var(--uc-radius-md);
   padding: 10px;
@@ -879,7 +914,7 @@ body.modal-open {
 
 .slider-block label {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   font-size: 0.92rem;
 }
 
