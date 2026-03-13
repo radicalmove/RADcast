@@ -206,17 +206,43 @@ body {
   min-width: 94px;
 }
 
-.topbar-btn.topbar-btn-app-launch {
+.topbar-btn.topbar-btn-app-radcite {
+  background: var(--uc-white);
+  border-color: var(--uc-white);
+  color: var(--uc-black);
+}
+
+.topbar-btn.topbar-btn-app-radcite:hover,
+.topbar-btn.topbar-btn-app-radcite:active {
+  background: var(--uc-grey-200);
+  border-color: var(--uc-grey-200);
+  color: var(--uc-black);
+}
+
+.topbar-btn.topbar-btn-app-radcast {
+  background: var(--uc-grey-200);
+  border-color: var(--uc-grey-200);
+  color: var(--uc-black);
+}
+
+.topbar-btn.topbar-btn-app-radcast:hover,
+.topbar-btn.topbar-btn-app-radcast:active {
+  background: var(--uc-grey-300);
+  border-color: var(--uc-grey-300);
+  color: var(--uc-black);
+}
+
+.topbar-btn.topbar-btn-app-radtts {
   background: var(--uc-red);
   border-color: var(--uc-red);
   color: var(--uc-white);
 }
 
-.topbar-btn.topbar-btn-app-launch:hover,
-.topbar-btn.topbar-btn-app-launch:active {
-  background: var(--uc-white);
-  border-color: var(--uc-red);
-  color: var(--uc-red);
+.topbar-btn.topbar-btn-app-radtts:hover,
+.topbar-btn.topbar-btn-app-radtts:active {
+  background: #a73527;
+  border-color: #a73527;
+  color: var(--uc-white);
 }
 
 .theme-toggle {
