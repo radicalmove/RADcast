@@ -149,6 +149,39 @@ function defaultProjectSettings() {
   };
 }
 
+function setupThemeToggle() {
+  const themeToggle = document.getElementById("themeToggle");
+  if (!themeToggle) return;
+
+  const icon = themeToggle.querySelector(".theme-icon");
+  const storageKey = "radcast-theme";
+  const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  let currentTheme = localStorage.getItem(storageKey) || (prefersDark ? "dark" : "light");
+
+  function applyTheme(theme) {
+    if (theme === "dark") {
+      document.documentElement.setAttribute("data-theme", "dark");
+      themeToggle.setAttribute("aria-label", "Switch to light mode");
+      themeToggle.setAttribute("aria-pressed", "true");
+      themeToggle.dataset.icon = "light";
+      if (icon) icon.dataset.iconState = "light";
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+      themeToggle.setAttribute("aria-label", "Switch to dark mode");
+      themeToggle.setAttribute("aria-pressed", "false");
+      themeToggle.dataset.icon = "dark";
+      if (icon) icon.dataset.iconState = "dark";
+    }
+    localStorage.setItem(storageKey, theme);
+  }
+
+  applyTheme(currentTheme);
+  themeToggle.addEventListener("click", () => {
+    currentTheme = currentTheme === "dark" ? "light" : "dark";
+    applyTheme(currentTheme);
+  });
+}
+
 function normalizeProjectSettings(payload) {
   const data = payload && typeof payload === "object" ? payload : {};
   const outputFormat = cleanOptional(data.output_format);
@@ -1599,6 +1632,7 @@ function wireDragAndDrop() {
 }
 
 async function init() {
+  setupThemeToggle();
   showProjectGateway();
   await loadProjects();
 
