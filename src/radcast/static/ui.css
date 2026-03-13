@@ -99,6 +99,14 @@ body {
   height: 32px;
 }
 
+.eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.72rem;
+  opacity: 0.85;
+}
+
 .topbar-actions {
   display: flex;
   gap: 10px;
