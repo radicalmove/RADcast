@@ -204,6 +204,13 @@ body {
 
 .topbar-btn.topbar-btn-app {
   min-width: 94px;
+  gap: 6px;
+}
+
+.topbar-btn.topbar-btn-app .topbar-app-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
 }
 
 .topbar-btn.topbar-btn-app-radcite {

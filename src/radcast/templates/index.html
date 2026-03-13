@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RADcast Studio</title>
-    <link rel="icon" href="/static/radcast-logo.svg" type="image/svg+xml" />
+    <link rel="icon" href="/static/radcast-logo.svg?v=2" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
@@ -15,7 +15,7 @@
     <header class="topbar">
       <div class="topbar-brand">
         <a class="topbar-logo-link" href="/" aria-label="Go to RADcast home">
-          <img src="/static/radcast-logo.svg" alt="RADcast logo" class="topbar-logo" width="32" height="32" />
+          <img src="/static/radcast-logo.svg?v=2" alt="RADcast logo" class="topbar-logo" width="32" height="32" />
         </a>
         <div>
           <p class="eyebrow">Audio enhancement</p>
@@ -30,10 +30,27 @@
         {% if current_user %}
         <div class="topbar-app-links topbar-app-links-center">
         {% if psychek_app_url %}
-        <a class="topbar-btn topbar-btn-app topbar-btn-app-radcite" href="{{ psychek_app_url }}">RADcite</a>
+        <a class="topbar-btn topbar-btn-app topbar-btn-app-radcite" href="{{ psychek_app_url }}">
+          <svg class="topbar-app-icon" viewBox="0 0 64 64" aria-hidden="true">
+            <path d="M18 12H36L46 22V52H18V12Z" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M36 12V22H46" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M24 30H36" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+            <path d="M24 40H40" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+            <circle cx="48" cy="47" r="7" fill="currentColor"/>
+          </svg>
+          <span>RADcite</span>
+        </a>
         {% endif %}
         {% if radtts_app_url %}
-        <a class="topbar-btn topbar-btn-app topbar-btn-app-radtts" href="{{ radtts_app_url }}">RADTTS</a>
+        <a class="topbar-btn topbar-btn-app topbar-btn-app-radtts" href="{{ radtts_app_url }}">
+          <svg class="topbar-app-icon" viewBox="0 0 64 64" aria-hidden="true">
+            <rect x="10" y="18" width="8" height="28" rx="4" fill="none" stroke="currentColor" stroke-width="4"/>
+            <rect x="24" y="10" width="8" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="4"/>
+            <rect x="38" y="22" width="8" height="20" rx="4" fill="none" stroke="currentColor" stroke-width="4"/>
+            <circle cx="49" cy="47" r="7" fill="currentColor"/>
+          </svg>
+          <span>RADTTS</span>
+        </a>
         {% endif %}
         </div>
         {% endif %}

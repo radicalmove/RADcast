@@ -1,12 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="RADcast logo">
-  <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#ff5a44" />
-      <stop offset="100%" stop-color="#ce3e2e" />
-    </linearGradient>
-  </defs>
-  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#g)"/>
-  <circle cx="22" cy="32" r="5" fill="#fff"/>
-  <path d="M32 20c8 0 12 6 12 12s-4 12-12 12" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
-  <path d="M38 24c5 0 8 4 8 8s-3 8-8 8" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" opacity="0.9"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">RADcast logo</title>
+  <desc id="desc">Stylized red broadcast waves with a compact audio accent</desc>
+
+  <circle cx="18" cy="32" r="5" fill="none" stroke="#CE3E2E" stroke-width="4"/>
+  <path d="M27 22C35 22 41 26.5 41 32C41 37.5 35 42 27 42" fill="none" stroke="#CE3E2E" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M37 15C48 15 55 22.5 55 32C55 41.5 48 49 37 49" fill="none" stroke="#CE3E2E" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g transform="translate(48,47)">
+    <circle cx="0" cy="0" r="9" fill="#CE3E2E"/>
+    <path d="M-4 2V-2M0 4V-4M4 1V-1" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round"/>
+  </g>
 </svg>
