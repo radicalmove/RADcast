@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from radcast.constants import DEFAULT_ENHANCE_COMMAND, DEFAULT_STUDIO_COMMAND
-from radcast.models import EnhancementModel, FillerRemovalMode, OutputFormat, SimpleEnhanceRequest
+from radcast.models import CaptionFormat, EnhancementModel, FillerRemovalMode, OutputFormat, SimpleEnhanceRequest
 from radcast.services.enhance import (
     EnhanceService,
     _estimate_progress,
@@ -22,11 +22,13 @@ def test_simple_enhance_request_accepts_valid_payload():
         input_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
         input_audio_filename="lecture.wav",
         output_format=OutputFormat.MP3,
+        caption_format=CaptionFormat.SRT,
         max_silence_seconds=1.25,
         remove_filler_words=True,
     )
     assert req.project_id == "proj1"
     assert req.speech_cleanup_requested() is True
+    assert req.caption_requested() is True
     assert req.filler_removal_mode == FillerRemovalMode.AGGRESSIVE
 
 
@@ -47,6 +49,7 @@ def test_simple_enhance_request_without_cleanup_flags_reports_disabled():
     )
 
     assert req.speech_cleanup_requested() is False
+    assert req.caption_requested() is False
 
 
 def test_simple_enhance_request_accepts_explicit_filler_cleanup_mode():

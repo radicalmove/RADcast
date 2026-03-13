@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from radcast.models import FillerRemovalMode
 from radcast.progress import (
+    estimate_caption_seconds,
     estimate_speech_cleanup_seconds,
     extend_eta_with_cleanup,
+    extend_eta_with_postprocess,
     map_cleanup_stage_progress,
+    map_postprocess_stage_progress,
     map_worker_stage_progress,
 )
 
@@ -46,3 +49,16 @@ def test_cleanup_stage_progress_maps_into_reserved_tail():
 def test_eta_extension_adds_cleanup_reserve():
     assert extend_eta_with_cleanup(50, 20, reserve_cleanup_band=True) == 70
     assert extend_eta_with_cleanup(None, 20, reserve_cleanup_band=True) is None
+
+
+def test_caption_progress_uses_tail_after_cleanup():
+    cleanup_end = map_postprocess_stage_progress(1.0, stage="cleanup", cleanup_requested=True, caption_requested=True)
+    caption_start = map_postprocess_stage_progress(0.0, stage="captions", cleanup_requested=True, caption_requested=True)
+
+    assert cleanup_end <= caption_start
+    assert caption_start >= 0.86
+
+
+def test_postprocess_eta_extension_adds_cleanup_and_caption_time():
+    assert estimate_caption_seconds(30) >= 5
+    assert extend_eta_with_postprocess(50, 20, 8, reserve_postprocess_band=True) == 78

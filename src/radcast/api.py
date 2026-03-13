@@ -22,6 +22,7 @@ from radcast.constants import DEFAULT_WORKER_FALLBACK_TIMEOUT_SECONDS, DEFAULT_W
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
 from radcast.manifests import ManifestStore
 from radcast.models import (
+    CaptionFormat,
     EnhancementModel,
     FillerRemovalMode,
     JobRecord,
@@ -47,7 +48,13 @@ from radcast.models import (
     touch_job_update,
 )
 from radcast.project import ProjectManager
-from radcast.progress import estimate_speech_cleanup_seconds, extend_eta_with_cleanup, map_cleanup_stage_progress, map_local_stage_progress
+from radcast.progress import (
+    estimate_caption_seconds,
+    estimate_speech_cleanup_seconds,
+    extend_eta_with_postprocess,
+    map_local_stage_progress,
+    map_postprocess_stage_progress,
+)
 from radcast.services.enhance import EnhanceService
 from radcast.services.speech_cleanup import SpeechCleanupService
 from radcast.utils.audio import probe_duration_seconds
@@ -257,6 +264,12 @@ def _coerce_project_settings(payload: object) -> ProjectUiSettings:
     except ValueError:
         output_format = OutputFormat.MP3
 
+    caption_format_raw = str(data.get("caption_format") or "").strip().lower()
+    try:
+        caption_format = CaptionFormat(caption_format_raw) if caption_format_raw else None
+    except ValueError:
+        caption_format = None
+
     enhancement_model_raw = str(data.get("enhancement_model") or EnhancementModel.RESEMBLE.value).strip().lower()
     try:
         enhancement_model = EnhancementModel(enhancement_model_raw)
@@ -278,6 +291,7 @@ def _coerce_project_settings(payload: object) -> ProjectUiSettings:
     return ProjectUiSettings(
         selected_audio_hash=selected_audio_hash,
         output_format=output_format,
+        caption_format=caption_format,
         enhancement_model=enhancement_model,
         reduce_silence_enabled=bool(data.get("reduce_silence_enabled", False)),
         max_silence_seconds=max_silence_seconds,
@@ -779,6 +793,7 @@ def _run_enhancement_job(
     input_audio_filename: str,
     output_name: str,
     output_format: OutputFormat,
+    caption_format: CaptionFormat | None = None,
     enhancement_model: EnhancementModel,
     max_silence_seconds: float | None = None,
     remove_filler_words: bool = False,
@@ -787,6 +802,8 @@ def _run_enhancement_job(
     paths = project_manager.ensure_project(scoped_project_id)
     manifests_dir = paths.manifests
     cleanup_requested = speech_cleanup_service.cleanup_requested(max_silence_seconds, remove_filler_words)
+    caption_requested = caption_format is not None
+    postprocess_requested = cleanup_requested or caption_requested
     cleanup_eta_seconds = None
     if cleanup_requested:
         try:
@@ -797,6 +814,12 @@ def _run_enhancement_job(
             )
         except Exception:
             cleanup_eta_seconds = None
+    caption_eta_seconds = None
+    if caption_requested:
+        try:
+            caption_eta_seconds = estimate_caption_seconds(probe_duration_seconds(input_audio_path))
+        except Exception:
+            caption_eta_seconds = None
 
     def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
         _update_job(
@@ -804,11 +827,12 @@ def _run_enhancement_job(
             job_id=job_id,
             status=JobStatus.RUNNING,
             stage=stage,
-            progress=map_local_stage_progress(stage, progress, reserve_cleanup_band=cleanup_requested),
-            eta_seconds=extend_eta_with_cleanup(
+            progress=map_local_stage_progress(stage, progress, reserve_cleanup_band=postprocess_requested),
+            eta_seconds=extend_eta_with_postprocess(
                 eta_seconds,
                 cleanup_eta_seconds,
-                reserve_cleanup_band=cleanup_requested and stage in {"prepare", "enhance", "finalize"},
+                caption_eta_seconds,
+                reserve_postprocess_band=postprocess_requested and stage in {"prepare", "enhance", "finalize"},
             ),
             log=detail,
         )
@@ -834,6 +858,7 @@ def _run_enhancement_job(
         if _cancel_requested(job_id):
             raise JobCancelledError("job cancelled")
 
+        cleanup_result = None
         cleanup_result = speech_cleanup_service.cleanup_audio_file(
             audio_path=final_path,
             output_format=output_format,
@@ -845,12 +870,44 @@ def _run_enhancement_job(
                 job_id=job_id,
                 status=JobStatus.RUNNING,
                 stage="cleanup",
-                progress=map_cleanup_stage_progress(progress),
-                eta_seconds=eta_seconds,
+                progress=map_postprocess_stage_progress(
+                    progress,
+                    stage="cleanup",
+                    cleanup_requested=cleanup_requested,
+                    caption_requested=caption_requested,
+                ),
+                eta_seconds=extend_eta_with_postprocess(
+                    eta_seconds,
+                    None,
+                    caption_eta_seconds,
+                    reserve_postprocess_band=caption_requested,
+                ),
                 log=detail,
             ),
             cancel_check=lambda: _cancel_requested(job_id),
         )
+
+        caption_result = None
+        if caption_requested and caption_format is not None:
+            caption_result = speech_cleanup_service.generate_caption_file(
+                audio_path=final_path,
+                caption_format=caption_format,
+                on_stage=lambda progress, detail, eta_seconds: _update_job(
+                    manifests_dir,
+                    job_id=job_id,
+                    status=JobStatus.RUNNING,
+                    stage="captions",
+                    progress=map_postprocess_stage_progress(
+                        progress,
+                        stage="captions",
+                        cleanup_requested=cleanup_requested,
+                        caption_requested=caption_requested,
+                    ),
+                    eta_seconds=eta_seconds,
+                    log=detail,
+                ),
+                cancel_check=lambda: _cancel_requested(job_id),
+            )
 
         duration_seconds = cleanup_result.duration_seconds
         metadata = OutputMetadata(
@@ -858,6 +915,8 @@ def _run_enhancement_job(
             input_file=input_audio_path,
             duration_seconds=duration_seconds,
             output_format=output_format,
+            caption_file=caption_result.caption_path if caption_result else None,
+            caption_format=caption_format,
             enhancement_model=enhancement_model,
             audio_tuning_label=enhance_service.output_tuning_label_for_model(enhancement_model),
             max_silence_seconds=max_silence_seconds,
@@ -875,6 +934,13 @@ def _run_enhancement_job(
             "audio_download_url": f"/projects/{visible_project_id}/artifact?path={encoded_audio}&download=true",
             "audio_play_url": f"/projects/{visible_project_id}/artifact?path={encoded_audio}&download=false",
         }
+        if caption_result is not None:
+            encoded_caption = quote(str(caption_result.caption_path), safe="")
+            outputs["caption_path"] = str(caption_result.caption_path)
+            outputs["caption_download_url"] = (
+                f"/projects/{visible_project_id}/artifact?path={encoded_caption}&download=true"
+            )
+            outputs["caption_format"] = caption_result.caption_format.value
         _update_job(
             manifests_dir,
             job_id=job_id,
@@ -882,7 +948,11 @@ def _run_enhancement_job(
             stage="completed",
             progress=1.0,
             eta_seconds=None,
-            log=cleanup_result.summary_text() if cleanup_result.applied else "Enhancement completed",
+            log=_completed_output_log(
+                enhancement_model=enhancement_model,
+                cleanup_result=cleanup_result,
+                caption_format=caption_result.caption_format if caption_result else None,
+            ),
             outputs=outputs,
         )
     except JobCancelledError as exc:
@@ -949,6 +1019,7 @@ def _run_local_enhancement_from_worker_payload(
         input_audio_filename=source_filename,
         output_name=str(worker_payload.output_name or _build_output_name(source_filename, None)),
         output_format=worker_payload.output_format,
+        caption_format=worker_payload.caption_format,
         enhancement_model=worker_payload.enhancement_model,
         max_silence_seconds=worker_payload.max_silence_seconds,
         remove_filler_words=worker_payload.remove_filler_words,
@@ -1334,7 +1405,7 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
     selected_model = EnhancementModel(req.enhancement_model)
     if not enhance_service.is_model_available(selected_model):
         raise HTTPException(status_code=503, detail=f"{selected_model.value} is not available on this machine")
-    if req.speech_cleanup_requested():
+    if req.speech_cleanup_requested() or req.caption_requested():
         cleanup_available, cleanup_detail = speech_cleanup_service.capability_status()
         if not cleanup_available:
             raise HTTPException(status_code=503, detail=cleanup_detail)
@@ -1372,6 +1443,7 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         input_audio_filename=input_audio_filename,
         output_name=output_name,
         output_format=req.output_format,
+        caption_format=req.caption_format,
         enhancement_model=selected_model,
         max_silence_seconds=req.max_silence_seconds,
         remove_filler_words=req.remove_filler_words,
@@ -1466,11 +1538,13 @@ def list_project_outputs(request: Request, project_id: str):
                     "folder_path": folder_path,
                     "created_at": str(item.get("created_at") or ""),
                     "duration_seconds": float(item.get("duration_seconds") or 0.0),
+                    "caption_format": str(item.get("caption_format") or ""),
                     "enhancement_model": str(item.get("enhancement_model") or ""),
                     "audio_tuning_label": str(item.get("audio_tuning_label") or ""),
                     "version_number": total_outputs - reverse_index,
                     "download_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=true",
                     "play_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=false",
+                    "caption_download_url": _artifact_download_url(project_id, item.get("caption_file")),
                 }
             )
         except Exception:  # noqa: BLE001
@@ -1639,11 +1713,39 @@ def _media_type_for_suffix(suffix: str) -> str:
         return "audio/mpeg"
     if suffix == ".wav":
         return "audio/wav"
+    if suffix == ".srt":
+        return "application/x-subrip"
+    if suffix == ".vtt":
+        return "text/vtt"
     if suffix == ".m4a":
         return "audio/mp4"
     if suffix == ".flac":
         return "audio/flac"
     return "application/octet-stream"
+
+
+def _artifact_download_url(project_id: str, path_value: object) -> str | None:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return None
+    return f"/projects/{project_id}/artifact?path={quote(raw, safe='')}&download=true"
+
+
+def _completed_output_log(
+    *,
+    enhancement_model: EnhancementModel,
+    cleanup_result,
+    caption_format: CaptionFormat | None,
+) -> str:
+    if cleanup_result and getattr(cleanup_result, "applied", False):
+        base = str(cleanup_result.summary_text()).rstrip(".")
+        if caption_format is not None:
+            return f"{base}. Generated {caption_format.value.upper()} captions."
+        return f"{base}."
+    if caption_format is not None:
+        prefix = "Audio processing completed" if enhancement_model == EnhancementModel.NONE else "Enhancement completed"
+        return f"{prefix} and generated {caption_format.value.upper()} captions."
+    return "Audio processing completed" if enhancement_model == EnhancementModel.NONE else "Enhancement completed"
 
 
 def _macos_worker_install_command(base_url: str, token: str) -> str:

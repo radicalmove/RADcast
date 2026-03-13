@@ -17,6 +17,11 @@ class OutputFormat(str, Enum):
     MP3 = "mp3"
 
 
+class CaptionFormat(str, Enum):
+    SRT = "srt"
+    VTT = "vtt"
+
+
 class EnhancementModel(str, Enum):
     NONE = "none"
     RESEMBLE = "resemble"
@@ -64,6 +69,7 @@ class SimpleEnhanceRequest(BaseModel):
     input_audio_hash: str | None = Field(default=None, min_length=16, max_length=128)
     output_name: str | None = None
     output_format: OutputFormat = OutputFormat.MP3
+    caption_format: CaptionFormat | None = None
     enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
     remove_filler_words: bool = False
@@ -82,6 +88,9 @@ class SimpleEnhanceRequest(BaseModel):
     def speech_cleanup_requested(self) -> bool:
         return self.max_silence_seconds is not None or bool(self.remove_filler_words)
 
+    def caption_requested(self) -> bool:
+        return self.caption_format is not None
+
 
 class ProjectSourceAudioUploadRequest(BaseModel):
     filename: str = Field(min_length=1)
@@ -91,6 +100,7 @@ class ProjectSourceAudioUploadRequest(BaseModel):
 class ProjectUiSettings(BaseModel):
     selected_audio_hash: str | None = None
     output_format: OutputFormat = OutputFormat.MP3
+    caption_format: CaptionFormat | None = None
     enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
     reduce_silence_enabled: bool = False
     max_silence_seconds: float = Field(default=1.0, ge=0.0, le=4.0)
@@ -103,6 +113,8 @@ class OutputMetadata(BaseModel):
     input_file: Path
     duration_seconds: float
     output_format: OutputFormat
+    caption_file: Path | None = None
+    caption_format: CaptionFormat | None = None
     enhancement_model: EnhancementModel | None = None
     audio_tuning_label: str | None = None
     max_silence_seconds: float | None = None
@@ -182,6 +194,7 @@ class WorkerEnhanceEnqueueRequest(BaseModel):
     input_audio_filename: str = Field(min_length=1)
     output_name: str | None = None
     output_format: OutputFormat = OutputFormat.MP3
+    caption_format: CaptionFormat | None = None
     enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
     remove_filler_words: bool = False
@@ -189,6 +202,9 @@ class WorkerEnhanceEnqueueRequest(BaseModel):
 
     def speech_cleanup_requested(self) -> bool:
         return self.max_silence_seconds is not None or bool(self.remove_filler_words)
+
+    def caption_requested(self) -> bool:
+        return self.caption_format is not None
 
 
 class WorkerQueuedJob(BaseModel):

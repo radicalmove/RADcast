@@ -7,10 +7,12 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from radcast.models import FillerRemovalMode, OutputFormat
+from radcast.models import CaptionFormat, FillerRemovalMode, OutputFormat
 from radcast.services.speech_cleanup import (
+    CaptionExportResult,
     SpeechCleanupResult,
     SpeechCleanupService,
+    TranscriptSegmentTiming,
     TranscriptWordTiming,
     _read_pcm16_wav,
 )
@@ -371,6 +373,64 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
     assert [word.text for word in words] == ["um", "uh"]
     assert words[0].start == 1.2
     assert words[1].start == 4.1
+
+
+def test_generate_caption_file_writes_srt(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 2.0), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda *args, **kwargs: (
+            [],
+            [
+                TranscriptSegmentTiming(text="Hello world", start=0.0, end=1.25),
+                TranscriptSegmentTiming(text="Second line", start=1.4, end=1.95),
+            ],
+        ),
+    )
+
+    result = service.generate_caption_file(audio_path=audio_path, caption_format=CaptionFormat.SRT)
+
+    assert isinstance(result, CaptionExportResult)
+    assert result.caption_path.suffix == ".srt"
+    text = result.caption_path.read_text(encoding="utf-8")
+    assert "00:00:00,000 --> 00:00:01,250" in text
+    assert "Hello world" in text
+    assert "Second line" in text
+
+
+def test_generate_caption_file_writes_vtt(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda *args, **kwargs: (
+            [],
+            [TranscriptSegmentTiming(text="Caption text", start=0.0, end=0.9)],
+        ),
+    )
+
+    result = service.generate_caption_file(audio_path=audio_path, caption_format=CaptionFormat.VTT)
+
+    assert result.caption_path.suffix == ".vtt"
+    text = result.caption_path.read_text(encoding="utf-8")
+    assert text.startswith("WEBVTT")
+    assert "00:00:00.000 --> 00:00:00.900" in text
+    assert "Caption text" in text
 
 
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):

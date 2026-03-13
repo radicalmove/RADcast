@@ -25,6 +25,11 @@ def estimate_speech_cleanup_seconds(
     return max(6, min(int(round(base_seconds + (safe_duration * per_second))), 12 * 60))
 
 
+def estimate_caption_seconds(duration_seconds: float | None) -> int:
+    safe_duration = max(1.0, float(duration_seconds or 1.0))
+    return max(5, min(int(round(6.0 + (safe_duration * 0.18))), 8 * 60))
+
+
 def map_local_stage_progress(stage: str, progress: float, *, reserve_cleanup_band: bool) -> float:
     normalized = str(stage or "").strip().lower()
     clamped = max(0.0, min(1.0, float(progress)))
@@ -60,16 +65,53 @@ def map_worker_stage_progress(stage: str, progress: float, *, reserve_cleanup_ba
 
 
 def map_cleanup_stage_progress(progress: float) -> float:
-    clamped = max(0.0, min(1.0, float(progress)))
-    return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.96)
+    return map_postprocess_stage_progress(progress, stage="cleanup", cleanup_requested=True, caption_requested=False)
 
 
 def extend_eta_with_cleanup(eta_seconds: int | None, cleanup_eta_seconds: int | None, *, reserve_cleanup_band: bool) -> int | None:
-    if not reserve_cleanup_band or cleanup_eta_seconds is None:
+    return extend_eta_with_postprocess(
+        eta_seconds,
+        cleanup_eta_seconds,
+        None,
+        reserve_postprocess_band=reserve_cleanup_band,
+    )
+
+
+def map_postprocess_stage_progress(
+    progress: float,
+    *,
+    stage: str,
+    cleanup_requested: bool,
+    caption_requested: bool,
+) -> float:
+    clamped = max(0.0, min(1.0, float(progress)))
+    normalized = str(stage or "").strip().lower()
+    if normalized == "cleanup":
+        if caption_requested:
+            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.86)
+        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.96)
+    if normalized == "captions":
+        if cleanup_requested:
+            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.86, target_end=0.96)
+        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.96)
+    return clamped
+
+
+def extend_eta_with_postprocess(
+    eta_seconds: int | None,
+    cleanup_eta_seconds: int | None,
+    caption_eta_seconds: int | None,
+    *,
+    reserve_postprocess_band: bool,
+) -> int | None:
+    if not reserve_postprocess_band:
         return eta_seconds
+    extra_seconds = max(0, int(cleanup_eta_seconds or 0)) + max(0, int(caption_eta_seconds or 0))
     if eta_seconds is None:
         return None
-    return max(eta_seconds + cleanup_eta_seconds, cleanup_eta_seconds)
+    if extra_seconds <= 0:
+        return eta_seconds
+    return max(eta_seconds + extra_seconds, extra_seconds)
 
 
 def _remap(

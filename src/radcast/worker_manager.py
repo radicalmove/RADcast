@@ -33,7 +33,12 @@ from radcast.models import (
     WorkerSummary,
 )
 from radcast.project import ProjectManager
-from radcast.progress import estimate_speech_cleanup_seconds, map_cleanup_stage_progress
+from radcast.progress import (
+    estimate_caption_seconds,
+    estimate_speech_cleanup_seconds,
+    extend_eta_with_postprocess,
+    map_postprocess_stage_progress,
+)
 from radcast.services.enhance import current_audio_tuning_label
 from radcast.services.speech_cleanup import SpeechCleanupService
 from radcast.utils.audio import probe_duration_seconds
@@ -377,20 +382,35 @@ class WorkerManager:
             input_path = paths.assets_source_audio / f"{payload.output_name}_{input_filename}"
             input_path.parent.mkdir(parents=True, exist_ok=True)
             input_path.write_bytes(base64.b64decode(payload.input_audio_b64.encode("utf-8")))
-            if payload.speech_cleanup_requested() and not req.cleanup_applied:
-                cleanup_eta_seconds = estimate_speech_cleanup_seconds(
-                    req.duration_seconds,
-                    remove_filler_words=payload.remove_filler_words,
-                    filler_removal_mode=payload.filler_removal_mode,
+            cleanup_requested = payload.speech_cleanup_requested() and not req.cleanup_applied
+            caption_requested = payload.caption_requested()
+            if cleanup_requested or caption_requested:
+                cleanup_eta_seconds = (
+                    estimate_speech_cleanup_seconds(
+                        req.duration_seconds,
+                        remove_filler_words=payload.remove_filler_words,
+                        filler_removal_mode=payload.filler_removal_mode,
+                    )
+                    if cleanup_requested
+                    else None
                 )
+                caption_eta_seconds = estimate_caption_seconds(req.duration_seconds) if caption_requested else None
                 self._update_job_manifest(
                     project_id=payload.project_id,
                     job_id=job_id,
                     status=JobStatus.RUNNING,
-                    stage="cleanup",
+                    stage="cleanup" if cleanup_requested else "captions",
                     progress=0.72,
-                    eta_seconds=cleanup_eta_seconds,
-                    log="Helper enhancement is done. Applying speech cleanup on the RADcast server.",
+                    eta_seconds=max(1, int((cleanup_eta_seconds or 0) + (caption_eta_seconds or 0))),
+                    log=(
+                        "Helper enhancement is done. Applying speech cleanup and captions on the RADcast server."
+                        if cleanup_requested and caption_requested
+                        else (
+                            "Helper enhancement is done. Applying speech cleanup on the RADcast server."
+                            if cleanup_requested
+                            else "Helper enhancement is done. Generating captions on the RADcast server."
+                        )
+                    ),
                 )
                 threading.Thread(
                     target=self._finalize_worker_output,
@@ -450,8 +470,11 @@ class WorkerManager:
             paths = self.project_manager.ensure_project(payload.project_id)
             store = ManifestStore(paths.manifests)
             cleanup_result = None
+            cleanup_requested = payload.speech_cleanup_requested() and not cleanup_already_applied
+            caption_requested = payload.caption_requested()
+            caption_eta_seconds = estimate_caption_seconds(duration_seconds) if caption_requested else None
             final_duration_seconds = duration_seconds
-            if payload.speech_cleanup_requested() and not cleanup_already_applied:
+            if cleanup_requested:
                 cleanup_result = speech_cleanup_service.cleanup_audio_file(
                     audio_path=output_path,
                     output_format=output_format,
@@ -463,18 +486,53 @@ class WorkerManager:
                         job_id=job_id,
                         status=JobStatus.RUNNING,
                         stage="cleanup",
-                        progress=map_cleanup_stage_progress(progress),
-                        eta_seconds=eta_seconds if eta_seconds is not None else _UNSET,
+                        progress=map_postprocess_stage_progress(
+                            progress,
+                            stage="cleanup",
+                            cleanup_requested=cleanup_requested,
+                            caption_requested=caption_requested,
+                        ),
+                        eta_seconds=extend_eta_with_postprocess(
+                            eta_seconds,
+                            None,
+                            caption_eta_seconds,
+                            reserve_postprocess_band=caption_requested,
+                        )
+                        if eta_seconds is not None or caption_requested
+                        else _UNSET,
                         log=detail,
                     ),
                 )
                 final_duration_seconds = cleanup_result.duration_seconds or probe_duration_seconds(output_path)
+
+            caption_result = None
+            if caption_requested and payload.caption_format is not None:
+                caption_result = speech_cleanup_service.generate_caption_file(
+                    audio_path=output_path,
+                    caption_format=payload.caption_format,
+                    on_stage=lambda progress, detail, eta_seconds: self._update_job_manifest(
+                        project_id=payload.project_id,
+                        job_id=job_id,
+                        status=JobStatus.RUNNING,
+                        stage="captions",
+                        progress=map_postprocess_stage_progress(
+                            progress,
+                            stage="captions",
+                            cleanup_requested=cleanup_requested,
+                            caption_requested=caption_requested,
+                        ),
+                        eta_seconds=eta_seconds if eta_seconds is not None else _UNSET,
+                        log=detail,
+                    ),
+                )
 
             metadata = OutputMetadata(
                 output_file=output_path,
                 input_file=input_path,
                 duration_seconds=final_duration_seconds,
                 output_format=output_format,
+                caption_file=caption_result.caption_path if caption_result else None,
+                caption_format=payload.caption_format,
                 enhancement_model=payload.enhancement_model,
                 audio_tuning_label=current_audio_tuning_label(payload.enhancement_model),
                 max_silence_seconds=payload.max_silence_seconds,
@@ -491,6 +549,9 @@ class WorkerManager:
                 "audio_path": str(output_path),
                 "metadata_path": str(metadata_path),
             }
+            if caption_result is not None:
+                outputs["caption_path"] = str(caption_result.caption_path)
+                outputs["caption_format"] = caption_result.caption_format.value
             self._mark_queue_job(job_id, status="completed")
             self._update_job_manifest(
                 project_id=payload.project_id,
@@ -500,8 +561,17 @@ class WorkerManager:
                 progress=1.0,
                 outputs=outputs,
                 log=(
-                    cleanup_summary
-                    or (cleanup_result.summary_text() if cleanup_result and cleanup_result.applied else None)
+                    (
+                        f"{cleanup_summary.rstrip('.')} Generated {caption_result.caption_format.value.upper()} captions."
+                        if cleanup_summary and caption_result is not None
+                        else cleanup_summary
+                    )
+                    or _completed_output_log(
+                        enhancement_model=payload.enhancement_model,
+                        cleanup_result=cleanup_result,
+                        cleanup_already_applied=cleanup_already_applied,
+                        caption_format=caption_result.caption_format if caption_result else payload.caption_format,
+                    )
                     or f"worker {worker_id} completed job"
                 ),
             )
@@ -631,3 +701,22 @@ class WorkerManager:
                 job.logs.append(f"{_now_iso()} {log}")
         job.updated_at = datetime.now(timezone.utc)
         store.upsert_job(job)
+
+
+def _completed_output_log(
+    *,
+    enhancement_model,
+    cleanup_result,
+    cleanup_already_applied: bool,
+    caption_format,
+) -> str | None:
+    cleanup_applied = bool(cleanup_already_applied or (cleanup_result and cleanup_result.applied))
+    if cleanup_applied:
+        base = cleanup_result.summary_text().rstrip(".") if cleanup_result and cleanup_result.applied else "Applied speech cleanup"
+        if caption_format is not None:
+            return f"{base}. Generated {caption_format.value.upper()} captions."
+        return f"{base}."
+    if caption_format is not None:
+        prefix = "Audio processing completed" if str(enhancement_model) == "none" else "Enhancement completed"
+        return f"{prefix} and generated {caption_format.value.upper()} captions."
+    return None

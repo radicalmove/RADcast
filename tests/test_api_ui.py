@@ -11,7 +11,7 @@ from itsdangerous import URLSafeTimedSerializer
 
 import radcast.api as radcast_api
 from radcast.manifests import ManifestStore
-from radcast.models import EnhancementModel, OutputFormat, OutputMetadata
+from radcast.models import CaptionFormat, EnhancementModel, OutputFormat, OutputMetadata
 
 app = radcast_api.app
 
@@ -42,6 +42,7 @@ def test_ui_homepage_renders():
     assert "Reduce silence longer than" in response.text
     assert "Remove umms and ahhs" in response.text
     assert "Filler cleanup strength" in response.text
+    assert "Closed captions" in response.text
 
 
 def test_worker_invite_and_status_endpoints_render(monkeypatch):
@@ -221,6 +222,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
         assert default_settings.json()["settings"] == {
             "selected_audio_hash": None,
             "output_format": "mp3",
+            "caption_format": None,
             "enhancement_model": "resemble",
             "reduce_silence_enabled": False,
             "max_silence_seconds": 1.0,
@@ -240,6 +242,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
             json={
                 "selected_audio_hash": audio_hash,
                 "output_format": "wav",
+                "caption_format": "vtt",
                 "enhancement_model": "none",
                 "reduce_silence_enabled": True,
                 "max_silence_seconds": 2.25,
@@ -251,6 +254,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
         assert updated.json()["settings"] == {
             "selected_audio_hash": audio_hash,
             "output_format": "wav",
+            "caption_format": "vtt",
             "enhancement_model": "none",
             "reduce_silence_enabled": True,
             "max_silence_seconds": 2.25,
@@ -356,16 +360,20 @@ def test_project_outputs_endpoint_includes_output_card_metadata():
         manifests = project_root / "manifests"
         store = ManifestStore(manifests)
         output_path = project_root / "assets" / "enhanced_audio" / "sample.mp3"
+        caption_path = project_root / "assets" / "enhanced_audio" / "sample.vtt"
         input_path = project_root / "assets" / "source_audio" / "sample.wav"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         input_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"fake-mp3")
+        caption_path.write_text("WEBVTT\n", encoding="utf-8")
         input_path.write_bytes(b"fake-wav")
         metadata = OutputMetadata(
             output_file=output_path,
             input_file=input_path,
             duration_seconds=4.2,
             output_format=OutputFormat.MP3,
+            caption_file=caption_path,
+            caption_format=CaptionFormat.VTT,
             enhancement_model=EnhancementModel.RESEMBLE,
             audio_tuning_label="Version 7",
             project_id=project_id,
@@ -379,6 +387,8 @@ def test_project_outputs_endpoint_includes_output_card_metadata():
         assert len(payload["outputs"]) == 1
         assert payload["outputs"][0]["audio_tuning_label"] == "Version 7"
         assert payload["outputs"][0]["version_number"] == 1
+        assert payload["outputs"][0]["caption_format"] == "vtt"
+        assert payload["outputs"][0]["caption_download_url"].endswith("sample.vtt&download=true")
         assert payload["outputs"][0]["folder_path"].endswith("/assets/enhanced_audio")
     finally:
         for path in Path("projects").glob(f"*__{project_id}"):

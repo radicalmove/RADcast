@@ -17,7 +17,8 @@ from typing import Callable
 import numpy as np
 
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
-from radcast.models import FillerRemovalMode, OutputFormat
+from radcast.models import CaptionFormat, FillerRemovalMode, OutputFormat
+from radcast.progress import estimate_caption_seconds
 from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
 
 CleanupStageCallback = Callable[[float, str, int | None], None]
@@ -77,6 +78,13 @@ class SpeechCleanupResult:
         if not parts:
             return "No long silences or filler words needed trimming."
         return ", ".join(parts).capitalize() + "."
+
+
+@dataclass(frozen=True)
+class CaptionExportResult:
+    caption_path: Path
+    caption_format: CaptionFormat
+    segment_count: int
 
 
 @dataclass(frozen=True)
@@ -141,8 +149,8 @@ class SpeechCleanupService:
 
     def capability_status(self) -> tuple[bool, str]:
         if find_spec("faster_whisper") is None:
-            return False, "Install faster-whisper to enable long-silence trimming and filler-word cleanup."
-        return True, f"Speech cleanup is available with faster-whisper ({self.model_size})."
+            return False, "Install faster-whisper to enable long-silence trimming, filler-word cleanup, and caption export."
+        return True, f"Speech cleanup and caption export are available with faster-whisper ({self.model_size})."
 
     def estimate_runtime_seconds(
         self,
@@ -285,6 +293,62 @@ class SpeechCleanupService:
             duration_seconds=probe_duration_seconds(audio_path),
         )
 
+    def generate_caption_file(
+        self,
+        *,
+        audio_path: Path,
+        caption_format: CaptionFormat,
+        on_stage: CleanupStageCallback | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> CaptionExportResult:
+        available, detail = self.capability_status()
+        if not available:
+            raise EnhancementRuntimeError(detail)
+
+        if cancel_check and cancel_check():
+            raise JobCancelledError("job cancelled")
+
+        input_duration = probe_duration_seconds(audio_path)
+        caption_eta_seconds = estimate_caption_seconds(input_duration)
+        started_at = time.monotonic()
+        if on_stage:
+            on_stage(0.02, "Transcribing speech for captions.", caption_eta_seconds)
+
+        with tempfile.TemporaryDirectory(prefix="radcast_captions_") as tmp:
+            tmp_path = Path(tmp)
+            analysis_wav = tmp_path / "analysis.wav"
+            run_ffmpeg_convert(audio_path, analysis_wav)
+            _words, segments = self._transcribe_timeline(
+                analysis_wav,
+                total_duration=input_duration,
+                started_at=started_at,
+                cleanup_eta_seconds=caption_eta_seconds,
+                on_stage=on_stage,
+                remove_filler_words=False,
+                filler_removal_mode=FillerRemovalMode.AGGRESSIVE,
+                transcribe_detail="Transcribing speech for captions.",
+            )
+
+            if cancel_check and cancel_check():
+                raise JobCancelledError("job cancelled")
+
+            output_path = audio_path.with_suffix(f".{caption_format.value}")
+            if on_stage:
+                on_stage(
+                    0.92,
+                    f"Writing {caption_format.value.upper()} captions.",
+                    _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=2),
+                )
+            output_path.write_text(
+                _format_caption_document(segments, caption_format=caption_format),
+                encoding="utf-8",
+            )
+        return CaptionExportResult(
+            caption_path=output_path,
+            caption_format=caption_format,
+            segment_count=len([segment for segment in segments if _clean_caption_text(segment.text)]),
+        )
+
     def _load_model(self):
         if self._model is not None:
             return self._model
@@ -322,6 +386,7 @@ class SpeechCleanupService:
         on_stage: CleanupStageCallback | None,
         remove_filler_words: bool,
         filler_removal_mode: FillerRemovalMode,
+        transcribe_detail: str = "Transcribing speech timing for cleanup.",
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         normalized_mode = _normalize_filler_mode(filler_removal_mode)
         if remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE:
@@ -331,6 +396,7 @@ class SpeechCleanupService:
                 started_at=started_at,
                 cleanup_eta_seconds=cleanup_eta_seconds,
                 on_stage=on_stage,
+                transcribe_detail=transcribe_detail,
             )
 
         model = self._load_model()
@@ -366,7 +432,7 @@ class SpeechCleanupService:
                     progress = min(0.68, 0.08 + (coverage * 0.6))
                     on_stage(
                         progress,
-                        "Transcribing speech timing for cleanup.",
+                        transcribe_detail,
                         _transcription_eta_seconds(
                             elapsed_seconds=max(0.0, now - started_at),
                             cleanup_eta_seconds=cleanup_eta_seconds,
@@ -384,6 +450,7 @@ class SpeechCleanupService:
         started_at: float,
         cleanup_eta_seconds: int,
         on_stage: CleanupStageCallback | None,
+        transcribe_detail: str = "Transcribing speech timing for cleanup.",
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         model = self._load_model()
         waveform, sample_rate = _read_pcm16_wav(audio_path)
@@ -427,7 +494,7 @@ class SpeechCleanupService:
                     progress = min(0.68, 0.08 + (coverage * 0.6))
                     on_stage(
                         progress,
-                        "Transcribing speech timing for cleanup.",
+                        transcribe_detail,
                         _transcription_eta_seconds(
                             elapsed_seconds=max(0.0, time.monotonic() - started_at),
                             cleanup_eta_seconds=cleanup_eta_seconds,
@@ -868,3 +935,36 @@ def _splice_waveform(
         blended = (result[-overlap:] * fade_out) + (chunk[:overlap] * fade_in)
         result = np.concatenate([result[:-overlap], blended, chunk[overlap:]], axis=0)
     return result
+
+
+def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption_format: CaptionFormat) -> str:
+    rows = [(index, segment) for index, segment in enumerate(segments, start=1) if _clean_caption_text(segment.text)]
+    if caption_format == CaptionFormat.VTT:
+        blocks = ["WEBVTT", ""]
+        for index, segment in rows:
+            start_text = _format_caption_timestamp(segment.start, separator=".")
+            end_text = _format_caption_timestamp(max(segment.end, segment.start + 0.2), separator=".")
+            text = _clean_caption_text(segment.text)
+            blocks.extend([str(index), f"{start_text} --> {end_text}", text, ""])
+        return "\n".join(blocks).rstrip() + "\n"
+
+    blocks: list[str] = []
+    for index, segment in rows:
+        start_text = _format_caption_timestamp(segment.start, separator=",")
+        end_text = _format_caption_timestamp(max(segment.end, segment.start + 0.2), separator=",")
+        text = _clean_caption_text(segment.text)
+        blocks.extend([str(index), f"{start_text} --> {end_text}", text, ""])
+    return "\n".join(blocks).rstrip() + ("\n" if blocks else "")
+
+
+def _clean_caption_text(text: str) -> str:
+    return " ".join(str(text or "").split()).strip()
+
+
+def _format_caption_timestamp(seconds: float, *, separator: str) -> str:
+    safe_seconds = max(0.0, float(seconds))
+    total_milliseconds = int(round(safe_seconds * 1000.0))
+    hours, remainder = divmod(total_milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}{separator}{milliseconds:03d}"

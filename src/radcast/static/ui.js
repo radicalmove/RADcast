@@ -21,6 +21,8 @@ const sourcePreviewLabelNode = document.getElementById("source-preview-label");
 const sourceAudioPreviewNode = document.getElementById("source-audio-preview");
 
 const outputFormatNode = document.getElementById("output-format");
+const captionFormatNode = document.getElementById("caption-format");
+const captionFormatStatusNode = document.getElementById("caption-format-status");
 const enhancementModelNode = document.getElementById("enhancement-model");
 const enhancementModelStatusNode = document.getElementById("enhancement-model-status");
 const reduceSilenceEnabledNode = document.getElementById("reduce-silence-enabled");
@@ -72,6 +74,7 @@ const stageLabels = {
   prepare: "Preparing audio",
   enhance: "Improving audio",
   cleanup: "Cleaning speech",
+  captions: "Generating captions",
   finalize: "Saving audio",
   completed: "Completed",
   failed: "Failed",
@@ -147,10 +150,16 @@ function normalizeFillerRemovalMode(value) {
   return String(value || "").trim().toLowerCase() === "normal" ? "normal" : "aggressive";
 }
 
+function normalizeCaptionFormat(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "srt" || normalized === "vtt" ? normalized : null;
+}
+
 function defaultProjectSettings() {
   return {
     selected_audio_hash: null,
     output_format: "mp3",
+    caption_format: null,
     enhancement_model: "resemble",
     reduce_silence_enabled: false,
     max_silence_seconds: 1,
@@ -195,12 +204,14 @@ function setupThemeToggle() {
 function normalizeProjectSettings(payload) {
   const data = payload && typeof payload === "object" ? payload : {};
   const outputFormat = cleanOptional(data.output_format);
+  const captionFormat = normalizeCaptionFormat(data.caption_format);
   const enhancementModel = cleanOptional(data.enhancement_model);
   const selectedAudioHash = cleanOptional(data.selected_audio_hash);
 
   return {
     selected_audio_hash: selectedAudioHash && selectedAudioHash.length >= 16 ? selectedAudioHash : null,
     output_format: outputFormat === "wav" ? "wav" : "mp3",
+    caption_format: captionFormat,
     enhancement_model: enhancementModel || "resemble",
     reduce_silence_enabled: Boolean(data.reduce_silence_enabled),
     max_silence_seconds: clampSilenceSeconds(data.max_silence_seconds),
@@ -215,6 +226,9 @@ function applyProjectSettingsToControls(settings) {
 
   if (outputFormatNode) {
     outputFormatNode.value = normalized.output_format;
+  }
+  if (captionFormatNode) {
+    captionFormatNode.value = normalized.caption_format || "";
   }
   if (enhancementModelNode) {
     const desiredOption = Array.from(enhancementModelNode.options).find((option) => {
@@ -240,6 +254,8 @@ function applyProjectSettingsToControls(settings) {
   updateEnhancementModelStatusFromSelection();
   updateSpeechCleanupControls();
   updateSpeechCleanupStatusFromSelection();
+  updateCaptionFormatStatus();
+  updateGenerateButtonLabel();
 }
 
 function resetProjectSettingsControls() {
@@ -250,6 +266,7 @@ function currentProjectSettingsPayload() {
   return normalizeProjectSettings({
     selected_audio_hash: state.selectedAudioHash,
     output_format: cleanOptional(outputFormatNode?.value) || "mp3",
+    caption_format: selectedCaptionFormat(),
     enhancement_model: selectedEnhancementModelId(),
     reduce_silence_enabled: Boolean(reduceSilenceEnabledNode?.checked),
     max_silence_seconds: reduceSilenceSecondsNode?.value ?? 1,
@@ -669,6 +686,11 @@ function selectedEnhancementModelId() {
   return cleanOptional(enhancementModelNode?.value) || "resemble";
 }
 
+function selectedCaptionFormat() {
+  if (!state.speechCleanupAvailable) return null;
+  return normalizeCaptionFormat(captionFormatNode?.value);
+}
+
 function formatSilenceThresholdLabel(value) {
   const numeric = Number(value || 0);
   const safe = Number.isFinite(numeric) ? Math.max(0, Math.min(4, numeric)) : 0;
@@ -688,6 +710,9 @@ function selectedFillerRemovalMode() {
 
 function updateSpeechCleanupControls() {
   const available = Boolean(state.speechCleanupAvailable);
+  if (captionFormatNode) {
+    captionFormatNode.disabled = !available;
+  }
   if (reduceSilenceSecondsNode) {
     reduceSilenceSecondsNode.disabled = !available || !reduceSilenceEnabledNode?.checked;
   }
@@ -711,6 +736,29 @@ function updateSpeechCleanupControls() {
   if (fillerBlock) {
     fillerBlock.classList.toggle("speech-cleanup-disabled", !available);
   }
+}
+
+function updateCaptionFormatStatus() {
+  if (!captionFormatStatusNode) return;
+  if (!state.speechCleanupAvailable) {
+    captionFormatStatusNode.textContent = state.speechCleanupDetail || "Caption export is not available on this machine.";
+    return;
+  }
+  const format = selectedCaptionFormat();
+  if (format === "srt") {
+    captionFormatStatusNode.textContent = "Generate timestamped SRT captions from the final audio for Echo360 upload.";
+    return;
+  }
+  if (format === "vtt") {
+    captionFormatStatusNode.textContent = "Generate timestamped VTT captions from the final audio for Echo360 upload.";
+    return;
+  }
+  captionFormatStatusNode.textContent = "Generate timestamped captions from the final audio for Echo360.";
+}
+
+function updateGenerateButtonLabel() {
+  if (!generateBtn) return;
+  generateBtn.textContent = selectedEnhancementModelId() === "none" ? "Process audio" : "Enhance audio";
 }
 
 function updateSpeechCleanupStatusFromSelection() {
@@ -807,6 +855,8 @@ async function loadEnhancementModels() {
     updateEnhancementModelStatusFromSelection();
     updateSpeechCleanupControls();
     updateSpeechCleanupStatusFromSelection();
+    updateCaptionFormatStatus();
+    updateGenerateButtonLabel();
   } catch (err) {
     enhancementModelNode.innerHTML = '<option value="resemble">Resemble Enhance</option>';
     state.enhancementModels = [
@@ -823,6 +873,8 @@ async function loadEnhancementModels() {
     setEnhancementModelStatus(`Could not load enhancement models: ${String(err)}`, true);
     updateSpeechCleanupControls();
     updateSpeechCleanupStatusFromSelection();
+    updateCaptionFormatStatus();
+    updateGenerateButtonLabel();
   } finally {
     enhancementModelNode.disabled = false;
   }
@@ -1600,7 +1652,11 @@ function startJobTracking(payload) {
   if (state.expectedRemoteWorker) {
     setGenerateStatus(`Waiting for helper pickup (${workerAvailabilitySummary()}).`);
   } else {
-    setGenerateStatus("Enhancement started. First run on a server can take longer while the model loads.");
+    setGenerateStatus(
+      selectedEnhancementModelId() === "none"
+        ? "Audio processing started. First run on a server can take longer while the model loads."
+        : "Enhancement started. First run on a server can take longer while the model loads."
+    );
   }
   startProgressAnimation();
   state.pollTimer = setInterval(pollJob, 2000);
@@ -1628,10 +1684,11 @@ async function handleGenerate() {
       state.selectedAudioFile = null;
     }
 
-    setGenerateStatus("Queueing enhancement...");
+    setGenerateStatus(selectedEnhancementModelId() === "none" ? "Queueing audio processing..." : "Queueing enhancement...");
     const payload = {
       project_id: state.activeProjectRef,
       output_format: String(outputFormatNode?.value || "mp3"),
+      caption_format: selectedCaptionFormat(),
       enhancement_model: selectedEnhancementModelId(),
       max_silence_seconds: selectedMaxSilenceSeconds(),
       remove_filler_words: Boolean(removeFillerWordsNode?.checked && state.speechCleanupAvailable),
@@ -1681,6 +1738,7 @@ async function loadOutputs() {
       const actions = [];
       const outputId = `output-${index}`;
       const playUrl = String(item.play_url || item.download_url || "");
+      const captionFormat = String(item.caption_format || "").trim().toLowerCase();
       const versionNumber = Number(item.version_number || 0);
       const summaryLabel = formatOutputSummary(item);
 
@@ -1694,6 +1752,10 @@ async function loadOutputs() {
       }
       if (item.folder_path) {
         actions.push(`<button class="copy-folder-btn" data-folder="${escapeHtml(item.folder_path)}" type="button">Copy folder path</button>`);
+      }
+      if (item.caption_download_url) {
+        const captionLabel = captionFormat === "vtt" ? "Save VTT captions" : "Save SRT captions";
+        actions.push(`<a href="${escapeHtml(item.caption_download_url)}" download>${escapeHtml(captionLabel)}</a>`);
       }
 
       return `
@@ -1995,9 +2057,16 @@ async function init() {
       queueProjectSettingsSave();
     });
   }
+  if (captionFormatNode) {
+    captionFormatNode.addEventListener("change", () => {
+      updateCaptionFormatStatus();
+      queueProjectSettingsSave();
+    });
+  }
   if (enhancementModelNode) {
     enhancementModelNode.addEventListener("change", () => {
       updateEnhancementModelStatusFromSelection();
+      updateGenerateButtonLabel();
       queueProjectSettingsSave();
     });
   }

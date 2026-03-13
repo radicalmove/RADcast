@@ -151,6 +151,15 @@
                 </select>
               </label>
               <label class="stack">
+                <span>Closed captions</span>
+                <select id="caption-format">
+                  <option value="">Do not generate</option>
+                  <option value="srt">SRT</option>
+                  <option value="vtt">VTT</option>
+                </select>
+                <small id="caption-format-status" class="field-note">Generate timestamped captions from the final audio for Echo360.</small>
+              </label>
+              <label class="stack">
                 <span>Enhancement model</span>
                 <select id="enhancement-model">
                   <option value="resemble">Loading models...</option>
