@@ -1,15 +1,34 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import uuid
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from itsdangerous import URLSafeTimedSerializer
 
-from radcast.api import app
+import radcast.api as radcast_api
 from radcast.manifests import ManifestStore
 from radcast.models import EnhancementModel, OutputFormat, OutputMetadata
+
+app = radcast_api.app
+
+
+def _bridge_user(client: TestClient, *, sub: int, email: str, display_name: str) -> None:
+    serializer = URLSafeTimedSerializer("radcast-dev-session-secret", salt="app-bridge-radcast-v1")
+    token = serializer.dumps(
+        {
+            "sub": sub,
+            "email": email,
+            "display_name": display_name,
+            "is_admin": False,
+            "issuer": "psychek",
+        }
+    )
+    response = client.get(f"/auth/bridge?token={token}", follow_redirects=False)
+    assert response.status_code == 302
 
 
 def test_ui_homepage_renders():
@@ -249,6 +268,77 @@ def test_project_settings_roundtrip_persists_last_used_options():
                 shutil.rmtree(path)
         if project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_project_shareable_users_proxy_uses_integration_endpoint(monkeypatch):
+    client = TestClient(app)
+    _bridge_user(client, sub=901, email="owner@example.com", display_name="Owner")
+    project_id = f"radcast-share-{uuid.uuid4().hex[:8]}"
+    created_roots: list[Path] = []
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def read(self) -> bytes:
+            return json.dumps(self.payload).encode("utf-8")
+
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    def fake_urlopen(request, timeout=0):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["timeout"] = timeout
+        return _FakeResponse(
+            {
+                "success": True,
+                "users": [
+                    {
+                        "id": 22,
+                        "username": "collab",
+                        "display_name": "Collaborator User",
+                        "email": "collab@example.com",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(radcast_api, "PSYCHEK_SHAREABLE_USERS_URL", "https://psychek.example/api/v1/integrations/shareable-users")
+    monkeypatch.setattr(radcast_api, "PSYCHEK_INTEGRATION_API_KEY", "share-secret")
+    monkeypatch.setattr(radcast_api, "urlopen", fake_urlopen)
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+        created_roots.append(Path(created.json()["project_root"]))
+
+        response = client.get(f"/projects/{project_id}/shareable-users")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["project_id"] == project_id
+        assert payload["users"] == [
+            {
+                "id": 22,
+                "username": "collab",
+                "display_name": "Collaborator User",
+                "email": "collab@example.com",
+            }
+        ]
+        assert captured["authorization"] == "Bearer share-secret"
+        assert "exclude_email=owner%40example.com" in str(captured["url"])
+        assert captured["timeout"] == 8
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        for root in created_roots:
+            if root.exists():
+                shutil.rmtree(root)
 
 
 def test_project_outputs_endpoint_includes_output_card_metadata():

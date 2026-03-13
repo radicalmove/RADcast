@@ -219,6 +219,38 @@
       </section>
     </div>
 
+    <div id="share-project-modal" class="modal-overlay" hidden>
+      <section class="modal-card share-project-modal-card" role="dialog" aria-modal="true" aria-labelledby="share-project-modal-title">
+        <header class="modal-header">
+          <h2 id="share-project-modal-title">Share project</h2>
+          <button id="share-project-close-btn" type="button" class="worker-mini-btn">Close</button>
+        </header>
+        <p class="modal-copy">Select another RADcite user to grant access to this RADcast project.</p>
+        <p id="share-project-status" class="modal-status">Loading sharing options...</p>
+        <div class="share-project-block">
+          <section class="share-project-summary">
+            <p class="share-project-label">Owner</p>
+            <div id="share-project-owner" class="share-project-owner">--</div>
+          </section>
+          <section class="share-project-form">
+            <label class="saved-sample-label" for="share-project-user-select">Share with</label>
+            <div class="share-project-form-row">
+              <select id="share-project-user-select">
+                <option value="">Loading users...</option>
+              </select>
+              <button id="share-project-grant-btn" type="button" class="worker-mini-btn">Grant access</button>
+            </div>
+          </section>
+          <section class="share-project-members-section">
+            <h3>Current collaborators</h3>
+            <div id="share-project-members" class="share-project-members">
+              <p class="share-project-empty">No collaborators yet.</p>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+
     <script src="/static/ui.js" defer></script>
   </body>
 </html>

@@ -493,6 +493,102 @@ body.modal-open {
   line-height: 1.4;
 }
 
+.share-project-modal-card {
+  width: min(720px, 100%);
+}
+
+.share-project-block {
+  margin-top: 12px;
+  display: grid;
+  gap: 14px;
+}
+
+.share-project-summary,
+.share-project-members-section {
+  border: 1px solid var(--border-color);
+  border-radius: var(--uc-radius-lg);
+  background: var(--bg-surface-alt);
+  padding: 12px;
+}
+
+.share-project-label {
+  margin: 0 0 4px;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.share-project-owner {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.share-project-form {
+  display: grid;
+  gap: 8px;
+}
+
+.share-project-form-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.share-project-form-row select {
+  flex: 1 1 auto;
+}
+
+.share-project-members-section h3 {
+  margin: 0 0 10px;
+  font-size: 0.98rem;
+}
+
+.share-project-members {
+  display: grid;
+  gap: 10px;
+}
+
+.share-project-member-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--uc-radius-md);
+  background: var(--bg-surface);
+}
+
+.share-project-member-meta {
+  min-width: 0;
+}
+
+.share-project-member-name {
+  font-weight: 600;
+}
+
+.share-project-member-detail {
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.share-project-empty {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 640px) {
+  .share-project-form-row,
+  .share-project-member-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 .stack {
   display: flex;
   flex-direction: column;

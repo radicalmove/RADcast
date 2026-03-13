@@ -11,7 +11,9 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlencode
+from urllib.request import Request as URLRequest, urlopen
 
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from starlette.responses import PlainTextResponse
@@ -141,6 +143,11 @@ def _infer_psychek_app_url(login_url: str) -> str:
 
 PSYCHEK_ADMIN_URL = os.environ.get("PSYCHEK_ADMIN_URL", "").strip() or _infer_psychek_admin_url(PSYCHEK_LOGIN_URL)
 PSYCHEK_APP_URL = os.environ.get("PSYCHEK_APP_URL", "").strip() or _infer_psychek_app_url(PSYCHEK_LOGIN_URL)
+PSYCHEK_SHAREABLE_USERS_URL = (
+    os.environ.get("PSYCHEK_SHAREABLE_USERS_URL", "").strip()
+    or f"{PSYCHEK_APP_URL.rstrip('/')}/api/v1/integrations/shareable-users"
+)
+PSYCHEK_INTEGRATION_API_KEY = os.environ.get("PSYCHEK_INTEGRATION_API_KEY", "").strip() or BRIDGE_SECRET
 RADTTS_APP_URL = os.environ.get("RADTTS_APP_URL", "").strip()
 
 
@@ -458,6 +465,70 @@ def _resolve_project_id_for_request(request: Request, project_id: str) -> str:
             return candidate
 
     raise HTTPException(status_code=403, detail="project access denied")
+
+
+def _shareable_users_lookup_url(*, exclude_email: str = "") -> str:
+    base_url = str(PSYCHEK_SHAREABLE_USERS_URL or "").strip()
+    if not base_url:
+        raise HTTPException(status_code=503, detail="shareable users are not configured")
+    if not exclude_email:
+        return base_url
+    separator = "&" if "?" in base_url else "?"
+    return f"{base_url}{separator}{urlencode({'exclude_email': exclude_email})}"
+
+
+def _extract_integration_error(exc: HTTPError) -> str:
+    detail = f"HTTP {exc.code}"
+    try:
+        payload = json.loads(exc.read().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return detail
+    if isinstance(payload, dict):
+        return str(payload.get("error") or payload.get("detail") or detail)
+    return detail
+
+
+def _fetch_shareable_users(*, exclude_email: str = "") -> list[dict[str, object]]:
+    headers = {"Accept": "application/json"}
+    if PSYCHEK_INTEGRATION_API_KEY:
+        headers["Authorization"] = f"Bearer {PSYCHEK_INTEGRATION_API_KEY}"
+    request = URLRequest(_shareable_users_lookup_url(exclude_email=exclude_email), headers=headers, method="GET")
+
+    try:
+        with urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = _extract_integration_error(exc)
+        if exc.code in {401, 403}:
+            raise HTTPException(status_code=503, detail="shareable users authentication failed") from exc
+        if exc.code == 404:
+            raise HTTPException(status_code=503, detail="shareable users are unavailable") from exc
+        raise HTTPException(status_code=502, detail=f"could not load shareable users: {detail}") from exc
+    except URLError as exc:
+        raise HTTPException(status_code=502, detail=f"could not load shareable users: {exc.reason}") from exc
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail="invalid shareable users response") from exc
+
+    rows = payload.get("users") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=502, detail="invalid shareable users response")
+
+    users: list[dict[str, object]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        email = str(row.get("email") or "").strip().lower()
+        if not email:
+            continue
+        users.append(
+            {
+                "id": row.get("id"),
+                "username": str(row.get("username") or "").strip(),
+                "display_name": str(row.get("display_name") or "").strip(),
+                "email": email,
+            }
+        )
+    return users
 
 
 def _safe_filename(filename: str) -> str:
@@ -1119,6 +1190,23 @@ def get_project_access(request: Request, project_id: str):
             "email": str(owner.get("email") or ""),
         },
         "collaborators": collaborators,
+    }
+
+
+@app.get("/projects/{project_id}/shareable-users")
+def get_project_shareable_users(request: Request, project_id: str):
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    access = _resolve_access_for_user(request, scoped_project_id)
+    if not bool(access.get("can_manage")):
+        raise HTTPException(status_code=403, detail="project access denied")
+
+    current_user = _current_user(request) or {}
+    exclude_email = str(current_user.get("email") or "").strip().lower()
+    return {
+        "project_id": _display_project_id(scoped_project_id),
+        "project_ref": scoped_project_id,
+        "users": _fetch_shareable_users(exclude_email=exclude_email),
     }
 
 
