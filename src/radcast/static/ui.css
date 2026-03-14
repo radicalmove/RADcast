@@ -888,6 +888,11 @@ body.modal-open {
   grid-column: 3;
 }
 
+.caption-quality-stack {
+  margin-top: 2px;
+  gap: 6px;
+}
+
 .settings-control-silence {
   grid-column: 1 / span 2;
 }

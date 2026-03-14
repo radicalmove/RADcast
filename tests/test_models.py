@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from radcast.constants import DEFAULT_ENHANCE_COMMAND, DEFAULT_STUDIO_COMMAND
-from radcast.models import CaptionFormat, EnhancementModel, FillerRemovalMode, OutputFormat, SimpleEnhanceRequest
+from radcast.models import CaptionFormat, CaptionQualityMode, EnhancementModel, FillerRemovalMode, OutputFormat, SimpleEnhanceRequest
 from radcast.services.enhance import (
     EnhanceService,
     _estimate_progress,
@@ -29,6 +29,7 @@ def test_simple_enhance_request_accepts_valid_payload():
     assert req.project_id == "proj1"
     assert req.speech_cleanup_requested() is True
     assert req.caption_requested() is True
+    assert req.caption_quality_mode == CaptionQualityMode.ACCURATE
     assert req.filler_removal_mode == FillerRemovalMode.AGGRESSIVE
 
 
@@ -62,6 +63,18 @@ def test_simple_enhance_request_accepts_explicit_filler_cleanup_mode():
     )
 
     assert req.filler_removal_mode == FillerRemovalMode.NORMAL
+
+
+def test_simple_enhance_request_accepts_explicit_caption_quality_mode():
+    req = SimpleEnhanceRequest(
+        project_id="proj1",
+        input_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        input_audio_filename="lecture.wav",
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.FAST,
+    )
+
+    assert req.caption_quality_mode == CaptionQualityMode.FAST
 
 
 def test_resolve_command_prefers_sibling_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

@@ -399,7 +399,11 @@ class WorkerManager:
                     if cleanup_requested
                     else None
                 )
-                caption_eta_seconds = estimate_caption_seconds(req.duration_seconds) if caption_requested else None
+                caption_eta_seconds = (
+                    estimate_caption_seconds(req.duration_seconds, quality_mode=payload.caption_quality_mode)
+                    if caption_requested
+                    else None
+                )
                 self._mark_queue_job(job_id, status="server_finalizing")
                 self._update_job_manifest(
                     project_id=payload.project_id,
@@ -498,7 +502,11 @@ class WorkerManager:
             cleanup_requested = payload.speech_cleanup_requested() and not cleanup_already_applied
             caption_requested = payload.caption_requested() and helper_caption_path is None
             cleanup_band_reserved = payload.speech_cleanup_requested()
-            caption_eta_seconds = estimate_caption_seconds(duration_seconds) if caption_requested else None
+            caption_eta_seconds = (
+                estimate_caption_seconds(duration_seconds, quality_mode=payload.caption_quality_mode)
+                if caption_requested
+                else None
+            )
             final_duration_seconds = duration_seconds
             if cleanup_requested:
                 cleanup_result = speech_cleanup_service.cleanup_audio_file(
@@ -537,6 +545,7 @@ class WorkerManager:
                 caption_result = speech_cleanup_service.generate_caption_file(
                     audio_path=output_path,
                     caption_format=payload.caption_format,
+                    caption_quality_mode=payload.caption_quality_mode,
                     on_stage=lambda progress, detail, eta_seconds: self._update_job_manifest(
                         project_id=payload.project_id,
                         job_id=job_id,
@@ -562,6 +571,7 @@ class WorkerManager:
                 output_format=output_format,
                 caption_file=caption_path,
                 caption_format=caption_format,
+                caption_quality_mode=payload.caption_quality_mode,
                 enhancement_model=payload.enhancement_model,
                 audio_tuning_label=current_audio_tuning_label(payload.enhancement_model),
                 max_silence_seconds=payload.max_silence_seconds,

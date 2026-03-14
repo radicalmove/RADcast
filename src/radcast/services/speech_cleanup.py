@@ -17,7 +17,7 @@ from typing import Callable
 import numpy as np
 
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
-from radcast.models import CaptionFormat, FillerRemovalMode, OutputFormat
+from radcast.models import CaptionFormat, CaptionQualityMode, FillerRemovalMode, OutputFormat
 from radcast.progress import estimate_caption_seconds
 from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
 
@@ -42,8 +42,48 @@ _TRANSCRIBE_PROGRESS_MIN_INTERVAL_SECONDS = 0.8
 _TOKEN_RE = re.compile(r"[^a-z']+")
 _AGGRESSIVE_TRANSCRIBE_WINDOW_SECONDS = 4.0
 _AGGRESSIVE_TRANSCRIBE_OVERLAP_SECONDS = 1.0
+_CAPTION_FAST_WINDOW_SECONDS = 8.0
+_CAPTION_FAST_OVERLAP_SECONDS = 1.5
+_CAPTION_ACCURATE_WINDOW_SECONDS = 12.0
+_CAPTION_ACCURATE_OVERLAP_SECONDS = 2.5
 _AGGRESSIVE_FILLER_PROMPT = (
     "Transcribe all spoken disfluencies exactly, including um, ums, uh, uhh, ah, ahh, erm, mm, and hesitation sounds."
+)
+_COMMON_MAORI_TERMS = (
+    "Aotearoa",
+    "Māori",
+    "te reo Māori",
+    "tikanga",
+    "whānau",
+    "hapū",
+    "iwi",
+    "mana",
+    "tapu",
+    "noa",
+    "utu",
+    "muru",
+    "rangatiratanga",
+    "kaitiakitanga",
+    "manaakitanga",
+    "whakapapa",
+    "mātauranga",
+    "mātauranga Māori",
+    "whanaungatanga",
+    "wānanga",
+    "hui",
+    "marae",
+    "Pākehā",
+    "kaumātua",
+    "kuia",
+    "taonga",
+    "karakia",
+    "pōwhiri",
+    "Te Tiriti o Waitangi",
+)
+_MAORI_GLOSSARY_PROMPT = (
+    "This audio may include te reo Māori words. Prefer correct spellings and macrons when spoken clearly, such as "
+    + ", ".join(_COMMON_MAORI_TERMS)
+    + "."
 )
 
 
@@ -85,6 +125,16 @@ class CaptionExportResult:
     caption_path: Path
     caption_format: CaptionFormat
     segment_count: int
+
+
+@dataclass(frozen=True)
+class CaptionTranscriptionProfile:
+    model_size: str
+    beam_size: int
+    window_seconds: float
+    overlap_seconds: float
+    condition_on_previous_text: bool
+    initial_prompt: str | None
 
 
 @dataclass(frozen=True)
@@ -136,11 +186,15 @@ _AGGRESSIVE_FILLER_HEURISTICS = FillerRemovalHeuristics(
 
 class SpeechCleanupService:
     def __init__(self) -> None:
-        self.model_size = os.environ.get("RADCAST_SPEECH_CLEANUP_MODEL", "small").strip() or "small"
+        self.cleanup_model_size = os.environ.get("RADCAST_SPEECH_CLEANUP_MODEL", "small").strip() or "small"
+        self.caption_fast_model_size = os.environ.get("RADCAST_CAPTION_FAST_MODEL", self.cleanup_model_size).strip() or self.cleanup_model_size
+        self.caption_accurate_model_size = os.environ.get("RADCAST_CAPTION_ACCURATE_MODEL", "medium").strip() or "medium"
         self.device = os.environ.get("RADCAST_SPEECH_CLEANUP_DEVICE", "auto").strip() or "auto"
         self.compute_type = os.environ.get("RADCAST_SPEECH_CLEANUP_COMPUTE_TYPE", "int8").strip() or "int8"
         self.beam_size = max(1, int(os.environ.get("RADCAST_SPEECH_CLEANUP_BEAM_SIZE", "3")))
-        self._model = None
+        self.caption_fast_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_FAST_BEAM_SIZE", str(self.beam_size))))
+        self.caption_accurate_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_ACCURATE_BEAM_SIZE", "5")))
+        self._models: dict[str, object] = {}
         self._model_lock = threading.Lock()
 
     @staticmethod
@@ -150,7 +204,10 @@ class SpeechCleanupService:
     def capability_status(self) -> tuple[bool, str]:
         if find_spec("faster_whisper") is None:
             return False, "Install faster-whisper to enable long-silence trimming, filler-word cleanup, and caption export."
-        return True, f"Speech cleanup and caption export are available with faster-whisper ({self.model_size})."
+        return True, (
+            "Speech cleanup and caption export are available with faster-whisper "
+            f"(cleanup: {self.cleanup_model_size}, captions: {self.caption_accurate_model_size})."
+        )
 
     def estimate_runtime_seconds(
         self,
@@ -299,6 +356,7 @@ class SpeechCleanupService:
         *,
         audio_path: Path,
         caption_format: CaptionFormat,
+        caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE,
         on_stage: CleanupStageCallback | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> CaptionExportResult:
@@ -310,7 +368,9 @@ class SpeechCleanupService:
             raise JobCancelledError("job cancelled")
 
         input_duration = probe_duration_seconds(audio_path)
-        caption_eta_seconds = estimate_caption_seconds(input_duration)
+        quality_mode = _normalize_caption_quality_mode(caption_quality_mode)
+        profile = self._caption_profile_for_mode(quality_mode)
+        caption_eta_seconds = estimate_caption_seconds(input_duration, quality_mode=quality_mode)
         started_at = time.monotonic()
         if on_stage:
             on_stage(0.02, "Transcribing speech for captions.", caption_eta_seconds)
@@ -331,6 +391,12 @@ class SpeechCleanupService:
                 cancel_check=cancel_check,
                 force_windowed=True,
                 preserve_fillers=False,
+                model_size=profile.model_size,
+                beam_size=profile.beam_size,
+                condition_on_previous_text=profile.condition_on_previous_text,
+                initial_prompt=profile.initial_prompt,
+                window_seconds=profile.window_seconds,
+                overlap_seconds=profile.overlap_seconds,
             )
 
             if cancel_check and cancel_check():
@@ -353,30 +419,46 @@ class SpeechCleanupService:
             segment_count=len([segment for segment in segments if _clean_caption_text(segment.text)]),
         )
 
-    def _load_model(self):
-        if self._model is not None:
-            return self._model
+    def _load_model(self, model_size: str | None = None):
+        resolved_model_size = str(model_size or self.cleanup_model_size).strip() or self.cleanup_model_size
+        cached = self._models.get(resolved_model_size)
+        if cached is not None:
+            return cached
         with self._model_lock:
-            if self._model is not None:
-                return self._model
+            cached = self._models.get(resolved_model_size)
+            if cached is not None:
+                return cached
             try:
                 from faster_whisper import WhisperModel
             except ImportError as exc:  # pragma: no cover - availability is checked before runtime use
                 raise EnhancementRuntimeError(
                     "faster-whisper is required for speech cleanup. Install with 'pip install -e .'."
                 ) from exc
-            self._model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
-        return self._model
+            model = WhisperModel(resolved_model_size, device=self.device, compute_type=self.compute_type)
+            self._models[resolved_model_size] = model
+            return model
 
-    def _transcribe_file(self, model, audio_path: Path, *, preserve_fillers: bool):
+    def _transcribe_file(
+        self,
+        model,
+        audio_path: Path,
+        *,
+        preserve_fillers: bool,
+        beam_size: int | None = None,
+        condition_on_previous_text: bool = False,
+        initial_prompt: str | None = None,
+    ):
         kwargs = {
-            "beam_size": self.beam_size,
+            "beam_size": max(1, int(beam_size or self.beam_size)),
             "word_timestamps": True,
             "vad_filter": not preserve_fillers,
-            "condition_on_previous_text": False,
+            "condition_on_previous_text": condition_on_previous_text,
         }
-        if preserve_fillers:
-            kwargs["initial_prompt"] = _AGGRESSIVE_FILLER_PROMPT
+        prompt_text = initial_prompt
+        if preserve_fillers and not prompt_text:
+            prompt_text = _AGGRESSIVE_FILLER_PROMPT
+        if prompt_text:
+            kwargs["initial_prompt"] = prompt_text
         segment_iter, _info = model.transcribe(str(audio_path), **kwargs)
         return segment_iter
 
@@ -394,6 +476,12 @@ class SpeechCleanupService:
         cancel_check: Callable[[], bool] | None = None,
         force_windowed: bool = False,
         preserve_fillers: bool = False,
+        model_size: str | None = None,
+        beam_size: int | None = None,
+        condition_on_previous_text: bool = False,
+        initial_prompt: str | None = None,
+        window_seconds: float | None = None,
+        overlap_seconds: float | None = None,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         normalized_mode = _normalize_filler_mode(filler_removal_mode)
         should_use_windowed = force_windowed or (remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE)
@@ -407,16 +495,29 @@ class SpeechCleanupService:
                 transcribe_detail=transcribe_detail,
                 cancel_check=cancel_check,
                 preserve_fillers=preserve_fillers or (remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE),
+                model_size=model_size,
+                beam_size=beam_size,
+                condition_on_previous_text=condition_on_previous_text,
+                initial_prompt=initial_prompt,
+                window_seconds=window_seconds,
+                overlap_seconds=overlap_seconds,
             )
 
         if cancel_check and cancel_check():
             raise JobCancelledError("job cancelled")
-        model = self._load_model()
+        model = self._load_model(model_size)
 
         words: list[TranscriptWordTiming] = []
         segments: list[TranscriptSegmentTiming] = []
         last_progress_emit_at = 0.0
-        for seg in self._transcribe_file(model, audio_path, preserve_fillers=preserve_fillers):
+        for seg in self._transcribe_file(
+            model,
+            audio_path,
+            preserve_fillers=preserve_fillers,
+            beam_size=beam_size,
+            condition_on_previous_text=condition_on_previous_text,
+            initial_prompt=initial_prompt,
+        ):
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
             start = max(0.0, float(seg.start))
@@ -466,18 +567,24 @@ class SpeechCleanupService:
         transcribe_detail: str = "Transcribing speech timing for cleanup.",
         cancel_check: Callable[[], bool] | None = None,
         preserve_fillers: bool = False,
+        model_size: str | None = None,
+        beam_size: int | None = None,
+        condition_on_previous_text: bool = False,
+        initial_prompt: str | None = None,
+        window_seconds: float | None = None,
+        overlap_seconds: float | None = None,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         if cancel_check and cancel_check():
             raise JobCancelledError("job cancelled")
-        model = self._load_model()
+        model = self._load_model(model_size)
         waveform, sample_rate = _read_pcm16_wav(audio_path)
         total_duration = max(0.0, float(total_duration))
         if total_duration <= 0.0:
             return [], []
 
-        window_seconds = min(max(_AGGRESSIVE_TRANSCRIBE_WINDOW_SECONDS, 1.0), total_duration)
-        overlap_seconds = min(_AGGRESSIVE_TRANSCRIBE_OVERLAP_SECONDS, max(0.0, window_seconds / 2.0))
-        step_seconds = max(0.5, window_seconds - overlap_seconds)
+        resolved_window_seconds = min(max(float(window_seconds or _AGGRESSIVE_TRANSCRIBE_WINDOW_SECONDS), 1.0), total_duration)
+        resolved_overlap_seconds = min(float(overlap_seconds or _AGGRESSIVE_TRANSCRIBE_OVERLAP_SECONDS), max(0.0, resolved_window_seconds / 2.0))
+        step_seconds = max(0.5, resolved_window_seconds - resolved_overlap_seconds)
         words: list[TranscriptWordTiming] = []
         segments: list[TranscriptSegmentTiming] = []
 
@@ -488,15 +595,22 @@ class SpeechCleanupService:
             while True:
                 if cancel_check and cancel_check():
                     raise JobCancelledError("job cancelled")
-                window_end = min(total_duration, window_start + window_seconds)
+                window_end = min(total_duration, window_start + resolved_window_seconds)
                 start_idx = max(0, min(len(waveform), int(round(window_start * sample_rate))))
                 end_idx = max(start_idx, min(len(waveform), int(round(window_end * sample_rate))))
                 window_path = tmp_path / f"window_{int(round(window_start * 1000)):06d}.wav"
                 _write_pcm16_wav(window_path, waveform[start_idx:end_idx], sample_rate=sample_rate)
-                transcribed_segments = self._transcribe_file(model, window_path, preserve_fillers=preserve_fillers)
+                transcribed_segments = self._transcribe_file(
+                    model,
+                    window_path,
+                    preserve_fillers=preserve_fillers,
+                    beam_size=beam_size,
+                    condition_on_previous_text=condition_on_previous_text,
+                    initial_prompt=initial_prompt,
+                )
 
-                left_guard_seconds = 0.0 if window_index == 0 else overlap_seconds / 2.0
-                right_guard_seconds = 0.0 if window_end >= total_duration - 1e-6 else overlap_seconds / 2.0
+                left_guard_seconds = 0.0 if window_index == 0 else resolved_overlap_seconds / 2.0
+                right_guard_seconds = 0.0 if window_end >= total_duration - 1e-6 else resolved_overlap_seconds / 2.0
                 keep_start_seconds = left_guard_seconds
                 keep_end_seconds = max(keep_start_seconds, (window_end - window_start) - right_guard_seconds)
                 window_words, window_segments = _collect_timing_rows(
@@ -527,6 +641,25 @@ class SpeechCleanupService:
                 window_index += 1
 
         return _dedupe_transcript_words(words), _dedupe_transcript_segments(segments)
+
+    def _caption_profile_for_mode(self, caption_quality_mode: CaptionQualityMode) -> CaptionTranscriptionProfile:
+        if caption_quality_mode == CaptionQualityMode.FAST:
+            return CaptionTranscriptionProfile(
+                model_size=self.caption_fast_model_size,
+                beam_size=self.caption_fast_beam_size,
+                window_seconds=_CAPTION_FAST_WINDOW_SECONDS,
+                overlap_seconds=_CAPTION_FAST_OVERLAP_SECONDS,
+                condition_on_previous_text=False,
+                initial_prompt=_MAORI_GLOSSARY_PROMPT,
+            )
+        return CaptionTranscriptionProfile(
+            model_size=self.caption_accurate_model_size,
+            beam_size=self.caption_accurate_beam_size,
+            window_seconds=_CAPTION_ACCURATE_WINDOW_SECONDS,
+            overlap_seconds=_CAPTION_ACCURATE_OVERLAP_SECONDS,
+            condition_on_previous_text=True,
+            initial_prompt=_MAORI_GLOSSARY_PROMPT,
+        )
 
     def _filler_intervals(
         self,
@@ -679,6 +812,15 @@ def _normalize_filler_mode(value: FillerRemovalMode | str | None) -> FillerRemov
         return FillerRemovalMode(str(value or FillerRemovalMode.AGGRESSIVE.value).strip().lower())
     except ValueError:
         return FillerRemovalMode.AGGRESSIVE
+
+
+def _normalize_caption_quality_mode(value: CaptionQualityMode | str | None) -> CaptionQualityMode:
+    if isinstance(value, CaptionQualityMode):
+        return value
+    try:
+        return CaptionQualityMode(str(value or CaptionQualityMode.ACCURATE.value).strip().lower())
+    except ValueError:
+        return CaptionQualityMode.ACCURATE
 
 
 def _filler_heuristics_for_mode(mode: FillerRemovalMode | str | None) -> FillerRemovalHeuristics:

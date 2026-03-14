@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from radcast.models import FillerRemovalMode
+from radcast.models import CaptionQualityMode, FillerRemovalMode
 
 
 def estimate_speech_cleanup_seconds(
@@ -25,9 +25,15 @@ def estimate_speech_cleanup_seconds(
     return max(6, min(int(round(base_seconds + (safe_duration * per_second))), 12 * 60))
 
 
-def estimate_caption_seconds(duration_seconds: float | None) -> int:
+def estimate_caption_seconds(
+    duration_seconds: float | None,
+    *,
+    quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE,
+) -> int:
     safe_duration = max(1.0, float(duration_seconds or 1.0))
-    return max(20, min(int(round(10.0 + (safe_duration * 0.9))), 14 * 60))
+    if quality_mode == CaptionQualityMode.FAST:
+        return max(14, min(int(round(8.0 + (safe_duration * 0.55))), 10 * 60))
+    return max(24, min(int(round(16.0 + (safe_duration * 1.05))), 16 * 60))
 
 
 def map_local_stage_progress(stage: str, progress: float, *, reserve_cleanup_band: bool) -> float:

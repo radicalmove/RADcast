@@ -204,7 +204,10 @@ class WorkerClient:
                             filler_removal_mode=req.filler_removal_mode,
                         )
                     if caption_requested:
-                        caption_eta_seconds = estimate_caption_seconds(input_duration_seconds)
+                        caption_eta_seconds = estimate_caption_seconds(
+                            input_duration_seconds,
+                            quality_mode=req.caption_quality_mode,
+                        )
                 except Exception:
                     cleanup_eta_seconds = None
                     caption_eta_seconds = None
@@ -368,6 +371,7 @@ class WorkerClient:
                     caption_result = self.speech_cleanup_service.generate_caption_file(
                         audio_path=final_path,
                         caption_format=req.caption_format,
+                        caption_quality_mode=req.caption_quality_mode,
                         on_stage=lambda progress, detail, eta_seconds: emit_progress(
                             map_postprocess_stage_progress(
                                 progress,

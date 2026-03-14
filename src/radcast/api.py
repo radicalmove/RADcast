@@ -23,6 +23,7 @@ from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
 from radcast.manifests import ManifestStore
 from radcast.models import (
     CaptionFormat,
+    CaptionQualityMode,
     EnhancementModel,
     FillerRemovalMode,
     JobRecord,
@@ -271,6 +272,12 @@ def _coerce_project_settings(payload: object) -> ProjectUiSettings:
     except ValueError:
         caption_format = None
 
+    caption_quality_mode_raw = str(data.get("caption_quality_mode") or CaptionQualityMode.ACCURATE.value).strip().lower()
+    try:
+        caption_quality_mode = CaptionQualityMode(caption_quality_mode_raw)
+    except ValueError:
+        caption_quality_mode = CaptionQualityMode.ACCURATE
+
     enhancement_model_raw = str(data.get("enhancement_model") or EnhancementModel.RESEMBLE.value).strip().lower()
     try:
         enhancement_model = EnhancementModel(enhancement_model_raw)
@@ -293,6 +300,7 @@ def _coerce_project_settings(payload: object) -> ProjectUiSettings:
         selected_audio_hash=selected_audio_hash,
         output_format=output_format,
         caption_format=caption_format,
+        caption_quality_mode=caption_quality_mode,
         enhancement_model=enhancement_model,
         reduce_silence_enabled=bool(data.get("reduce_silence_enabled", False)),
         max_silence_seconds=max_silence_seconds,
@@ -794,8 +802,9 @@ def _run_enhancement_job(
     input_audio_filename: str,
     output_name: str,
     output_format: OutputFormat,
-    caption_format: CaptionFormat | None = None,
     enhancement_model: EnhancementModel,
+    caption_format: CaptionFormat | None = None,
+    caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE,
     max_silence_seconds: float | None = None,
     remove_filler_words: bool = False,
     filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE,
@@ -818,7 +827,10 @@ def _run_enhancement_job(
     caption_eta_seconds = None
     if caption_requested:
         try:
-            caption_eta_seconds = estimate_caption_seconds(probe_duration_seconds(input_audio_path))
+            caption_eta_seconds = estimate_caption_seconds(
+                probe_duration_seconds(input_audio_path),
+                quality_mode=caption_quality_mode,
+            )
         except Exception:
             caption_eta_seconds = None
 
@@ -893,6 +905,7 @@ def _run_enhancement_job(
             caption_result = speech_cleanup_service.generate_caption_file(
                 audio_path=final_path,
                 caption_format=caption_format,
+                caption_quality_mode=caption_quality_mode,
                 on_stage=lambda progress, detail, eta_seconds: _update_job(
                     manifests_dir,
                     job_id=job_id,
@@ -918,6 +931,7 @@ def _run_enhancement_job(
             output_format=output_format,
             caption_file=caption_result.caption_path if caption_result else None,
             caption_format=caption_format,
+            caption_quality_mode=caption_quality_mode,
             enhancement_model=enhancement_model,
             audio_tuning_label=enhance_service.output_tuning_label_for_model(enhancement_model),
             max_silence_seconds=max_silence_seconds,
@@ -1021,6 +1035,7 @@ def _run_local_enhancement_from_worker_payload(
         output_name=str(worker_payload.output_name or _build_output_name(source_filename, None)),
         output_format=worker_payload.output_format,
         caption_format=worker_payload.caption_format,
+        caption_quality_mode=worker_payload.caption_quality_mode,
         enhancement_model=worker_payload.enhancement_model,
         max_silence_seconds=worker_payload.max_silence_seconds,
         remove_filler_words=worker_payload.remove_filler_words,
@@ -1481,6 +1496,7 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         output_name=output_name,
         output_format=req.output_format,
         caption_format=req.caption_format,
+        caption_quality_mode=req.caption_quality_mode,
         enhancement_model=selected_model,
         max_silence_seconds=req.max_silence_seconds,
         remove_filler_words=req.remove_filler_words,

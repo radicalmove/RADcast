@@ -23,6 +23,7 @@ const sourceAudioPreviewNode = document.getElementById("source-audio-preview");
 
 const outputFormatNode = document.getElementById("output-format");
 const captionFormatNode = document.getElementById("caption-format");
+const captionQualityModeNode = document.getElementById("caption-quality-mode");
 const captionFormatStatusNode = document.getElementById("caption-format-status");
 const enhancementModelNode = document.getElementById("enhancement-model");
 const enhancementModelStatusNode = document.getElementById("enhancement-model-status");
@@ -158,11 +159,16 @@ function normalizeCaptionFormat(value) {
   return normalized === "srt" || normalized === "vtt" ? normalized : null;
 }
 
+function normalizeCaptionQualityMode(value) {
+  return String(value || "").trim().toLowerCase() === "fast" ? "fast" : "accurate";
+}
+
 function defaultProjectSettings() {
   return {
     selected_audio_hash: null,
     output_format: "mp3",
     caption_format: null,
+    caption_quality_mode: "accurate",
     enhancement_model: "resemble",
     reduce_silence_enabled: false,
     max_silence_seconds: 1,
@@ -208,6 +214,7 @@ function normalizeProjectSettings(payload) {
   const data = payload && typeof payload === "object" ? payload : {};
   const outputFormat = cleanOptional(data.output_format);
   const captionFormat = normalizeCaptionFormat(data.caption_format);
+  const captionQualityMode = normalizeCaptionQualityMode(data.caption_quality_mode);
   const enhancementModel = cleanOptional(data.enhancement_model);
   const selectedAudioHash = cleanOptional(data.selected_audio_hash);
 
@@ -215,6 +222,7 @@ function normalizeProjectSettings(payload) {
     selected_audio_hash: selectedAudioHash && selectedAudioHash.length >= 16 ? selectedAudioHash : null,
     output_format: outputFormat === "wav" ? "wav" : "mp3",
     caption_format: captionFormat,
+    caption_quality_mode: captionQualityMode,
     enhancement_model: enhancementModel || "resemble",
     reduce_silence_enabled: Boolean(data.reduce_silence_enabled),
     max_silence_seconds: clampSilenceSeconds(data.max_silence_seconds),
@@ -232,6 +240,9 @@ function applyProjectSettingsToControls(settings) {
   }
   if (captionFormatNode) {
     captionFormatNode.value = normalized.caption_format || "";
+  }
+  if (captionQualityModeNode) {
+    captionQualityModeNode.value = normalized.caption_quality_mode;
   }
   if (enhancementModelNode) {
     const desiredOption = Array.from(enhancementModelNode.options).find((option) => {
@@ -270,6 +281,7 @@ function currentProjectSettingsPayload() {
     selected_audio_hash: state.selectedAudioHash,
     output_format: cleanOptional(outputFormatNode?.value) || "mp3",
     caption_format: selectedCaptionFormat(),
+    caption_quality_mode: selectedCaptionQualityMode(),
     enhancement_model: selectedEnhancementModelId(),
     reduce_silence_enabled: Boolean(reduceSilenceEnabledNode?.checked),
     max_silence_seconds: reduceSilenceSecondsNode?.value ?? 1,
@@ -694,6 +706,10 @@ function selectedCaptionFormat() {
   return normalizeCaptionFormat(captionFormatNode?.value);
 }
 
+function selectedCaptionQualityMode() {
+  return normalizeCaptionQualityMode(captionQualityModeNode?.value);
+}
+
 function formatSilenceThresholdLabel(value) {
   const numeric = Number(value || 0);
   const safe = Number.isFinite(numeric) ? Math.max(0, Math.min(4, numeric)) : 0;
@@ -715,6 +731,9 @@ function updateSpeechCleanupControls() {
   const available = Boolean(state.speechCleanupAvailable);
   if (captionFormatNode) {
     captionFormatNode.disabled = !available;
+  }
+  if (captionQualityModeNode) {
+    captionQualityModeNode.disabled = !available || !selectedCaptionFormat();
   }
   if (reduceSilenceSecondsNode) {
     reduceSilenceSecondsNode.disabled = !available || !reduceSilenceEnabledNode?.checked;
@@ -748,12 +767,17 @@ function updateCaptionFormatStatus() {
     return;
   }
   const format = selectedCaptionFormat();
+  const qualityMode = selectedCaptionQualityMode();
+  const qualityHint =
+    qualityMode === "fast"
+      ? "Fast captions use the lighter transcription path."
+      : "Accurate captions use a larger transcription pass and a te reo Maori glossary.";
   if (format === "srt") {
-    captionFormatStatusNode.textContent = "Generate timestamped SRT captions from the final audio for Echo360 upload.";
+    captionFormatStatusNode.textContent = `Generate timestamped SRT captions from the final audio for Echo360 upload. ${qualityHint}`;
     return;
   }
   if (format === "vtt") {
-    captionFormatStatusNode.textContent = "Generate timestamped VTT captions from the final audio for Echo360 upload.";
+    captionFormatStatusNode.textContent = `Generate timestamped VTT captions from the final audio for Echo360 upload. ${qualityHint}`;
     return;
   }
   captionFormatStatusNode.textContent = "Generate timestamped captions from the final audio for Echo360.";
@@ -1770,6 +1794,7 @@ async function handleGenerate() {
       project_id: state.activeProjectRef,
       output_format: String(outputFormatNode?.value || "mp3"),
       caption_format: selectedCaptionFormat(),
+      caption_quality_mode: selectedCaptionQualityMode(),
       enhancement_model: selectedEnhancementModelId(),
       max_silence_seconds: selectedMaxSilenceSeconds(),
       remove_filler_words: Boolean(removeFillerWordsNode?.checked && state.speechCleanupAvailable),
@@ -2148,6 +2173,13 @@ async function init() {
   }
   if (captionFormatNode) {
     captionFormatNode.addEventListener("change", () => {
+      updateSpeechCleanupControls();
+      updateCaptionFormatStatus();
+      queueProjectSettingsSave();
+    });
+  }
+  if (captionQualityModeNode) {
+    captionQualityModeNode.addEventListener("change", () => {
       updateCaptionFormatStatus();
       queueProjectSettingsSave();
     });

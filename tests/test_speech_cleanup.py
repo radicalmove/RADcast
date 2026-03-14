@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from radcast.models import CaptionFormat, FillerRemovalMode, OutputFormat
+from radcast.models import CaptionFormat, CaptionQualityMode, FillerRemovalMode, OutputFormat
 from radcast.services.speech_cleanup import (
     CaptionExportResult,
     SpeechCleanupResult,
@@ -332,9 +332,17 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
     service = SpeechCleanupService()
     calls: list[tuple[str, bool]] = []
 
-    monkeypatch.setattr(service, "_load_model", lambda: object())
+    monkeypatch.setattr(service, "_load_model", lambda _model_size=None: object())
 
-    def fake_transcribe_file(_model, clip_path: Path, *, preserve_fillers: bool):
+    def fake_transcribe_file(
+        _model,
+        clip_path: Path,
+        *,
+        preserve_fillers: bool,
+        beam_size: int | None = None,
+        condition_on_previous_text: bool = False,
+        initial_prompt: str | None = None,
+    ):
         calls.append((clip_path.name, preserve_fillers))
         if clip_path.name == "window_000000.wav":
             return [
@@ -432,6 +440,39 @@ def test_generate_caption_file_writes_vtt(monkeypatch, tmp_path: Path):
     assert text.startswith("WEBVTT")
     assert "00:00:00.000 --> 00:00:00.900" in text
     assert "Caption text" in text
+
+
+def test_generate_caption_file_uses_accurate_profile_and_maori_glossary(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+
+    captured: dict[str, object] = {}
+
+    def fake_transcribe_timeline(*args, **kwargs):
+        captured.update(kwargs)
+        return [], [TranscriptSegmentTiming(text="Caption text", start=0.0, end=0.9)]
+
+    monkeypatch.setattr(service, "_transcribe_timeline", fake_transcribe_timeline)
+
+    service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.ACCURATE,
+    )
+
+    assert captured["model_size"] == service.caption_accurate_model_size
+    assert captured["beam_size"] == service.caption_accurate_beam_size
+    assert captured["condition_on_previous_text"] is True
+    assert captured["window_seconds"] == 12.0
+    assert captured["overlap_seconds"] == 2.5
+    assert "tikanga" in str(captured["initial_prompt"])
+    assert "whānau" in str(captured["initial_prompt"])
 
 
 def test_transcription_eta_stays_conservative_until_late_caption_stage():

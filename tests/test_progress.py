@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from radcast.models import FillerRemovalMode
+from radcast.models import CaptionQualityMode, FillerRemovalMode
 from radcast.progress import (
     estimate_caption_seconds,
     estimate_speech_cleanup_seconds,
@@ -60,6 +60,10 @@ def test_caption_progress_uses_tail_after_cleanup():
 
 
 def test_postprocess_eta_extension_adds_cleanup_and_caption_time():
-    assert estimate_caption_seconds(30) >= 30
-    assert estimate_caption_seconds(120) >= 110
+    assert estimate_caption_seconds(30, quality_mode=CaptionQualityMode.FAST) >= 20
+    assert estimate_caption_seconds(120, quality_mode=CaptionQualityMode.ACCURATE) >= 120
+    assert estimate_caption_seconds(120, quality_mode=CaptionQualityMode.ACCURATE) > estimate_caption_seconds(
+        120,
+        quality_mode=CaptionQualityMode.FAST,
+    )
     assert extend_eta_with_postprocess(50, 20, 8, reserve_postprocess_band=True) == 78
