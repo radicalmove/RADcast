@@ -14,6 +14,7 @@ from radcast.services.speech_cleanup import (
     SpeechCleanupService,
     TranscriptSegmentTiming,
     TranscriptWordTiming,
+    _transcription_eta_seconds,
     _read_pcm16_wav,
 )
 
@@ -431,6 +432,11 @@ def test_generate_caption_file_writes_vtt(monkeypatch, tmp_path: Path):
     assert text.startswith("WEBVTT")
     assert "00:00:00.000 --> 00:00:00.900" in text
     assert "Caption text" in text
+
+
+def test_transcription_eta_stays_conservative_until_late_caption_stage():
+    assert _transcription_eta_seconds(elapsed_seconds=65, cleanup_eta_seconds=95, coverage=0.86) >= 12
+    assert _transcription_eta_seconds(elapsed_seconds=88, cleanup_eta_seconds=95, coverage=0.95) >= 4
 
 
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):

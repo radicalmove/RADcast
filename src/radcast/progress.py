@@ -27,7 +27,7 @@ def estimate_speech_cleanup_seconds(
 
 def estimate_caption_seconds(duration_seconds: float | None) -> int:
     safe_duration = max(1.0, float(duration_seconds or 1.0))
-    return max(12, min(int(round(14.0 + (safe_duration * 0.55))), 12 * 60))
+    return max(18, min(int(round(16.0 + (safe_duration * 0.65))), 12 * 60))
 
 
 def map_local_stage_progress(stage: str, progress: float, *, reserve_cleanup_band: bool) -> float:
