@@ -407,7 +407,12 @@ class WorkerManager:
                     status=JobStatus.RUNNING,
                     stage="cleanup" if cleanup_requested else "captions",
                     progress=(
-                        0.72
+                        map_postprocess_stage_progress(
+                            0.0,
+                            stage="cleanup",
+                            cleanup_requested=cleanup_band_reserved,
+                            caption_requested=caption_requested,
+                        )
                         if cleanup_requested
                         else map_postprocess_stage_progress(
                             0.0,

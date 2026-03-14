@@ -744,22 +744,22 @@ def _transcription_eta_seconds(*, elapsed_seconds: float, cleanup_eta_seconds: i
     if safe_coverage >= 0.08:
         projected_total = max(float(cleanup_eta_seconds), safe_elapsed / safe_coverage)
         if safe_coverage < 0.35:
-            projected_total *= 1.2
+            projected_total *= 1.24
         elif safe_coverage < 0.65:
-            projected_total *= 1.12
+            projected_total *= 1.16
         elif safe_coverage < 0.88:
-            projected_total *= 1.08
-        elif safe_coverage < 0.96:
-            projected_total *= 1.05
+            projected_total *= 1.1
+        elif safe_coverage < 0.97:
+            projected_total *= 1.06
         remaining = projected_total - safe_elapsed
     else:
-        remaining = (float(cleanup_eta_seconds) - safe_elapsed) * 1.1
+        remaining = (float(cleanup_eta_seconds) - safe_elapsed) * 1.15
     if safe_coverage < 0.8:
-        floor_seconds = 10
+        floor_seconds = 12
     elif safe_coverage < 0.94:
-        floor_seconds = 7
+        floor_seconds = 8
     elif safe_coverage < 0.985:
-        floor_seconds = 4
+        floor_seconds = 5
     else:
         floor_seconds = 2
     return max(floor_seconds, int(round(max(1.0, remaining))))

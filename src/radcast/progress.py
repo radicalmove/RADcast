@@ -27,7 +27,7 @@ def estimate_speech_cleanup_seconds(
 
 def estimate_caption_seconds(duration_seconds: float | None) -> int:
     safe_duration = max(1.0, float(duration_seconds or 1.0))
-    return max(18, min(int(round(16.0 + (safe_duration * 0.65))), 12 * 60))
+    return max(20, min(int(round(10.0 + (safe_duration * 0.9))), 14 * 60))
 
 
 def map_local_stage_progress(stage: str, progress: float, *, reserve_cleanup_band: bool) -> float:
@@ -38,9 +38,9 @@ def map_local_stage_progress(stage: str, progress: float, *, reserve_cleanup_ban
     if normalized == "prepare":
         return _remap(clamped, source_start=0.08, source_end=0.22, target_start=0.08, target_end=0.16)
     if normalized == "enhance":
-        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.16, target_end=0.68)
+        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.16, target_end=0.64)
     if normalized == "finalize":
-        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.68, target_end=0.72)
+        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.64, target_end=0.68)
     return clamped
 
 
@@ -58,9 +58,9 @@ def map_worker_stage_progress(stage: str, progress: float, *, reserve_cleanup_ba
     if normalized == "prepare":
         return _remap(clamped, source_start=0.08, source_end=0.22, target_start=0.14, target_end=0.18)
     if normalized == "enhance":
-        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.18, target_end=0.68)
+        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.18, target_end=0.64)
     if normalized == "finalize":
-        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.68, target_end=0.72)
+        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.64, target_end=0.68)
     return clamped
 
 
@@ -88,12 +88,12 @@ def map_postprocess_stage_progress(
     normalized = str(stage or "").strip().lower()
     if normalized == "cleanup":
         if caption_requested:
-            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.82)
-        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.96)
+            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.68, target_end=0.76)
+        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.68, target_end=0.95)
     if normalized == "captions":
         if cleanup_requested:
-            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.82, target_end=0.97)
-        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.97)
+            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.76, target_end=0.98)
+        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.68, target_end=0.98)
     return clamped
 
 

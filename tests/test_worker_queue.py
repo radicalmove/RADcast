@@ -443,7 +443,7 @@ def test_worker_progress_is_ignored_after_server_caption_finalization_starts(mon
 
         in_progress = client.get(f"/jobs/{job_id}", params={"project_id": project_id}).json()
         assert in_progress["stage"] == "captions"
-        assert in_progress["progress"] == pytest.approx(0.82)
+        assert in_progress["progress"] == pytest.approx(0.76)
 
         stale_progress = client.post(
             f"/workers/jobs/{job_id}/progress",
@@ -461,7 +461,7 @@ def test_worker_progress_is_ignored_after_server_caption_finalization_starts(mon
 
         after_stale_update = client.get(f"/jobs/{job_id}", params={"project_id": project_id}).json()
         assert after_stale_update["stage"] == "captions"
-        assert after_stale_update["progress"] == pytest.approx(0.82)
+        assert after_stale_update["progress"] == pytest.approx(0.76)
 
         release.set()
         for _ in range(20):

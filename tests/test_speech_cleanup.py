@@ -435,8 +435,8 @@ def test_generate_caption_file_writes_vtt(monkeypatch, tmp_path: Path):
 
 
 def test_transcription_eta_stays_conservative_until_late_caption_stage():
-    assert _transcription_eta_seconds(elapsed_seconds=65, cleanup_eta_seconds=95, coverage=0.86) >= 12
-    assert _transcription_eta_seconds(elapsed_seconds=88, cleanup_eta_seconds=95, coverage=0.95) >= 4
+    assert _transcription_eta_seconds(elapsed_seconds=65, cleanup_eta_seconds=95, coverage=0.86) >= 15
+    assert _transcription_eta_seconds(elapsed_seconds=88, cleanup_eta_seconds=95, coverage=0.95) >= 5
 
 
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):
