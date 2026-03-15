@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 ALLOWED_AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm"}
-DEFAULT_ENHANCEMENT_MODEL = "resemble"
+DEFAULT_ENHANCEMENT_MODEL = "studio_v18"
 DEFAULT_ENHANCE_COMMAND = "radcast-enhance"
 DEFAULT_ENHANCE_DEVICE = "cpu"
 DEFAULT_ENHANCE_NFE = 32
@@ -13,22 +13,31 @@ DEFAULT_STUDIO_COMMAND = "radcast-studio-enhance"
 DEFAULT_STUDIO_V18_NFE = 32
 DEFAULT_STUDIO_V18_LAMBD = 0.62
 DEFAULT_STUDIO_V18_TAU = 0.45
+DEFAULT_STUDIO_V18_DEREVERB_METHOD = "nara"
+DEFAULT_STUDIO_V18_PREFILTER = ""
 DEFAULT_STUDIO_V18_WPE_TAPS = 12
 DEFAULT_STUDIO_V18_WPE_DELAY = 4
 DEFAULT_STUDIO_V18_WPE_ITERATIONS = 3
+DEFAULT_STUDIO_V18_NARA_CHUNK_SECONDS = 8.0
+DEFAULT_STUDIO_V18_NARA_OVERLAP_SECONDS = 1.0
+DEFAULT_STUDIO_V18_NARA_TAPS = 6
+DEFAULT_STUDIO_V18_NARA_DELAY = 2
+DEFAULT_STUDIO_V18_NARA_ITERATIONS = 1
+DEFAULT_STUDIO_V18_NARA_PSD_CONTEXT = 1
 DEFAULT_STUDIO_V18_POSTFILTER = (
     "highpass=f=65,"
-    "equalizer=f=142:t=q:w=1.05:g=4.15,"
-    "equalizer=f=200:t=q:w=1.0:g=1.85,"
+    "equalizer=f=142:t=q:w=1.05:g=4.05,"
+    "equalizer=f=200:t=q:w=1.0:g=1.75,"
     "equalizer=f=315:t=q:w=1.0:g=-0.55,"
     "equalizer=f=455:t=q:w=1.0:g=-0.2,"
-    "equalizer=f=2350:t=q:w=1.0:g=-1.45,"
-    "equalizer=f=3000:t=q:w=1.0:g=-0.95,"
+    "equalizer=f=2350:t=q:w=1.0:g=-2.35,"
+    "equalizer=f=3000:t=q:w=1.0:g=-1.70,"
+    "equalizer=f=3850:t=q:w=1.0:g=-0.30,"
     "deesser=i=0.045:m=0.18:f=0.5:s=o,"
-    "equalizer=f=5700:t=q:w=1.0:g=-1.15,"
-    "equalizer=f=6400:t=q:w=1.0:g=-0.95,"
-    "loudnorm=I=-20.5:TP=-1.5:LRA=8,"
-    "lowpass=f=7750"
+    "equalizer=f=5700:t=q:w=1.0:g=-1.40,"
+    "equalizer=f=6400:t=q:w=1.0:g=-1.20,"
+    "loudnorm=I=-20.75:TP=-1.5:LRA=8,"
+    "lowpass=f=7550"
 )
 DEFAULT_DEEPFILTERNET_COMMAND = "deepFilter"
 DEFAULT_DEEPFILTERNET_MODEL = "DeepFilterNet3"
@@ -64,6 +73,6 @@ DEFAULT_STUDIO_POSTFILTER = (
     "lowpass=f=9500"
 )
 DEFAULT_AUDIO_TUNING_LABEL = "Version 7"
-DEFAULT_STUDIO_V18_TUNING_LABEL = "Version 18"
+DEFAULT_STUDIO_V18_TUNING_LABEL = "RADcast Optimized"
 DEFAULT_WORKER_FALLBACK_TIMEOUT_SECONDS = 40
 DEFAULT_WORKER_ONLINE_WINDOW_SECONDS = 45

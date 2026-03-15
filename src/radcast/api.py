@@ -278,11 +278,11 @@ def _coerce_project_settings(payload: object) -> ProjectUiSettings:
         caption_quality_mode = CaptionQualityMode.ACCURATE
     caption_glossary = str(data.get("caption_glossary") or "").strip() or None
 
-    enhancement_model_raw = str(data.get("enhancement_model") or EnhancementModel.RESEMBLE.value).strip().lower()
+    enhancement_model_raw = str(data.get("enhancement_model") or EnhancementModel.STUDIO_V18.value).strip().lower()
     try:
         enhancement_model = EnhancementModel(enhancement_model_raw)
     except ValueError:
-        enhancement_model = EnhancementModel.RESEMBLE
+        enhancement_model = EnhancementModel.STUDIO_V18
 
     try:
         max_silence_seconds = float(data.get("max_silence_seconds", 1.0))

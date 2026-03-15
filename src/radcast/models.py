@@ -78,7 +78,7 @@ class SimpleEnhanceRequest(BaseModel):
     caption_format: CaptionFormat | None = None
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
     caption_glossary: str | None = Field(default=None, max_length=4000)
-    enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
+    enhancement_model: EnhancementModel = EnhancementModel.STUDIO_V18
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
     remove_filler_words: bool = False
     filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE
@@ -115,7 +115,7 @@ class ProjectUiSettings(BaseModel):
     caption_format: CaptionFormat | None = None
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
     caption_glossary: str | None = Field(default=None, max_length=4000)
-    enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
+    enhancement_model: EnhancementModel = EnhancementModel.STUDIO_V18
     reduce_silence_enabled: bool = False
     max_silence_seconds: float = Field(default=1.0, ge=0.0, le=4.0)
     remove_filler_words: bool = False
@@ -218,7 +218,7 @@ class WorkerEnhanceEnqueueRequest(BaseModel):
     caption_format: CaptionFormat | None = None
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
     caption_glossary: str | None = Field(default=None, max_length=4000)
-    enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
+    enhancement_model: EnhancementModel = EnhancementModel.STUDIO_V18
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
     remove_filler_words: bool = False
     filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE

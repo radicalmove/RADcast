@@ -31,7 +31,7 @@ radcast-api
 RADcast calls an external enhancement command.
 
 Defaults:
-- enhancement model: `resemble`
+- enhancement model: `studio_v18` (`RADcast Optimized`)
 - command: `radcast-enhance`
 - device: `cpu`
 - nfe: `32`
@@ -39,7 +39,7 @@ Defaults:
 - tau: `0.5`
 - prefilter: `highpass=f=85,agate=threshold=0.027:ratio=1.26:attack=8:release=280:range=0.56:knee=4,afftdn=nr=4:nf=-48:tn=1,equalizer=f=380:t=q:w=1.0:g=-1.0,equalizer=f=6800:t=q:w=1.2:g=-1.3`
 - postfilter: `highpass=f=65,equalizer=f=150:t=q:w=1.05:g=2.8,equalizer=f=320:t=q:w=1.0:g=-1.2,equalizer=f=520:t=q:w=1.0:g=-0.9,equalizer=f=2800:t=q:w=1.0:g=0.4,deesser=i=0.06:m=0.25:f=0.5:s=o,loudnorm=I=-20.5:TP=-1.5:LRA=8,equalizer=f=6200:t=q:w=1.2:g=-2.5,lowpass=f=6800`
-- audio tuning label: `Version 7`
+- studio v18 tuning label: `RADcast Optimized`
 
 Environment variables:
 - `RADCAST_DEFAULT_ENHANCEMENT_MODEL`
@@ -63,6 +63,8 @@ Environment variables:
 If `resemble-enhance` is not on PATH, install it or set `RADCAST_ENHANCE_COMMAND`.
 
 For Ubuntu CPU deployments, use [`scripts/install-linux-cpu.sh`](/Users/rcd58/RADcast/scripts/install-linux-cpu.sh). It installs the CPU PyTorch wheels, `torchcodec`, `deepspeed` without custom ops, and `resemble-enhance`.
+
+`RADcast Optimized` also requires `nara-wpe`, which is now installed as part of the normal RADcast package dependencies.
 
 ## Experimental paired restoration
 

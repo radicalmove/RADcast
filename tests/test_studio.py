@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from scipy.signal import fftconvolve
 
-from radcast.services.studio import suppress_late_reverb, wpe_dereverb
+from radcast.services.studio import chunked_nara_wpe_dereverb, suppress_late_reverb, wpe_dereverb
 
 
 def _synthetic_dry_signal(sample_rate: int) -> tuple[np.ndarray, list[int]]:
@@ -95,4 +96,49 @@ def test_wpe_dereverb_improves_direct_to_tail_ratio():
     assert processed_tail < (reverberant_tail * 0.75)
     assert (processed_direct / max(processed_tail, 1e-12)) > (
         (reverberant_direct / max(reverberant_tail, 1e-12)) * 1.8
+    )
+
+
+def test_chunked_nara_wpe_dereverb_improves_direct_to_tail_ratio():
+    pytest.importorskip("nara_wpe")
+
+    sample_rate = 16000
+    dry, onsets = _synthetic_dry_signal(sample_rate)
+
+    impulse_length = int(sample_rate * 0.26)
+    tail = np.exp(-np.linspace(0.0, 6.0, impulse_length)).astype(np.float32)
+    room_ir = np.concatenate(([1.0], 0.55 * tail[1:])).astype(np.float32)
+    reverberant = fftconvolve(dry, room_ir, mode="full")[: len(dry)].astype(np.float32)
+    processed = chunked_nara_wpe_dereverb(
+        reverberant,
+        sample_rate,
+        chunk_seconds=0.8,
+        overlap_seconds=0.1,
+        taps=6,
+        delay=2,
+        iterations=1,
+        psd_context=1,
+    )
+
+    reverberant_tail = 0.0
+    processed_tail = 0.0
+    reverberant_direct = 0.0
+    processed_direct = 0.0
+    for onset in onsets:
+        reverberant_direct += _measure_window_rms(reverberant, onset, onset + int(sample_rate * 0.05))
+        processed_direct += _measure_window_rms(processed, onset, onset + int(sample_rate * 0.05))
+        reverberant_tail += _measure_window_rms(
+            reverberant,
+            onset + int(sample_rate * 0.10),
+            onset + int(sample_rate * 0.24),
+        )
+        processed_tail += _measure_window_rms(
+            processed,
+            onset + int(sample_rate * 0.10),
+            onset + int(sample_rate * 0.24),
+        )
+
+    assert processed_tail < (reverberant_tail * 0.8)
+    assert (processed_direct / max(processed_tail, 1e-12)) > (
+        (reverberant_direct / max(reverberant_tail, 1e-12)) * 1.6
     )

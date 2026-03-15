@@ -172,7 +172,7 @@ function defaultProjectSettings() {
     output_format: "mp3",
     caption_format: null,
     caption_quality_mode: "accurate",
-    enhancement_model: "resemble",
+    enhancement_model: "studio_v18",
     reduce_silence_enabled: false,
     max_silence_seconds: 1,
     remove_filler_words: false,
@@ -226,7 +226,7 @@ function normalizeProjectSettings(payload) {
     output_format: outputFormat === "wav" ? "wav" : "mp3",
     caption_format: captionFormat,
     caption_quality_mode: captionQualityMode,
-    enhancement_model: enhancementModel || "resemble",
+    enhancement_model: enhancementModel || "studio_v18",
     reduce_silence_enabled: Boolean(data.reduce_silence_enabled),
     max_silence_seconds: clampSilenceSeconds(data.max_silence_seconds),
     remove_filler_words: Boolean(data.remove_filler_words),
@@ -701,7 +701,7 @@ function formatOutputTime(value) {
 }
 
 function selectedEnhancementModelId() {
-  return cleanOptional(enhancementModelNode?.value) || "resemble";
+  return cleanOptional(enhancementModelNode?.value) || "studio_v18";
 }
 
 function selectedCaptionFormat() {
@@ -844,7 +844,7 @@ function updateEnhancementModelStatusFromSelection() {
 async function loadEnhancementModels() {
   if (!enhancementModelNode) return;
   enhancementModelNode.disabled = true;
-  enhancementModelNode.innerHTML = '<option value="resemble">Loading models...</option>';
+  enhancementModelNode.innerHTML = '<option value="studio_v18">Loading models...</option>';
   setEnhancementModelStatus("Checking available enhancement models...");
   setSpeechCleanupStatus("Checking speech cleanup availability...");
 
@@ -867,7 +867,7 @@ async function loadEnhancementModels() {
       enhancementModelNode.appendChild(option);
     }
 
-    const preferred = String(data.default_model || "resemble");
+    const preferred = String(data.default_model || "studio_v18");
     const availablePreferred = enhancementModelById(preferred);
     if (availablePreferred && availablePreferred.available !== false) {
       enhancementModelNode.value = preferred;
@@ -890,11 +890,11 @@ async function loadEnhancementModels() {
     updateCaptionFormatStatus();
     updateGenerateButtonLabel();
   } catch (err) {
-    enhancementModelNode.innerHTML = '<option value="resemble">Resemble Enhance</option>';
+    enhancementModelNode.innerHTML = '<option value="studio_v18">RADcast Optimized</option>';
     state.enhancementModels = [
       {
-        id: "resemble",
-        label: "Resemble Enhance",
+        id: "studio_v18",
+        label: "RADcast Optimized",
         description: "Fallback option when model discovery fails.",
         detail: "",
         available: true,

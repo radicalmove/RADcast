@@ -68,7 +68,7 @@ def test_worker_invite_and_status_endpoints_render(monkeypatch):
     models = client.get("/enhancement/models")
     assert models.status_code == 200
     models_payload = models.json()
-    assert models_payload["default_model"] in {"resemble", "deepfilternet", "studio"}
+    assert models_payload["default_model"] in {"resemble", "deepfilternet", "studio", "studio_v18"}
     assert any(item["id"] == "none" for item in models_payload["models"])
     assert any(item["id"] == "resemble" for item in models_payload["models"])
     assert any(item["id"] == "deepfilternet" for item in models_payload["models"])
@@ -252,12 +252,13 @@ def test_source_audio_delete_removes_saved_file(monkeypatch):
 def test_project_settings_roundtrip_persists_last_used_options():
     client = TestClient(app)
     project_id = f"radcast-{uuid.uuid4().hex[:8]}"
-    project_root = Path("projects") / project_id
+    project_root: Path | None = None
     sample_b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw"
 
     try:
         created = client.post("/projects", json={"project_id": project_id})
         assert created.status_code == 200
+        project_root = Path(created.json()["project_root"])
 
         default_settings = client.get(f"/projects/{project_id}/settings")
         assert default_settings.status_code == 200
@@ -267,7 +268,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
             "caption_format": None,
             "caption_quality_mode": "accurate",
             "caption_glossary": None,
-            "enhancement_model": "resemble",
+            "enhancement_model": "studio_v18",
             "reduce_silence_enabled": False,
             "max_silence_seconds": 1.0,
             "remove_filler_words": False,
@@ -321,7 +322,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
         for path in Path("projects").glob(f"*__{project_id}"):
             if path.exists():
                 shutil.rmtree(path)
-        if project_root.exists():
+        if project_root and project_root.exists():
             shutil.rmtree(project_root)
 
 
@@ -399,11 +400,12 @@ def test_project_shareable_users_proxy_uses_integration_endpoint(monkeypatch):
 def test_project_outputs_endpoint_includes_output_card_metadata():
     client = TestClient(app)
     project_id = f"radcast-{uuid.uuid4().hex[:8]}"
-    project_root = Path("projects") / project_id
+    project_root: Path | None = None
 
     try:
         created = client.post("/projects", json={"project_id": project_id})
         assert created.status_code == 200
+        project_root = Path(created.json()["project_root"])
 
         manifests = project_root / "manifests"
         store = ManifestStore(manifests)
@@ -452,5 +454,5 @@ def test_project_outputs_endpoint_includes_output_card_metadata():
         for path in Path("projects").glob(f"*__{project_id}"):
             if path.exists():
                 shutil.rmtree(path)
-        if project_root.exists():
+        if project_root and project_root.exists():
             shutil.rmtree(project_root)

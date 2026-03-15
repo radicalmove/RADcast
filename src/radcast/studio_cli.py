@@ -15,7 +15,7 @@ import torch
 import torchaudio
 from resemble_enhance.enhancer.inference import enhance
 
-from radcast.services.studio import suppress_late_reverb, wpe_dereverb
+from radcast.services.studio import chunked_nara_wpe_dereverb, suppress_late_reverb, wpe_dereverb
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,12 +44,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--dereverb-method",
         type=str,
         default="wpe",
-        choices=["wpe", "spectral"],
+        choices=["wpe", "spectral", "nara"],
         help="Dereverb method to apply before Resemble Enhance",
     )
     parser.add_argument("--wpe-taps", type=int, default=10, help="Number of delayed prediction taps for WPE")
     parser.add_argument("--wpe-delay", type=int, default=3, help="Delay frames before the WPE predictor starts")
     parser.add_argument("--wpe-iterations", type=int, default=2, help="Number of WPE refinement passes")
+    parser.add_argument("--nara-chunk-seconds", type=float, default=8.0, help="Chunk length for nara_wpe dereverb")
+    parser.add_argument(
+        "--nara-overlap-seconds",
+        type=float,
+        default=1.0,
+        help="Chunk overlap for nara_wpe dereverb",
+    )
+    parser.add_argument("--nara-taps", type=int, default=6, help="Prediction taps for nara_wpe dereverb")
+    parser.add_argument("--nara-delay", type=int, default=2, help="Prediction delay for nara_wpe dereverb")
+    parser.add_argument("--nara-iterations", type=int, default=1, help="Refinement passes for nara_wpe dereverb")
+    parser.add_argument("--nara-psd-context", type=int, default=1, help="PSD context for nara_wpe dereverb")
     return parser
 
 
@@ -74,7 +85,18 @@ def main() -> None:
 
         waveform, sample_rate = torchaudio.load(str(input_path))
         mono = waveform.mean(0).cpu().numpy().astype(np.float32, copy=False)
-        if args.dereverb_method == "wpe":
+        if args.dereverb_method == "nara":
+            dereverbed = chunked_nara_wpe_dereverb(
+                mono,
+                sample_rate,
+                chunk_seconds=args.nara_chunk_seconds,
+                overlap_seconds=args.nara_overlap_seconds,
+                taps=args.nara_taps,
+                delay=args.nara_delay,
+                iterations=args.nara_iterations,
+                psd_context=args.nara_psd_context,
+            )
+        elif args.dereverb_method == "wpe":
             dereverbed = wpe_dereverb(
                 mono,
                 sample_rate,

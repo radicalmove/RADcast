@@ -20,6 +20,7 @@ dependencies = [
   "jinja2>=3.1,<4",
   "python-multipart>=0.0.22,<0.1",
   "faster-whisper>=1.2.0,<2",
+  "nara-wpe>=0.0.11,<0.1",
 ]
 
 [project.optional-dependencies]

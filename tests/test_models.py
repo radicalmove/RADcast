@@ -300,6 +300,7 @@ def test_studio_v18_model_uses_studio_v18_postfilter(monkeypatch: pytest.MonkeyP
     source = tmp_path / "input.wav"
     source.write_bytes(b"fake-wav")
     calls: list[str | None] = []
+    backend_commands: list[list[str]] = []
 
     monkeypatch.setattr("radcast.services.enhance._command_available", lambda _cmd: True)
     monkeypatch.setattr("radcast.services.enhance._python_modules_available", lambda _mods: True)
@@ -322,8 +323,12 @@ def test_studio_v18_model_uses_studio_v18_postfilter(monkeypatch: pytest.MonkeyP
         def terminate(self):
             return None
 
+    def fake_popen(command, *args, **kwargs):
+        backend_commands.append(command)
+        return FakeProc()
+
     monkeypatch.setattr("radcast.services.enhance.run_ffmpeg_convert", fake_convert)
-    monkeypatch.setattr("radcast.services.enhance.subprocess.Popen", lambda *args, **kwargs: FakeProc())
+    monkeypatch.setattr("radcast.services.enhance.subprocess.Popen", fake_popen)
     monkeypatch.setattr(EnhanceService, "_collect_backend_output", lambda self, *, model, out_dir: source)
 
     final_path = service.enhance(
@@ -337,7 +342,10 @@ def test_studio_v18_model_uses_studio_v18_postfilter(monkeypatch: pytest.MonkeyP
     )
 
     assert final_path.suffix == ".mp3"
-    assert calls[0] == service.prefilter
-    assert calls[-1] == service.studio_v18_postfilter
-    assert service.output_tuning_label_for_model(EnhancementModel.STUDIO_V18) == "Version 18"
+    assert calls == [service.studio_v18_postfilter]
+    assert backend_commands
+    assert "--dereverb-method" in backend_commands[0]
+    assert "nara" in backend_commands[0]
+    assert "--nara-chunk-seconds" in backend_commands[0]
+    assert service.output_tuning_label_for_model(EnhancementModel.STUDIO_V18) == "RADcast Optimized"
     assert service.output_tuning_label_for_model(EnhancementModel.NONE) is None

@@ -16,6 +16,7 @@ python -m pip install --no-deps --force-reinstall \
 
 python -m pip install \
   "numpy==1.26.4" \
+  "nara-wpe==0.0.11" \
   "scipy==1.17.1" \
   "soundfile==0.13.1" \
   "librosa==0.11.0" \

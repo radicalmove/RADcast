@@ -176,3 +176,84 @@ def wpe_dereverb(
     if peak > 0.999:
         processed = processed / peak * 0.999
     return processed.astype(np.float32, copy=False)
+
+
+def chunked_nara_wpe_dereverb(
+    audio: np.ndarray,
+    sample_rate: int,
+    *,
+    chunk_seconds: float = 8.0,
+    overlap_seconds: float = 1.0,
+    taps: int = 6,
+    delay: int = 2,
+    iterations: int = 1,
+    psd_context: int = 1,
+    fft_size: int = 512,
+    hop_size: int = 128,
+) -> np.ndarray:
+    """Run single-channel nara_wpe dereverberation in overlapping chunks.
+
+    This matches the best-performing lab path more closely than the built-in
+    WPE approximation because it uses ``nara_wpe.wpe_v8`` directly and keeps
+    memory bounded for long lecture recordings.
+    """
+
+    if audio.ndim != 1:
+        raise ValueError("audio must be mono")
+    if len(audio) < 256:
+        return audio.astype(np.float32, copy=False)
+
+    try:
+        from nara_wpe.utils import istft as nara_istft
+        from nara_wpe.utils import stft as nara_stft
+        from nara_wpe.wpe import wpe_v8
+    except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
+        raise RuntimeError("nara-wpe is required for the RADcast Optimized dereverb path") from exc
+
+    chunk_samples = max(int(round(chunk_seconds * sample_rate)), 1)
+    overlap_samples = max(int(round(overlap_seconds * sample_rate)), 0)
+    overlap_samples = max(0, min(overlap_samples, chunk_samples // 2))
+    step_samples = chunk_samples - overlap_samples
+    if step_samples <= 0:
+        raise ValueError("overlap_seconds is too large for the selected chunk size")
+
+    output = np.zeros(len(audio), dtype=np.float64)
+    weights = np.zeros(len(audio), dtype=np.float64)
+    start = 0
+
+    while start < len(audio):
+        end = min(len(audio), start + chunk_samples)
+        segment = audio[start:end]
+        if len(segment) < max(256, fft_size):
+            break
+
+        spectrum = nara_stft(segment, size=fft_size, shift=hop_size)
+        observed = spectrum.T[:, None, :]
+        restored = wpe_v8(
+            observed,
+            taps=taps,
+            delay=delay,
+            iterations=iterations,
+            psd_context=psd_context,
+        )
+        dereverbed = nara_istft(restored[:, 0, :].T, size=fft_size, shift=hop_size)[: len(segment)]
+
+        fade = np.ones(len(segment), dtype=np.float64)
+        if overlap_samples > 0:
+            ramp = np.linspace(0.0, 1.0, overlap_samples, endpoint=False, dtype=np.float64)
+            if start > 0:
+                fade[:overlap_samples] = ramp
+            if end < len(audio):
+                fade[-overlap_samples:] = np.minimum(fade[-overlap_samples:], ramp[::-1])
+
+        output[start:end] += dereverbed * fade
+        weights[start:end] += fade
+        start += step_samples
+
+    mask = weights > 1e-8
+    output[mask] /= weights[mask]
+    output[~mask] = audio[~mask]
+    peak = float(np.max(np.abs(output))) if output.size else 0.0
+    if peak > 0.999:
+        output = output / peak * 0.999
+    return output.astype(np.float32, copy=False)

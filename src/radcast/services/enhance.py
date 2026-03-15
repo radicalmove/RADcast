@@ -29,9 +29,17 @@ from radcast.constants import (
     DEFAULT_ENHANCEMENT_MODEL,
     DEFAULT_STUDIO_POSTFILTER,
     DEFAULT_STUDIO_COMMAND,
+    DEFAULT_STUDIO_V18_DEREVERB_METHOD,
     DEFAULT_STUDIO_V18_LAMBD,
     DEFAULT_STUDIO_V18_NFE,
+    DEFAULT_STUDIO_V18_NARA_CHUNK_SECONDS,
+    DEFAULT_STUDIO_V18_NARA_DELAY,
+    DEFAULT_STUDIO_V18_NARA_ITERATIONS,
+    DEFAULT_STUDIO_V18_NARA_OVERLAP_SECONDS,
+    DEFAULT_STUDIO_V18_NARA_PSD_CONTEXT,
+    DEFAULT_STUDIO_V18_NARA_TAPS,
     DEFAULT_STUDIO_V18_POSTFILTER,
+    DEFAULT_STUDIO_V18_PREFILTER,
     DEFAULT_STUDIO_V18_TAU,
     DEFAULT_STUDIO_V18_TUNING_LABEL,
     DEFAULT_STUDIO_V18_WPE_DELAY,
@@ -47,7 +55,7 @@ MODEL_LABELS = {
     EnhancementModel.RESEMBLE: "Resemble Enhance",
     EnhancementModel.DEEPFILTERNET: "DeepFilterNet3",
     EnhancementModel.STUDIO: "Studio Cleanup",
-    EnhancementModel.STUDIO_V18: "Studio v18",
+    EnhancementModel.STUDIO_V18: "RADcast Optimized",
 }
 
 MODEL_DESCRIPTIONS = {
@@ -55,7 +63,7 @@ MODEL_DESCRIPTIONS = {
     EnhancementModel.RESEMBLE: "Current RADcast backend. Strong cleanup, but can sound more processed.",
     EnhancementModel.DEEPFILTERNET: "Official DeepFilterNet3 speech enhancement. Usually more natural and less compressed.",
     EnhancementModel.STUDIO: "Custom late-reverb suppression plus Resemble Enhance. Built to chase a drier studio-mic sound.",
-    EnhancementModel.STUDIO_V18: "Current best local Studio candidate. Stronger dereverb plus lighter restoration tuned toward a close-mic podcast sound.",
+    EnhancementModel.STUDIO_V18: "Default RADcast cleanup. Chunked dereverb plus lighter restoration tuned toward a close-mic lecture sound.",
 }
 
 
@@ -92,7 +100,12 @@ class EnhanceService:
         self.prefilter = os.environ.get("RADCAST_ENHANCE_PREFILTER", DEFAULT_ENHANCE_PREFILTER).strip()
         self.postfilter = os.environ.get("RADCAST_ENHANCE_POSTFILTER", DEFAULT_ENHANCE_POSTFILTER).strip()
         self.studio_postfilter = os.environ.get("RADCAST_STUDIO_POSTFILTER", DEFAULT_STUDIO_POSTFILTER).strip()
+        self.studio_v18_prefilter = os.environ.get("RADCAST_STUDIO_V18_PREFILTER", DEFAULT_STUDIO_V18_PREFILTER).strip()
         self.studio_v18_postfilter = os.environ.get("RADCAST_STUDIO_V18_POSTFILTER", DEFAULT_STUDIO_V18_POSTFILTER).strip()
+        self.studio_v18_dereverb_method = (
+            os.environ.get("RADCAST_STUDIO_V18_DEREVERB_METHOD", DEFAULT_STUDIO_V18_DEREVERB_METHOD).strip().lower()
+            or DEFAULT_STUDIO_V18_DEREVERB_METHOD
+        )
         self.studio_v18_nfe = _safe_int(os.environ.get("RADCAST_STUDIO_V18_NFE"), DEFAULT_STUDIO_V18_NFE)
         self.studio_v18_lambd = _safe_float(os.environ.get("RADCAST_STUDIO_V18_LAMBD"), DEFAULT_STUDIO_V18_LAMBD)
         self.studio_v18_tau = _safe_float(os.environ.get("RADCAST_STUDIO_V18_TAU"), DEFAULT_STUDIO_V18_TAU)
@@ -101,6 +114,27 @@ class EnhanceService:
         self.studio_v18_wpe_iterations = _safe_int(
             os.environ.get("RADCAST_STUDIO_V18_WPE_ITERATIONS"),
             DEFAULT_STUDIO_V18_WPE_ITERATIONS,
+        )
+        self.studio_v18_nara_chunk_seconds = _safe_float(
+            os.environ.get("RADCAST_STUDIO_V18_NARA_CHUNK_SECONDS"),
+            DEFAULT_STUDIO_V18_NARA_CHUNK_SECONDS,
+        )
+        self.studio_v18_nara_overlap_seconds = _safe_float(
+            os.environ.get("RADCAST_STUDIO_V18_NARA_OVERLAP_SECONDS"),
+            DEFAULT_STUDIO_V18_NARA_OVERLAP_SECONDS,
+        )
+        self.studio_v18_nara_taps = _safe_int(os.environ.get("RADCAST_STUDIO_V18_NARA_TAPS"), DEFAULT_STUDIO_V18_NARA_TAPS)
+        self.studio_v18_nara_delay = _safe_int(
+            os.environ.get("RADCAST_STUDIO_V18_NARA_DELAY"),
+            DEFAULT_STUDIO_V18_NARA_DELAY,
+        )
+        self.studio_v18_nara_iterations = _safe_int(
+            os.environ.get("RADCAST_STUDIO_V18_NARA_ITERATIONS"),
+            DEFAULT_STUDIO_V18_NARA_ITERATIONS,
+        )
+        self.studio_v18_nara_psd_context = _safe_int(
+            os.environ.get("RADCAST_STUDIO_V18_NARA_PSD_CONTEXT"),
+            DEFAULT_STUDIO_V18_NARA_PSD_CONTEXT,
         )
         self.audio_tuning_label = current_audio_tuning_label()
         self._processes: dict[str, subprocess.Popen[str]] = {}
@@ -117,7 +151,7 @@ class EnhanceService:
                     "description": MODEL_DESCRIPTIONS[model],
                     "available": available,
                     "detail": detail,
-                    "experimental": model in {EnhancementModel.STUDIO, EnhancementModel.STUDIO_V18},
+                    "experimental": model == EnhancementModel.STUDIO,
                     "default": model == self.default_model,
                 }
             )
@@ -173,10 +207,11 @@ class EnhanceService:
 
             on_stage("prepare", 0.12, f"Preparing source audio for {MODEL_LABELS[model]}")
             in_wav = in_dir / "input.wav"
-            if input_audio_path.suffix.lower() == ".wav" and not self.prefilter:
+            input_filter = self._input_filter_for_model(model)
+            if input_audio_path.suffix.lower() == ".wav" and not input_filter:
                 in_wav.write_bytes(input_audio_path.read_bytes())
             else:
-                run_ffmpeg_convert(input_audio_path, in_wav, audio_filters=self.prefilter)
+                run_ffmpeg_convert(input_audio_path, in_wav, audio_filters=input_filter)
             input_duration_seconds = probe_duration_seconds(in_wav)
 
             if cancel_check():
@@ -286,11 +321,14 @@ class EnhanceService:
             )
             return available, detail
         if model == EnhancementModel.STUDIO_V18:
+            module_names = ["numpy", "scipy", "soundfile", "resemble_enhance", "torchaudio"]
+            if self.studio_v18_dereverb_method == "nara":
+                module_names.append("nara_wpe")
             available = _command_available(self.studio_command) and _python_modules_available(
-                ["numpy", "scipy", "soundfile", "resemble_enhance", "torchaudio"]
+                module_names
             )
             detail = (
-                "Version 18 Studio path is installed."
+                "RADcast Optimized path is installed."
                 if available
                 else "Install the RADcast package with Studio dependencies to enable this backend."
             )
@@ -343,30 +381,55 @@ class EnhanceService:
                 "Loading Studio Cleanup. First run can take longer.",
             )
         if model == EnhancementModel.STUDIO_V18:
+            command = [
+                *self.studio_command,
+                str(in_dir),
+                str(out_dir),
+                "--suffix",
+                ".wav",
+                "--device",
+                self.device,
+                "--nfe",
+                str(self.studio_v18_nfe),
+                "--lambd",
+                str(self.studio_v18_lambd),
+                "--tau",
+                str(self.studio_v18_tau),
+                "--dereverb-method",
+                self.studio_v18_dereverb_method,
+            ]
+            if self.studio_v18_dereverb_method == "nara":
+                command.extend(
+                    [
+                        "--nara-chunk-seconds",
+                        str(self.studio_v18_nara_chunk_seconds),
+                        "--nara-overlap-seconds",
+                        str(self.studio_v18_nara_overlap_seconds),
+                        "--nara-taps",
+                        str(self.studio_v18_nara_taps),
+                        "--nara-delay",
+                        str(self.studio_v18_nara_delay),
+                        "--nara-iterations",
+                        str(self.studio_v18_nara_iterations),
+                        "--nara-psd-context",
+                        str(self.studio_v18_nara_psd_context),
+                    ]
+                )
+            else:
+                command.extend(
+                    [
+                        "--wpe-taps",
+                        str(self.studio_v18_wpe_taps),
+                        "--wpe-delay",
+                        str(self.studio_v18_wpe_delay),
+                        "--wpe-iterations",
+                        str(self.studio_v18_wpe_iterations),
+                    ]
+                )
             return (
-                [
-                    *self.studio_command,
-                    str(in_dir),
-                    str(out_dir),
-                    "--suffix",
-                    ".wav",
-                    "--device",
-                    self.device,
-                    "--nfe",
-                    str(self.studio_v18_nfe),
-                    "--lambd",
-                    str(self.studio_v18_lambd),
-                    "--tau",
-                    str(self.studio_v18_tau),
-                    "--wpe-taps",
-                    str(self.studio_v18_wpe_taps),
-                    "--wpe-delay",
-                    str(self.studio_v18_wpe_delay),
-                    "--wpe-iterations",
-                    str(self.studio_v18_wpe_iterations),
-                ],
+                command,
                 False,
-                "Loading Studio v18. First run can take longer.",
+                "Loading RADcast Optimized. First run can take longer.",
             )
         if model == EnhancementModel.DEEPFILTERNET:
             command = [
@@ -413,6 +476,11 @@ class EnhanceService:
         if model == EnhancementModel.STUDIO_V18:
             return self.studio_v18_postfilter
         return self.postfilter
+
+    def _input_filter_for_model(self, model: EnhancementModel) -> str:
+        if model == EnhancementModel.STUDIO_V18:
+            return self.studio_v18_prefilter
+        return self.prefilter
 
 
 def _parse_model(raw: str | None, default: str) -> EnhancementModel:
