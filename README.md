@@ -5,7 +5,8 @@ RADcast is a local-first audio enhancement app for cleaning up lecture recording
 ## What it does
 - Project picker flow (create/open)
 - Project sharing (owner grants collaborator emails)
-- One-pass audio enhancement using Resemble Enhance command-line tooling
+- Multiple enhancement backends with a default optimized lecture-cleanup path
+- Default `RADcast Optimized` chain: chunked dereverb + Resemble Enhance + tuned mastering
 - Progress bar + status updates
 - WAV or MP3 output
 - Download/play completed versions
@@ -28,43 +29,64 @@ radcast-api
 ```
 
 ## Enhancement engine
-RADcast calls an external enhancement command.
+RADcast has multiple enhancement backends. The default production path is `RADcast Optimized`.
 
 Defaults:
 - enhancement model: `studio_v18` (`RADcast Optimized`)
-- command: `radcast-enhance`
+- command: `radcast-studio-enhance`
 - device: `cpu`
-- nfe: `32`
-- lambd: `0.7`
-- tau: `0.5`
-- prefilter: `highpass=f=85,agate=threshold=0.027:ratio=1.26:attack=8:release=280:range=0.56:knee=4,afftdn=nr=4:nf=-48:tn=1,equalizer=f=380:t=q:w=1.0:g=-1.0,equalizer=f=6800:t=q:w=1.2:g=-1.3`
-- postfilter: `highpass=f=65,equalizer=f=150:t=q:w=1.05:g=2.8,equalizer=f=320:t=q:w=1.0:g=-1.2,equalizer=f=520:t=q:w=1.0:g=-0.9,equalizer=f=2800:t=q:w=1.0:g=0.4,deesser=i=0.06:m=0.25:f=0.5:s=o,loudnorm=I=-20.5:TP=-1.5:LRA=8,equalizer=f=6200:t=q:w=1.2:g=-2.5,lowpass=f=6800`
 - studio v18 tuning label: `RADcast Optimized`
 
-Environment variables:
+Source-of-truth documentation for the default model lives here:
+- [`docs/radcast_optimized.md`](/Users/rcd58/RADcast/docs/radcast_optimized.md)
+
+`RADcast Optimized` defaults:
+- dereverb method: `nara`
+- no FFmpeg prefilter by default
+- `nfe: 32`
+- `lambd: 0.62`
+- `tau: 0.45`
+- `nara chunk seconds: 8.0`
+- `nara overlap seconds: 1.0`
+- `nara taps: 6`
+- `nara delay: 2`
+- `nara iterations: 1`
+- `nara psd context: 1`
+- tuning label: `RADcast Optimized`
+
+Environment variables for the default model:
 - `RADCAST_DEFAULT_ENHANCEMENT_MODEL`
-- `RADCAST_ENHANCE_COMMAND`
 - `RADCAST_STUDIO_COMMAND`
+- `RADCAST_STUDIO_V18_TUNING_LABEL`
+- `RADCAST_STUDIO_V18_DEREVERB_METHOD`
+- `RADCAST_STUDIO_V18_PREFILTER`
+- `RADCAST_STUDIO_V18_NFE`
+- `RADCAST_STUDIO_V18_LAMBD`
+- `RADCAST_STUDIO_V18_TAU`
+- `RADCAST_STUDIO_V18_NARA_CHUNK_SECONDS`
+- `RADCAST_STUDIO_V18_NARA_OVERLAP_SECONDS`
+- `RADCAST_STUDIO_V18_NARA_TAPS`
+- `RADCAST_STUDIO_V18_NARA_DELAY`
+- `RADCAST_STUDIO_V18_NARA_ITERATIONS`
+- `RADCAST_STUDIO_V18_NARA_PSD_CONTEXT`
+- `RADCAST_STUDIO_V18_POSTFILTER`
+
+Legacy backend variables still exist for non-default models:
+- `RADCAST_ENHANCE_COMMAND`
 - `RADCAST_ENHANCE_DEVICE`
 - `RADCAST_ENHANCE_NFE`
 - `RADCAST_ENHANCE_LAMBD`
 - `RADCAST_ENHANCE_TAU`
 - `RADCAST_ENHANCE_PREFILTER`
-  - default: `highpass=f=85,agate=threshold=0.027:ratio=1.26:attack=8:release=280:range=0.56:knee=4,afftdn=nr=4:nf=-48:tn=1,equalizer=f=380:t=q:w=1.0:g=-1.0,equalizer=f=6800:t=q:w=1.2:g=-1.3`
-  - applies before enhancement to trim room tail and slightly tame sibilance before the model reconstructs speech
 - `RADCAST_ENHANCE_POSTFILTER`
-  - default: `highpass=f=65,equalizer=f=150:t=q:w=1.05:g=2.8,equalizer=f=320:t=q:w=1.0:g=-1.2,equalizer=f=520:t=q:w=1.0:g=-0.9,equalizer=f=2800:t=q:w=1.0:g=0.4,deesser=i=0.06:m=0.25:f=0.5:s=o,loudnorm=I=-20.5:TP=-1.5:LRA=8,equalizer=f=6200:t=q:w=1.2:g=-2.5,lowpass=f=6800`
 - `RADCAST_AUDIO_TUNING_LABEL`
-  - default: `Version 7`
 - `RADCAST_DEEPFILTERNET_COMMAND`
 - `RADCAST_DEEPFILTERNET_MODEL`
 - `RADCAST_DEEPFILTERNET_POST_FILTER`
 
-If `resemble-enhance` is not on PATH, install it or set `RADCAST_ENHANCE_COMMAND`.
+For Ubuntu CPU deployments, use [`scripts/install-linux-cpu.sh`](/Users/rcd58/RADcast/scripts/install-linux-cpu.sh). It installs the CPU PyTorch wheels, `torchcodec`, `deepspeed` without custom ops, `resemble-enhance`, and `nara-wpe`.
 
-For Ubuntu CPU deployments, use [`scripts/install-linux-cpu.sh`](/Users/rcd58/RADcast/scripts/install-linux-cpu.sh). It installs the CPU PyTorch wheels, `torchcodec`, `deepspeed` without custom ops, and `resemble-enhance`.
-
-`RADcast Optimized` also requires `nara-wpe`, which is now installed as part of the normal RADcast package dependencies.
+If the default optimized model appears unavailable, check that the active environment can import both `resemble_enhance` and `nara_wpe`.
 
 ## Experimental paired restoration
 
