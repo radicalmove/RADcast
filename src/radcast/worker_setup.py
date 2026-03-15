@@ -91,8 +91,10 @@ def macos_launch_agent_payload(*, label: str, python_exe: Path, server_url: str,
             poll_seconds=poll_seconds,
         ),
         "EnvironmentVariables": {"PATH": default_worker_path([str(python_exe.parent)])},
+        "WorkingDirectory": str(logs_dir),
+        "ProcessType": "Background",
         "RunAtLoad": True,
-        "KeepAlive": True,
+        "KeepAlive": {"SuccessfulExit": False, "Crashed": True},
         "StandardOutPath": str(logs_dir / "worker.log"),
         "StandardErrorPath": str(logs_dir / "worker.err.log"),
     }
@@ -201,6 +203,8 @@ def _install_macos_autostart(*, python_exe: Path, server_url: str, config_path: 
     uid = str(os.getuid())
     _run_command(["launchctl", "bootout", f"gui/{uid}", str(plist_path)], required=False)
     _run_command(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)], required=False)
+    _run_command(["launchctl", "enable", f"gui/{uid}/{label}"], required=False)
+    _run_command(["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"], required=False)
     return f"Installed LaunchAgent: {plist_path}"
 
 

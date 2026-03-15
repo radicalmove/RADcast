@@ -65,6 +65,9 @@ def test_macos_launch_agent_payload_sets_program_arguments(tmp_path: Path):
     assert payload["Label"] == "com.radcast.worker"
     assert "ProgramArguments" in payload
     assert "PATH" in payload["EnvironmentVariables"]
+    assert payload["WorkingDirectory"] == str((tmp_path / ".radcast").resolve())
+    assert payload["ProcessType"] == "Background"
+    assert payload["KeepAlive"] == {"SuccessfulExit": False, "Crashed": True}
 
 
 def test_current_python_executable_preserves_venv_launcher(monkeypatch):
