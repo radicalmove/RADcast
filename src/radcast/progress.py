@@ -28,7 +28,7 @@ def estimate_speech_cleanup_seconds(
 def estimate_caption_seconds(
     duration_seconds: float | None,
     *,
-    quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE,
+    quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED,
 ) -> int:
     safe_duration = max(1.0, float(duration_seconds or 1.0))
     if quality_mode == CaptionQualityMode.FAST:

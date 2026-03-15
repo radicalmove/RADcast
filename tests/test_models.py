@@ -29,7 +29,7 @@ def test_simple_enhance_request_accepts_valid_payload():
     assert req.project_id == "proj1"
     assert req.speech_cleanup_requested() is True
     assert req.caption_requested() is True
-    assert req.caption_quality_mode == CaptionQualityMode.ACCURATE
+    assert req.caption_quality_mode == CaptionQualityMode.REVIEWED
     assert req.filler_removal_mode == FillerRemovalMode.AGGRESSIVE
 
 

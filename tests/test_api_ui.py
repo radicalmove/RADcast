@@ -43,6 +43,7 @@ def test_ui_homepage_renders():
     assert "Reduce silence longer than" in response.text
     assert "Remove umms and ahhs" in response.text
     assert "Closed captions" in response.text
+    assert "Caption quality" not in response.text
 
 
 def test_worker_invite_and_status_endpoints_render(monkeypatch):
@@ -266,7 +267,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
             "selected_audio_hash": None,
             "output_format": "mp3",
             "caption_format": None,
-            "caption_quality_mode": "accurate",
+            "caption_quality_mode": "reviewed",
             "caption_glossary": None,
             "enhancement_model": "studio_v18",
             "reduce_silence_enabled": False,

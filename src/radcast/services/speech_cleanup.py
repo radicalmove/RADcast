@@ -305,7 +305,7 @@ class SpeechCleanupService:
         self,
         duration_seconds: float,
         *,
-        quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE,
+        quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED,
     ) -> int:
         normalized_quality = _normalize_caption_quality_mode(quality_mode)
         base_seconds = estimate_caption_seconds(duration_seconds, quality_mode=normalized_quality)
@@ -500,7 +500,7 @@ class SpeechCleanupService:
         *,
         audio_path: Path,
         caption_format: CaptionFormat,
-        caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE,
+        caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED,
         caption_glossary: str | None = None,
         on_stage: CleanupStageCallback | None = None,
         cancel_check: Callable[[], bool] | None = None,
@@ -1153,9 +1153,9 @@ def _normalize_caption_quality_mode(value: CaptionQualityMode | str | None) -> C
     if isinstance(value, CaptionQualityMode):
         return value
     try:
-        return CaptionQualityMode(str(value or CaptionQualityMode.ACCURATE.value).strip().lower())
+        return CaptionQualityMode(str(value or CaptionQualityMode.REVIEWED.value).strip().lower())
     except ValueError:
-        return CaptionQualityMode.ACCURATE
+        return CaptionQualityMode.REVIEWED
 
 
 def _filler_heuristics_for_mode(mode: FillerRemovalMode | str | None) -> FillerRemovalHeuristics:

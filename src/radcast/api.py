@@ -271,11 +271,11 @@ def _coerce_project_settings(payload: object) -> ProjectUiSettings:
     except ValueError:
         caption_format = None
 
-    caption_quality_mode_raw = str(data.get("caption_quality_mode") or CaptionQualityMode.ACCURATE.value).strip().lower()
+    caption_quality_mode_raw = str(data.get("caption_quality_mode") or CaptionQualityMode.REVIEWED.value).strip().lower()
     try:
         caption_quality_mode = CaptionQualityMode(caption_quality_mode_raw)
     except ValueError:
-        caption_quality_mode = CaptionQualityMode.ACCURATE
+        caption_quality_mode = CaptionQualityMode.REVIEWED
     caption_glossary = str(data.get("caption_glossary") or "").strip() or None
 
     enhancement_model_raw = str(data.get("enhancement_model") or EnhancementModel.STUDIO_V18.value).strip().lower()
@@ -805,7 +805,7 @@ def _run_enhancement_job(
     output_format: OutputFormat,
     enhancement_model: EnhancementModel,
     caption_format: CaptionFormat | None = None,
-    caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE,
+    caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED,
     caption_glossary: str | None = None,
     max_silence_seconds: float | None = None,
     remove_filler_words: bool = False,

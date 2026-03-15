@@ -641,7 +641,7 @@ body.modal-open {
 
 .input-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(420px, 3fr);
+  grid-template-columns: minmax(300px, 1.12fr) minmax(420px, 2.18fr);
   gap: 14px;
 }
 
@@ -866,8 +866,8 @@ body.modal-open {
 
 .options-grid {
   display: grid;
-  grid-template-columns: minmax(120px, 0.85fr) minmax(220px, 1.18fr) minmax(180px, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(150px, 0.82fr) minmax(220px, 0.98fr) minmax(220px, 1.05fr);
+  gap: 14px;
   align-items: start;
   grid-auto-flow: dense;
 }
@@ -888,11 +888,6 @@ body.modal-open {
   grid-column: 3;
 }
 
-.caption-quality-stack {
-  margin-top: 2px;
-  gap: 6px;
-}
-
 .settings-control-silence {
   grid-column: 1 / span 2;
 }
@@ -904,14 +899,14 @@ body.modal-open {
 .options-grid .field-note {
   margin-top: 4px;
   line-height: 1.18;
-  max-width: 42ch;
+  max-width: 38ch;
 }
 
 .simple-check {
   min-height: 0;
   border: 1px solid var(--uc-grey-200);
   border-radius: var(--uc-radius-md);
-  padding: 8px 10px;
+  padding: 10px 11px;
   background: #fafafa;
 }
 
@@ -922,7 +917,7 @@ body.modal-open {
 .slider-block {
   border: 1px solid var(--uc-grey-200);
   border-radius: var(--uc-radius-md);
-  padding: 10px;
+  padding: 12px;
   background: #fafafa;
 }
 

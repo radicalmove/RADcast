@@ -76,7 +76,7 @@ class SimpleEnhanceRequest(BaseModel):
     output_name: str | None = None
     output_format: OutputFormat = OutputFormat.MP3
     caption_format: CaptionFormat | None = None
-    caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
+    caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED
     caption_glossary: str | None = Field(default=None, max_length=4000)
     enhancement_model: EnhancementModel = EnhancementModel.STUDIO_V18
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
@@ -113,7 +113,7 @@ class ProjectUiSettings(BaseModel):
     selected_audio_hash: str | None = None
     output_format: OutputFormat = OutputFormat.MP3
     caption_format: CaptionFormat | None = None
-    caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
+    caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED
     caption_glossary: str | None = Field(default=None, max_length=4000)
     enhancement_model: EnhancementModel = EnhancementModel.STUDIO_V18
     reduce_silence_enabled: bool = False
@@ -130,7 +130,7 @@ class OutputMetadata(BaseModel):
     caption_file: Path | None = None
     caption_review_file: Path | None = None
     caption_format: CaptionFormat | None = None
-    caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
+    caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED
     caption_glossary: str | None = None
     caption_review_required: bool = False
     caption_average_probability: float | None = None
@@ -216,7 +216,7 @@ class WorkerEnhanceEnqueueRequest(BaseModel):
     output_name: str | None = None
     output_format: OutputFormat = OutputFormat.MP3
     caption_format: CaptionFormat | None = None
-    caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
+    caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED
     caption_glossary: str | None = Field(default=None, max_length=4000)
     enhancement_model: EnhancementModel = EnhancementModel.STUDIO_V18
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)

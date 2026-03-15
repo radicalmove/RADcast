@@ -158,7 +158,7 @@ function normalizeCaptionQualityMode(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "fast") return "fast";
   if (normalized === "reviewed") return "reviewed";
-  return "accurate";
+  return "reviewed";
 }
 
 function defaultProjectSettings() {
@@ -166,7 +166,7 @@ function defaultProjectSettings() {
     selected_audio_hash: null,
     output_format: "mp3",
     caption_format: null,
-    caption_quality_mode: "accurate",
+    caption_quality_mode: "reviewed",
     enhancement_model: "studio_v18",
     reduce_silence_enabled: false,
     max_silence_seconds: 1,
@@ -756,13 +756,7 @@ function updateCaptionFormatStatus() {
     return;
   }
   const format = selectedCaptionFormat();
-  const qualityMode = selectedCaptionQualityMode();
-  let qualityHint = "Accurate captions use a larger transcription pass, a New Zealand English and te reo Māori glossary, and flag low-confidence lines for review.";
-  if (qualityMode === "fast") {
-    qualityHint = "Fast captions use the lighter transcription path and still flag low-confidence lines for review.";
-  } else if (qualityMode === "reviewed") {
-    qualityHint = "Reviewed captions use the slowest, strongest transcription pass, a New Zealand English and te reo Māori glossary, and a second correction sweep over low-confidence lines.";
-  }
+  const qualityHint = "Reviewed captions use the slowest, strongest transcription pass, a New Zealand English and te reo Māori glossary, and a second correction sweep over low-confidence lines.";
   if (format === "srt") {
     captionFormatStatusNode.textContent = `Generate timestamped SRT captions from the final audio for Echo360 upload. ${qualityHint}`;
     return;
@@ -2139,13 +2133,6 @@ async function init() {
   }
   if (captionFormatNode) {
     captionFormatNode.addEventListener("change", () => {
-      updateSpeechCleanupControls();
-      updateCaptionFormatStatus();
-      queueProjectSettingsSave();
-    });
-  }
-  if (captionQualityModeNode) {
-    captionQualityModeNode.addEventListener("change", () => {
       updateSpeechCleanupControls();
       updateCaptionFormatStatus();
       queueProjectSettingsSave();
