@@ -474,6 +474,64 @@ def test_generate_caption_file_uses_accurate_profile_and_maori_glossary(monkeypa
     assert captured["overlap_seconds"] == 2.5
     assert "tikanga" in str(captured["initial_prompt"])
     assert "whānau" in str(captured["initial_prompt"])
+    assert "organisation" in str(captured["initial_prompt"])
+
+
+def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossary(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+
+    captured: dict[str, object] = {}
+
+    def fake_transcribe_timeline(*args, **kwargs):
+        captured.update(kwargs)
+        return [], [
+            TranscriptSegmentTiming(
+                text="Organisation and tikanga need careful review here",
+                start=0.0,
+                end=1.1,
+                average_probability=0.35,
+            )
+        ]
+
+    def fake_review_and_correct_caption_segments(**kwargs):
+        captured["review_called"] = True
+        captured["review_prompt"] = kwargs.get("prompt_text")
+        return [
+            TranscriptSegmentTiming(
+                text="Organisation and tikanga Māori need careful review here",
+                start=0.0,
+                end=1.1,
+                average_probability=0.86,
+            )
+        ]
+
+    monkeypatch.setattr(service, "_transcribe_timeline", fake_transcribe_timeline)
+    monkeypatch.setattr(service, "_review_and_correct_caption_segments", fake_review_and_correct_caption_segments)
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+        caption_glossary="Te Tiriti o Waitangi, kaiwhakahaere",
+    )
+
+    assert result.quality_report is not None
+    assert captured["model_size"] == service.caption_reviewed_model_size
+    assert captured["beam_size"] == service.caption_reviewed_beam_size
+    assert captured["condition_on_previous_text"] is True
+    assert captured["window_seconds"] == 16.0
+    assert captured["overlap_seconds"] == 3.0
+    assert captured["review_called"] is True
+    assert "organisation" in str(captured["initial_prompt"])
+    assert "Te Tiriti o Waitangi" in str(captured["initial_prompt"])
+    assert "kaiwhakahaere" in str(captured["review_prompt"])
 
 
 def test_generate_caption_file_writes_review_notes_for_low_confidence_segments(monkeypatch, tmp_path: Path):

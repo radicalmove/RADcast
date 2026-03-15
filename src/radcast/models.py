@@ -25,6 +25,7 @@ class CaptionFormat(str, Enum):
 class CaptionQualityMode(str, Enum):
     FAST = "fast"
     ACCURATE = "accurate"
+    REVIEWED = "reviewed"
 
 
 class EnhancementModel(str, Enum):
@@ -76,6 +77,7 @@ class SimpleEnhanceRequest(BaseModel):
     output_format: OutputFormat = OutputFormat.MP3
     caption_format: CaptionFormat | None = None
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
+    caption_glossary: str | None = Field(default=None, max_length=4000)
     enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
     remove_filler_words: bool = False
@@ -112,6 +114,7 @@ class ProjectUiSettings(BaseModel):
     output_format: OutputFormat = OutputFormat.MP3
     caption_format: CaptionFormat | None = None
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
+    caption_glossary: str | None = Field(default=None, max_length=4000)
     enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
     reduce_silence_enabled: bool = False
     max_silence_seconds: float = Field(default=1.0, ge=0.0, le=4.0)
@@ -128,6 +131,7 @@ class OutputMetadata(BaseModel):
     caption_review_file: Path | None = None
     caption_format: CaptionFormat | None = None
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
+    caption_glossary: str | None = None
     caption_review_required: bool = False
     caption_average_probability: float | None = None
     caption_low_confidence_segments: int = 0
@@ -213,6 +217,7 @@ class WorkerEnhanceEnqueueRequest(BaseModel):
     output_format: OutputFormat = OutputFormat.MP3
     caption_format: CaptionFormat | None = None
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
+    caption_glossary: str | None = Field(default=None, max_length=4000)
     enhancement_model: EnhancementModel = EnhancementModel.RESEMBLE
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
     remove_filler_words: bool = False

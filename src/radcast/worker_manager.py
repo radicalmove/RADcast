@@ -575,6 +575,7 @@ class WorkerManager:
                     audio_path=output_path,
                     caption_format=payload.caption_format,
                     caption_quality_mode=payload.caption_quality_mode,
+                    caption_glossary=(str(payload.caption_glossary or "").strip() or None),
                     on_stage=lambda progress, detail, eta_seconds: self._update_job_manifest(
                         project_id=payload.project_id,
                         job_id=job_id,
@@ -609,6 +610,7 @@ class WorkerManager:
                 caption_review_file=caption_review_path,
                 caption_format=caption_format,
                 caption_quality_mode=payload.caption_quality_mode,
+                caption_glossary=(str(payload.caption_glossary or "").strip() or None),
                 caption_review_required=caption_review_required,
                 caption_average_probability=caption_average_probability,
                 caption_low_confidence_segments=caption_low_confidence_segments,

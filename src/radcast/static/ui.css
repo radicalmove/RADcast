@@ -893,6 +893,16 @@ body.modal-open {
   gap: 6px;
 }
 
+.caption-glossary-stack {
+  margin-top: 2px;
+  gap: 6px;
+}
+
+.caption-glossary-textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
 .settings-control-silence {
   grid-column: 1 / span 2;
 }

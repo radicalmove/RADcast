@@ -66,4 +66,8 @@ def test_postprocess_eta_extension_adds_cleanup_and_caption_time():
         120,
         quality_mode=CaptionQualityMode.FAST,
     )
+    assert estimate_caption_seconds(120, quality_mode=CaptionQualityMode.REVIEWED) > estimate_caption_seconds(
+        120,
+        quality_mode=CaptionQualityMode.ACCURATE,
+    )
     assert extend_eta_with_postprocess(50, 20, 8, reserve_postprocess_band=True) == 78

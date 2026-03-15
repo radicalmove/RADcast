@@ -77,6 +77,20 @@ def test_simple_enhance_request_accepts_explicit_caption_quality_mode():
     assert req.caption_quality_mode == CaptionQualityMode.FAST
 
 
+def test_simple_enhance_request_accepts_reviewed_caption_mode_and_glossary():
+    req = SimpleEnhanceRequest(
+        project_id="proj1",
+        input_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        input_audio_filename="lecture.wav",
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+        caption_glossary="tikanga Māori, rangatiratanga, organisation",
+    )
+
+    assert req.caption_quality_mode == CaptionQualityMode.REVIEWED
+    assert req.caption_glossary == "tikanga Māori, rangatiratanga, organisation"
+
+
 def test_resolve_command_prefers_sibling_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     fake_python = tmp_path / "python"
     fake_python.write_text("")

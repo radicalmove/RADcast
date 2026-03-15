@@ -33,6 +33,8 @@ def estimate_caption_seconds(
     safe_duration = max(1.0, float(duration_seconds or 1.0))
     if quality_mode == CaptionQualityMode.FAST:
         return max(18, min(int(round(12.0 + (safe_duration * 0.62))), 12 * 60))
+    if quality_mode == CaptionQualityMode.REVIEWED:
+        return max(45, min(int(round(36.0 + (safe_duration * 1.9))), 24 * 60))
     return max(30, min(int(round(24.0 + (safe_duration * 1.22))), 18 * 60))
 
 

@@ -47,6 +47,10 @@ _CAPTION_FAST_WINDOW_SECONDS = 8.0
 _CAPTION_FAST_OVERLAP_SECONDS = 1.5
 _CAPTION_ACCURATE_WINDOW_SECONDS = 12.0
 _CAPTION_ACCURATE_OVERLAP_SECONDS = 2.5
+_CAPTION_REVIEWED_WINDOW_SECONDS = 16.0
+_CAPTION_REVIEWED_OVERLAP_SECONDS = 3.0
+_CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS = 1.8
+_CAPTION_REVIEW_MAX_FLAGS = 18
 _AGGRESSIVE_FILLER_PROMPT = (
     "Transcribe all spoken disfluencies exactly, including um, ums, uh, uhh, ah, ahh, erm, mm, and hesitation sounds."
 )
@@ -80,11 +84,42 @@ _COMMON_MAORI_TERMS = (
     "karakia",
     "pōwhiri",
     "Te Tiriti o Waitangi",
+    "Aotearoa New Zealand",
+    "tamariki",
+    "mokopuna",
+    "kaiako",
+    "ākonga",
+    "taonga tuku iho",
+    "kotahitanga",
+    "aroha",
+    "mana whenua",
+    "te ao Māori",
+    "tikanga Māori",
+    "whare wānanga",
+    "pūkenga",
+    "tohunga",
+    "kōrero",
+    "whakataukī",
+    "pūrākau",
+    "Matariki",
+    "Tāmaki Makaurau",
+    "Ōtautahi",
+    "Ōtepoti",
+    "Te Waipounamu",
+    "Te Ika-a-Māui",
 )
 _MAORI_GLOSSARY_PROMPT = (
     "This audio may include te reo Māori words. Prefer correct spellings and macrons when spoken clearly, such as "
     + ", ".join(_COMMON_MAORI_TERMS)
     + "."
+)
+_NZ_ENGLISH_STYLE_PROMPT = (
+    "Prefer New Zealand English spelling and style, for example organisation, recognise, behaviour, labour, "
+    "defence, travelling, centred, labelled, analysed, and programme for course or teaching content."
+)
+_CAPTION_REVIEW_PROMPT = (
+    "Review low-confidence transcript lines carefully. Prefer the spoken wording, preserve names and te reo Māori, "
+    "and correct likely misheard words rather than paraphrasing."
 )
 
 
@@ -167,6 +202,7 @@ class CaptionTranscriptionProfile:
     overlap_seconds: float
     condition_on_previous_text: bool
     initial_prompt: str | None
+    review_sweep: bool = False
 
 
 @dataclass(frozen=True)
@@ -221,11 +257,13 @@ class SpeechCleanupService:
         self.cleanup_model_size = os.environ.get("RADCAST_SPEECH_CLEANUP_MODEL", "small").strip() or "small"
         self.caption_fast_model_size = os.environ.get("RADCAST_CAPTION_FAST_MODEL", self.cleanup_model_size).strip() or self.cleanup_model_size
         self.caption_accurate_model_size = os.environ.get("RADCAST_CAPTION_ACCURATE_MODEL", "medium").strip() or "medium"
+        self.caption_reviewed_model_size = os.environ.get("RADCAST_CAPTION_REVIEWED_MODEL", "large-v3").strip() or "large-v3"
         self.device = os.environ.get("RADCAST_SPEECH_CLEANUP_DEVICE", "auto").strip() or "auto"
         self.compute_type = os.environ.get("RADCAST_SPEECH_CLEANUP_COMPUTE_TYPE", "int8").strip() or "int8"
         self.beam_size = max(1, int(os.environ.get("RADCAST_SPEECH_CLEANUP_BEAM_SIZE", "3")))
         self.caption_fast_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_FAST_BEAM_SIZE", str(self.beam_size))))
         self.caption_accurate_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_ACCURATE_BEAM_SIZE", "5")))
+        self.caption_reviewed_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_REVIEWED_BEAM_SIZE", "7")))
         self._models: dict[str, object] = {}
         self._model_lock = threading.Lock()
 
@@ -237,10 +275,15 @@ class SpeechCleanupService:
     ) -> int:
         normalized_quality = _normalize_caption_quality_mode(quality_mode)
         base_seconds = estimate_caption_seconds(duration_seconds, quality_mode=normalized_quality)
-        profile = self._caption_profile_for_mode(normalized_quality)
+        profile = self._caption_profile_for_mode(normalized_quality, caption_prompt=None)
         if self._model_cache_ready(profile.model_size):
             return base_seconds
-        cold_start_seconds = 18 if normalized_quality == CaptionQualityMode.FAST else 95
+        if normalized_quality == CaptionQualityMode.FAST:
+            cold_start_seconds = 18
+        elif normalized_quality == CaptionQualityMode.ACCURATE:
+            cold_start_seconds = 95
+        else:
+            cold_start_seconds = 145
         return min(base_seconds + cold_start_seconds, 22 * 60)
 
     @staticmethod
@@ -252,7 +295,7 @@ class SpeechCleanupService:
             return False, "Install faster-whisper to enable long-silence trimming, filler-word cleanup, and caption export."
         return True, (
             "Speech cleanup and caption export are available with faster-whisper "
-            f"(cleanup: {self.cleanup_model_size}, captions: {self.caption_accurate_model_size})."
+            f"(cleanup: {self.cleanup_model_size}, captions: {self.caption_accurate_model_size}, review: {self.caption_reviewed_model_size})."
         )
 
     def estimate_runtime_seconds(
@@ -424,6 +467,7 @@ class SpeechCleanupService:
         audio_path: Path,
         caption_format: CaptionFormat,
         caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE,
+        caption_glossary: str | None = None,
         on_stage: CleanupStageCallback | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> CaptionExportResult:
@@ -436,7 +480,8 @@ class SpeechCleanupService:
 
         input_duration = probe_duration_seconds(audio_path)
         quality_mode = _normalize_caption_quality_mode(caption_quality_mode)
-        profile = self._caption_profile_for_mode(quality_mode)
+        caption_prompt = _build_caption_prompt(caption_glossary)
+        profile = self._caption_profile_for_mode(quality_mode, caption_prompt=caption_prompt)
         caption_eta_seconds = self.estimate_caption_runtime_seconds(input_duration, quality_mode=quality_mode)
         started_at = time.monotonic()
         if on_stage:
@@ -474,8 +519,24 @@ class SpeechCleanupService:
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
 
-            output_path = audio_path.with_suffix(f".{caption_format.value}")
             quality_report = _build_caption_quality_report(segments)
+            if profile.review_sweep and quality_report.flagged_segments:
+                if on_stage:
+                    on_stage(
+                        0.82,
+                        "Reviewing low-confidence caption lines.",
+                        _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=10),
+                    )
+                segments = self._review_and_correct_caption_segments(
+                    analysis_wav=analysis_wav,
+                    base_segments=segments,
+                    quality_report=quality_report,
+                    prompt_text=caption_prompt,
+                    cancel_check=cancel_check,
+                )
+                quality_report = _build_caption_quality_report(segments)
+
+            output_path = audio_path.with_suffix(f".{caption_format.value}")
             review_path = None
             if on_stage:
                 on_stage(
@@ -736,7 +797,12 @@ class SpeechCleanupService:
 
         return _dedupe_transcript_words(words), _dedupe_transcript_segments(segments)
 
-    def _caption_profile_for_mode(self, caption_quality_mode: CaptionQualityMode) -> CaptionTranscriptionProfile:
+    def _caption_profile_for_mode(
+        self,
+        caption_quality_mode: CaptionQualityMode,
+        *,
+        caption_prompt: str | None,
+    ) -> CaptionTranscriptionProfile:
         if caption_quality_mode == CaptionQualityMode.FAST:
             return CaptionTranscriptionProfile(
                 model_size=self.caption_fast_model_size,
@@ -744,7 +810,17 @@ class SpeechCleanupService:
                 window_seconds=_CAPTION_FAST_WINDOW_SECONDS,
                 overlap_seconds=_CAPTION_FAST_OVERLAP_SECONDS,
                 condition_on_previous_text=False,
-                initial_prompt=_MAORI_GLOSSARY_PROMPT,
+                initial_prompt=caption_prompt,
+            )
+        if caption_quality_mode == CaptionQualityMode.REVIEWED:
+            return CaptionTranscriptionProfile(
+                model_size=self.caption_reviewed_model_size,
+                beam_size=self.caption_reviewed_beam_size,
+                window_seconds=_CAPTION_REVIEWED_WINDOW_SECONDS,
+                overlap_seconds=_CAPTION_REVIEWED_OVERLAP_SECONDS,
+                condition_on_previous_text=True,
+                initial_prompt=caption_prompt,
+                review_sweep=True,
             )
         return CaptionTranscriptionProfile(
             model_size=self.caption_accurate_model_size,
@@ -752,7 +828,98 @@ class SpeechCleanupService:
             window_seconds=_CAPTION_ACCURATE_WINDOW_SECONDS,
             overlap_seconds=_CAPTION_ACCURATE_OVERLAP_SECONDS,
             condition_on_previous_text=True,
-            initial_prompt=_MAORI_GLOSSARY_PROMPT,
+            initial_prompt=caption_prompt,
+        )
+
+    def _review_and_correct_caption_segments(
+        self,
+        *,
+        analysis_wav: Path,
+        base_segments: list[TranscriptSegmentTiming],
+        quality_report: CaptionQualityReport,
+        prompt_text: str | None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> list[TranscriptSegmentTiming]:
+        if not quality_report.flagged_segments:
+            return base_segments
+        model = self._load_model(self.caption_reviewed_model_size)
+        waveform, sample_rate = _read_pcm16_wav(analysis_wav)
+        corrected = list(base_segments)
+        with tempfile.TemporaryDirectory(prefix="radcast_caption_review_") as tmp:
+            tmp_path = Path(tmp)
+            for flag in quality_report.flagged_segments[:_CAPTION_REVIEW_MAX_FLAGS]:
+                if cancel_check and cancel_check():
+                    raise JobCancelledError("job cancelled")
+                matched_index = _find_segment_index(corrected, flag)
+                if matched_index is None:
+                    continue
+                candidate_segment = self._review_caption_flag(
+                    model=model,
+                    waveform=waveform,
+                    sample_rate=sample_rate,
+                    flag=flag,
+                    prompt_text=prompt_text,
+                    tmp_path=tmp_path,
+                )
+                if candidate_segment is None:
+                    continue
+                current_segment = corrected[matched_index]
+                current_probability = current_segment.average_probability if current_segment.average_probability is not None else -1.0
+                next_probability = candidate_segment.average_probability if candidate_segment.average_probability is not None else current_probability
+                if next_probability + 0.03 < current_probability:
+                    continue
+                corrected[matched_index] = candidate_segment
+        return corrected
+
+    def _review_caption_flag(
+        self,
+        *,
+        model,
+        waveform: np.ndarray,
+        sample_rate: int,
+        flag: CaptionReviewFlag,
+        prompt_text: str | None,
+        tmp_path: Path,
+    ) -> TranscriptSegmentTiming | None:
+        snippet_start = max(0.0, flag.start - _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS)
+        snippet_end = max(snippet_start + 0.5, flag.end + _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS)
+        total_duration = waveform.shape[0] / float(sample_rate) if sample_rate else 0.0
+        snippet_end = min(total_duration, snippet_end)
+        start_idx = max(0, min(len(waveform), int(round(snippet_start * sample_rate))))
+        end_idx = max(start_idx, min(len(waveform), int(round(snippet_end * sample_rate))))
+        if end_idx <= start_idx:
+            return None
+        snippet_path = tmp_path / f"caption_review_{int(round(flag.start * 1000))}.wav"
+        _write_pcm16_wav(snippet_path, waveform[start_idx:end_idx], sample_rate=sample_rate)
+        review_segments = self._transcribe_file(
+            model,
+            snippet_path,
+            preserve_fillers=False,
+            beam_size=self.caption_reviewed_beam_size + 1,
+            condition_on_previous_text=True,
+            initial_prompt=_combine_prompt_parts(prompt_text, _CAPTION_REVIEW_PROMPT),
+        )
+        _, candidate_segments = _collect_timing_rows(
+            list(review_segments),
+            window_offset_seconds=snippet_start,
+            keep_start_seconds=0.0,
+            keep_end_seconds=max(0.0, snippet_end - snippet_start),
+        )
+        best = _best_overlapping_segment(candidate_segments, flag)
+        if best is None:
+            return None
+        if not _clean_caption_text(best.text):
+            return None
+        if _clean_caption_text(best.text) == _clean_caption_text(flag.text) and (
+            best.average_probability is None
+            or (flag.average_probability is not None and best.average_probability <= flag.average_probability + 0.01)
+        ):
+            return None
+        return TranscriptSegmentTiming(
+            text=best.text,
+            start=flag.start,
+            end=max(flag.end, flag.start + 0.2),
+            average_probability=best.average_probability,
         )
 
     def _filler_intervals(
@@ -883,6 +1050,44 @@ class SpeechCleanupService:
 def _normalize_token(text: str) -> str:
     cleaned = _TOKEN_RE.sub("", str(text or "").strip().lower())
     return cleaned.strip("'")
+
+
+def _combine_prompt_parts(*parts: str | None) -> str | None:
+    cleaned_parts = [str(part).strip() for part in parts if str(part or "").strip()]
+    if not cleaned_parts:
+        return None
+    return " ".join(cleaned_parts)
+
+
+def _build_caption_prompt(custom_glossary: str | None) -> str:
+    glossary_terms = _normalize_custom_glossary(custom_glossary)
+    prompt_parts = [_NZ_ENGLISH_STYLE_PROMPT, _MAORI_GLOSSARY_PROMPT]
+    if glossary_terms:
+        prompt_parts.append(
+            "Also prefer these course or project terms if spoken clearly: " + ", ".join(glossary_terms) + "."
+        )
+    return _combine_prompt_parts(*prompt_parts) or _NZ_ENGLISH_STYLE_PROMPT
+
+
+def _normalize_custom_glossary(value: str | None) -> list[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    parts = re.split(r"[\n,;|]+", raw)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        term = " ".join(part.split()).strip()
+        if not term:
+            continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(term[:80])
+        if len(normalized) >= 60:
+            break
+    return normalized
 
 
 def _is_filler_token(normalized: str) -> bool:
@@ -1335,6 +1540,45 @@ def _format_caption_review_document(report: CaptionQualityReport) -> str:
         lines.append(flag.text)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _find_segment_index(segments: list[TranscriptSegmentTiming], flag: CaptionReviewFlag) -> int | None:
+    best_index = None
+    best_score = -1.0
+    for index, segment in enumerate(segments):
+        score = _segment_overlap(segment.start, segment.end, flag.start, flag.end)
+        if score <= 0:
+            continue
+        if score > best_score:
+            best_index = index
+            best_score = score
+    return best_index
+
+
+def _best_overlapping_segment(
+    segments: list[TranscriptSegmentTiming],
+    flag: CaptionReviewFlag,
+) -> TranscriptSegmentTiming | None:
+    best_segment = None
+    best_score = -1.0
+    for segment in segments:
+        score = _segment_overlap(segment.start, segment.end, flag.start, flag.end)
+        if score <= 0:
+            continue
+        probability = segment.average_probability if segment.average_probability is not None else 0.0
+        adjusted_score = score + (probability * 0.15)
+        if adjusted_score > best_score:
+            best_segment = segment
+            best_score = adjusted_score
+    return best_segment
+
+
+def _segment_overlap(start_a: float, end_a: float, start_b: float, end_b: float) -> float:
+    overlap = max(0.0, min(end_a, end_b) - max(start_a, start_b))
+    if overlap <= 0.0:
+        return 0.0
+    span = max(0.05, max(end_a, end_b) - min(start_a, start_b))
+    return overlap / span
 
 
 def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption_format: CaptionFormat) -> str:

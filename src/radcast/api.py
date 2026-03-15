@@ -276,6 +276,7 @@ def _coerce_project_settings(payload: object) -> ProjectUiSettings:
         caption_quality_mode = CaptionQualityMode(caption_quality_mode_raw)
     except ValueError:
         caption_quality_mode = CaptionQualityMode.ACCURATE
+    caption_glossary = str(data.get("caption_glossary") or "").strip() or None
 
     enhancement_model_raw = str(data.get("enhancement_model") or EnhancementModel.RESEMBLE.value).strip().lower()
     try:
@@ -300,6 +301,7 @@ def _coerce_project_settings(payload: object) -> ProjectUiSettings:
         output_format=output_format,
         caption_format=caption_format,
         caption_quality_mode=caption_quality_mode,
+        caption_glossary=caption_glossary,
         enhancement_model=enhancement_model,
         reduce_silence_enabled=bool(data.get("reduce_silence_enabled", False)),
         max_silence_seconds=max_silence_seconds,
@@ -804,6 +806,7 @@ def _run_enhancement_job(
     enhancement_model: EnhancementModel,
     caption_format: CaptionFormat | None = None,
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE,
+    caption_glossary: str | None = None,
     max_silence_seconds: float | None = None,
     remove_filler_words: bool = False,
     filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE,
@@ -905,6 +908,7 @@ def _run_enhancement_job(
                 audio_path=final_path,
                 caption_format=caption_format,
                 caption_quality_mode=caption_quality_mode,
+                caption_glossary=(str(caption_glossary or "").strip() or None),
                 on_stage=lambda progress, detail, eta_seconds: _update_job(
                     manifests_dir,
                     job_id=job_id,
@@ -932,6 +936,7 @@ def _run_enhancement_job(
             caption_review_file=getattr(caption_result, "review_path", None) if caption_result else None,
             caption_format=caption_format,
             caption_quality_mode=caption_quality_mode,
+            caption_glossary=(str(caption_glossary or "").strip() or None),
             caption_review_required=bool(
                 caption_result
                 and getattr(caption_result, "quality_report", None)
@@ -1063,6 +1068,7 @@ def _run_local_enhancement_from_worker_payload(
         output_format=worker_payload.output_format,
         caption_format=worker_payload.caption_format,
         caption_quality_mode=worker_payload.caption_quality_mode,
+        caption_glossary=worker_payload.caption_glossary,
         enhancement_model=worker_payload.enhancement_model,
         max_silence_seconds=worker_payload.max_silence_seconds,
         remove_filler_words=worker_payload.remove_filler_words,
@@ -1524,6 +1530,7 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         output_format=req.output_format,
         caption_format=req.caption_format,
         caption_quality_mode=req.caption_quality_mode,
+        caption_glossary=(str(req.caption_glossary or "").strip() or None),
         enhancement_model=selected_model,
         max_silence_seconds=req.max_silence_seconds,
         remove_filler_words=req.remove_filler_words,
