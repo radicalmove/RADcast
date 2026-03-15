@@ -41,8 +41,8 @@ _FILLER_MAX_DURATION_SECONDS = 1.35
 _CUT_CROSSFADE_SECONDS = 0.012
 _TRANSCRIBE_PROGRESS_MIN_INTERVAL_SECONDS = 0.8
 _TOKEN_RE = re.compile(r"[^a-z']+")
-_AGGRESSIVE_TRANSCRIBE_WINDOW_SECONDS = 5.0
-_AGGRESSIVE_TRANSCRIBE_OVERLAP_SECONDS = 1.25
+_AGGRESSIVE_TRANSCRIBE_WINDOW_SECONDS = 8.0
+_AGGRESSIVE_TRANSCRIBE_OVERLAP_SECONDS = 2.0
 _CAPTION_FAST_WINDOW_SECONDS = 8.0
 _CAPTION_FAST_OVERLAP_SECONDS = 1.5
 _CAPTION_ACCURATE_WINDOW_SECONDS = 12.0
@@ -656,6 +656,9 @@ class SpeechCleanupService:
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         normalized_mode = _normalize_filler_mode(filler_removal_mode)
         should_use_windowed = force_windowed or (remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE)
+        effective_beam_size = beam_size
+        if should_use_windowed and preserve_fillers and effective_beam_size is None:
+            effective_beam_size = 1
         if should_use_windowed:
             return self._transcribe_windowed_timeline(
                 audio_path,
@@ -667,7 +670,7 @@ class SpeechCleanupService:
                 cancel_check=cancel_check,
                 preserve_fillers=preserve_fillers or (remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE),
                 model_size=model_size,
-                beam_size=beam_size,
+                beam_size=effective_beam_size,
                 condition_on_previous_text=condition_on_previous_text,
                 initial_prompt=initial_prompt,
                 window_seconds=window_seconds,
@@ -685,7 +688,7 @@ class SpeechCleanupService:
             model,
             audio_path,
             preserve_fillers=preserve_fillers,
-            beam_size=beam_size,
+            beam_size=effective_beam_size,
             condition_on_previous_text=condition_on_previous_text,
             initial_prompt=initial_prompt,
         ):

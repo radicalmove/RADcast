@@ -6,8 +6,8 @@ import math
 
 from radcast.models import CaptionQualityMode, FillerRemovalMode
 
-_AGGRESSIVE_CLEANUP_WINDOW_SECONDS = 5.0
-_AGGRESSIVE_CLEANUP_OVERLAP_SECONDS = 1.25
+_AGGRESSIVE_CLEANUP_WINDOW_SECONDS = 8.0
+_AGGRESSIVE_CLEANUP_OVERLAP_SECONDS = 2.0
 
 
 def estimate_speech_cleanup_seconds(
@@ -21,7 +21,7 @@ def estimate_speech_cleanup_seconds(
         if filler_removal_mode == FillerRemovalMode.AGGRESSIVE:
             step_seconds = max(0.5, _AGGRESSIVE_CLEANUP_WINDOW_SECONDS - _AGGRESSIVE_CLEANUP_OVERLAP_SECONDS)
             total_windows = max(1, int(math.ceil(max(safe_duration - _AGGRESSIVE_CLEANUP_WINDOW_SECONDS, 0.0) / step_seconds)) + 1)
-            projected = 22.0 + (total_windows * 9.5) + (safe_duration * 0.18)
+            projected = 16.0 + (total_windows * 14.0) + (safe_duration * 0.18)
             return max(40, min(int(round(projected)), 20 * 60))
         else:
             base_seconds = 11.0

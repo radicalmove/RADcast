@@ -327,7 +327,7 @@ def test_cleanup_audio_file_aggressive_mode_removes_more_low_confidence_fillers(
 
 def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeypatch, tmp_path: Path):
     sample_rate = 16000
-    audio = np.zeros(int(sample_rate * 7.2), dtype=np.float32)
+    audio = np.zeros(int(sample_rate * 12.2), dtype=np.float32)
     audio_path = tmp_path / "analysis.wav"
     _write_test_wav(audio_path, audio, sample_rate=sample_rate)
 
@@ -355,7 +355,7 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
                     words=[SimpleNamespace(start=1.2, end=1.45, word="um", probability=0.02)],
                 )
             ]
-        if clip_path.name == "window_003750.wav":
+        if clip_path.name == "window_006000.wav":
             return [
                 SimpleNamespace(
                     start=1.1,
@@ -370,7 +370,7 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
 
     words, _segments = service._transcribe_timeline(
         audio_path,
-        total_duration=7.2,
+        total_duration=12.2,
         started_at=0.0,
         cleanup_eta_seconds=30,
         on_stage=None,
@@ -379,11 +379,11 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
     )
 
     assert ("window_000000.wav", True) in calls
-    assert ("window_003750.wav", True) in calls
+    assert ("window_006000.wav", True) in calls
     assert all(preserve_fillers for _, preserve_fillers in calls)
     assert [word.text for word in words] == ["um", "uh"]
     assert words[0].start == 1.2
-    assert words[1].start == 4.85
+    assert words[1].start == 7.1
 
 
 def test_generate_caption_file_writes_srt(monkeypatch, tmp_path: Path):
