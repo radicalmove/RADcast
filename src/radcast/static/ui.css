@@ -866,7 +866,7 @@ body.modal-open {
 
 .options-grid {
   display: grid;
-  grid-template-columns: minmax(150px, 0.82fr) minmax(220px, 0.98fr) minmax(220px, 1.05fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   align-items: start;
   grid-auto-flow: dense;
@@ -888,12 +888,8 @@ body.modal-open {
   grid-column: 3;
 }
 
-.settings-control-silence {
-  grid-column: 1 / span 2;
-}
-
-.settings-control-filler {
-  grid-column: 3;
+.settings-control-cleanup {
+  grid-column: 1 / -1;
 }
 
 .options-grid .field-note {
@@ -936,6 +932,38 @@ body.modal-open {
 .speech-cleanup-block {
   display: grid;
   gap: 8px;
+}
+
+.cleanup-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(260px, 1fr);
+  gap: 14px;
+  border: 1px solid var(--uc-grey-200);
+  border-radius: var(--uc-radius-md);
+  padding: 12px;
+  background: #fafafa;
+}
+
+.cleanup-option {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cleanup-option-filler {
+  padding-left: 14px;
+  border-left: 1px solid var(--uc-grey-200);
+}
+
+.cleanup-note {
+  margin-top: 0;
+  max-width: none;
+}
+
+.cleanup-option input[type="range"] {
+  width: 100%;
+  box-shadow: none;
+  padding: 0;
 }
 
 .speech-cleanup-disabled {
@@ -1202,6 +1230,7 @@ button.worker-mini-btn {
 
 [data-theme="dark"] .simple-check,
 [data-theme="dark"] .slider-block,
+[data-theme="dark"] .cleanup-block,
 [data-theme="dark"] .speech-cleanup-block,
 [data-theme="dark"] .output-version-badge {
   background: var(--bg-surface-alt);
@@ -1248,6 +1277,17 @@ button.worker-mini-btn {
   .input-grid,
   .options-grid {
     grid-template-columns: 1fr;
+  }
+
+  .cleanup-block {
+    grid-template-columns: 1fr;
+  }
+
+  .cleanup-option-filler {
+    padding-left: 0;
+    border-left: none;
+    padding-top: 10px;
+    border-top: 1px solid var(--uc-grey-200);
   }
 }
 

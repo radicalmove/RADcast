@@ -30,6 +30,7 @@ const enhancementModelStatusNode = document.getElementById("enhancement-model-st
 const reduceSilenceEnabledNode = document.getElementById("reduce-silence-enabled");
 const reduceSilenceSecondsNode = document.getElementById("reduce-silence-seconds");
 const reduceSilenceValueNode = document.getElementById("reduce-silence-value");
+const reduceSilenceStatusNode = document.getElementById("reduce-silence-status");
 const removeFillerWordsNode = document.getElementById("remove-filler-words");
 const speechCleanupStatusNode = document.getElementById("speech-cleanup-status");
 
@@ -365,6 +366,12 @@ function setSpeechCleanupStatus(message, isError = false) {
   if (!speechCleanupStatusNode) return;
   speechCleanupStatusNode.textContent = message || "";
   speechCleanupStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function setReduceSilenceStatus(message, isError = false) {
+  if (!reduceSilenceStatusNode) return;
+  reduceSilenceStatusNode.textContent = message || "";
+  reduceSilenceStatusNode.style.color = isError ? "#a73527" : "#555";
 }
 
 function setWorkerStatus(connected, detailText = "") {
@@ -739,13 +746,9 @@ function updateSpeechCleanupControls() {
   if (reduceSilenceValueNode) {
     reduceSilenceValueNode.textContent = formatSilenceThresholdLabel(reduceSilenceSecondsNode?.value ?? 1);
   }
-  const cleanupBlock = reduceSilenceEnabledNode?.closest(".speech-cleanup-block");
+  const cleanupBlock = reduceSilenceEnabledNode?.closest(".cleanup-block");
   if (cleanupBlock) {
     cleanupBlock.classList.toggle("speech-cleanup-disabled", !available);
-  }
-  const fillerBlock = removeFillerWordsNode?.closest(".simple-check");
-  if (fillerBlock) {
-    fillerBlock.classList.toggle("speech-cleanup-disabled", !available);
   }
 }
 
@@ -756,16 +759,15 @@ function updateCaptionFormatStatus() {
     return;
   }
   const format = selectedCaptionFormat();
-  const qualityHint = "Reviewed captions use the slowest, strongest transcription pass, a New Zealand English and te reo Māori glossary, and a second correction sweep over low-confidence lines.";
   if (format === "srt") {
-    captionFormatStatusNode.textContent = `Generate timestamped SRT captions from the final audio for Echo360 upload. ${qualityHint}`;
+    captionFormatStatusNode.textContent = "Creates reviewed SRT captions from the final audio.";
     return;
   }
   if (format === "vtt") {
-    captionFormatStatusNode.textContent = `Generate timestamped VTT captions from the final audio for Echo360 upload. ${qualityHint}`;
+    captionFormatStatusNode.textContent = "Creates reviewed VTT captions from the final audio.";
     return;
   }
-  captionFormatStatusNode.textContent = "Generate timestamped captions from the final audio for Echo360.";
+  captionFormatStatusNode.textContent = "Creates reviewed captions from the final audio.";
 }
 
 function updateGenerateButtonLabel() {
@@ -775,48 +777,39 @@ function updateGenerateButtonLabel() {
 
 function updateSpeechCleanupStatusFromSelection() {
   if (!state.speechCleanupAvailable) {
-    setSpeechCleanupStatus(state.speechCleanupDetail || "Speech cleanup is not available on this machine.", true);
+    const unavailableMessage = state.speechCleanupDetail || "Speech cleanup is not available on this machine.";
+    setReduceSilenceStatus(unavailableMessage, true);
+    setSpeechCleanupStatus(unavailableMessage, true);
     return;
   }
-  const parts = [];
-  const cleanupOnly = selectedEnhancementModelId() === "none";
   const maxSilenceSeconds = selectedMaxSilenceSeconds();
-  if (maxSilenceSeconds !== null) {
-    parts.push(`Speech gaps over ${formatSilenceThresholdLabel(maxSilenceSeconds)} will be shortened.`);
-  }
+  setReduceSilenceStatus(
+    maxSilenceSeconds !== null
+      ? `Cuts longer pauses back to ${formatSilenceThresholdLabel(maxSilenceSeconds)}.`
+      : "Cuts longer pauses back to the chosen length."
+  );
   if (removeFillerWordsNode?.checked) {
-    parts.push("Aggressive filler cleanup will remove more hesitation runs and low-confidence umms and ahhs.");
-  }
-  if (!parts.length) {
-    parts.push(
-      cleanupOnly
-        ? "Speech cleanup can shorten long pauses and remove filler words without changing the audio quality."
-        : (state.speechCleanupDetail || "Speech cleanup can shorten long pauses and remove filler words after enhancement.")
-    );
+    setSpeechCleanupStatus("Uses aggressive cleanup for filler words and hesitation runs.");
   } else {
-    parts.push(
-      cleanupOnly
-        ? "This runs without enhancement, so only the cleanup options will change the audio."
-        : "This runs after enhancement, so the final save can take a little longer."
-    );
+    setSpeechCleanupStatus("Removes filler words and hesitation runs.");
   }
-  setSpeechCleanupStatus(parts.join(" "));
 }
 
 function updateEnhancementModelStatusFromSelection() {
   if (selectedEnhancementModelId() === "none") {
-    setEnhancementModelStatus("Keeps the original audio quality. Silence reduction, filler cleanup, and captions can still run.");
+    setEnhancementModelStatus("Keeps the original audio quality.");
     return;
   }
   if (state.optimizedEnhancementAvailable === false) {
-    setEnhancementModelStatus("RADcast Optimized enhancement is enabled by default, but availability could not be confirmed on this machine.");
+    setEnhancementModelStatus("RADcast Optimized is selected by default.");
     return;
   }
-  setEnhancementModelStatus("RADcast Optimized enhancement runs by default before any optional silence cleanup, filler cleanup, or captions.");
+  setEnhancementModelStatus("Uses RADcast Optimized by default.");
 }
 
 async function loadEnhancementModels() {
-  setEnhancementModelStatus("RADcast Optimized enhancement runs by default.");
+  setEnhancementModelStatus("Uses RADcast Optimized by default.");
+  setReduceSilenceStatus("Checking speech cleanup availability...");
   setSpeechCleanupStatus("Checking speech cleanup availability...");
 
   try {

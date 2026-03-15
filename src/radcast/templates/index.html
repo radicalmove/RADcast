@@ -163,7 +163,7 @@
                   <input id="dont-enhance-audio" type="checkbox" />
                   <span>Don't enhance audio</span>
                 </span>
-                <small id="enhancement-model-status" class="field-note">RADcast Optimized enhancement runs by default.</small>
+                <small id="enhancement-model-status" class="field-note">Uses RADcast Optimized by default.</small>
               </label>
               <label class="stack settings-compact-field settings-control-captions">
                 <span>Closed captions</span>
@@ -172,23 +172,25 @@
                   <option value="srt">SRT</option>
                   <option value="vtt">VTT</option>
                 </select>
-                <small id="caption-format-status" class="field-note">Generate reviewed timestamped captions from the final audio for Echo360.</small>
+                <small id="caption-format-status" class="field-note">Creates reviewed captions from the final audio.</small>
               </label>
-              <div class="slider-block speech-cleanup-block settings-control-silence">
-                <label class="checkline" for="reduce-silence-enabled">
-                  <input id="reduce-silence-enabled" type="checkbox" />
-                  <span>Reduce silence longer than <strong id="reduce-silence-value">1.0s</strong></span>
-                </label>
-                <input id="reduce-silence-seconds" type="range" min="0" max="4" step="0.25" value="1" />
-                <small class="field-note">Speech gaps longer than this are shortened to the same length.</small>
+              <div class="cleanup-block settings-control-cleanup">
+                <div class="cleanup-option cleanup-option-silence">
+                  <label class="checkline" for="reduce-silence-enabled">
+                    <input id="reduce-silence-enabled" type="checkbox" />
+                    <span>Reduce silence longer than <strong id="reduce-silence-value">1.0s</strong></span>
+                  </label>
+                  <input id="reduce-silence-seconds" type="range" min="0" max="4" step="0.25" value="1" />
+                  <small id="reduce-silence-status" class="field-note cleanup-note">Cuts longer pauses back to this length.</small>
+                </div>
+                <div class="cleanup-option cleanup-option-filler">
+                  <label class="checkline" for="remove-filler-words">
+                    <input id="remove-filler-words" type="checkbox" />
+                    <span>Remove umms and ahhs</span>
+                  </label>
+                  <small id="speech-cleanup-status" class="field-note cleanup-note">Removes filler words and hesitation runs.</small>
+                </div>
               </div>
-              <label class="simple-check stack settings-control-filler" for="remove-filler-words">
-                <span class="checkline">
-                  <input id="remove-filler-words" type="checkbox" />
-                  <span>Remove umms and ahhs</span>
-                </span>
-                <small id="speech-cleanup-status" class="field-note">Aggressive cleanup of hesitation runs and clear filler words between phrases.</small>
-              </label>
             </div>
           </section>
         </div>
