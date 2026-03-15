@@ -1061,6 +1061,23 @@ function updateAudioSelection(file) {
   }
 }
 
+function selectUploadedAudioFile(file) {
+  if (!file) {
+    updateAudioSelection(null);
+    setSavedSourceAudioStatus("Uploaded audio files are saved to this project for reuse.");
+    queueProjectSettingsSave();
+    return;
+  }
+
+  updateAudioSelection(file);
+  if (audioFileInputNode) {
+    // Allow choosing the same file again later if needed.
+    audioFileInputNode.value = "";
+  }
+  setSavedSourceAudioStatus(`Using uploaded audio: ${file.name}. Saving it to this project...`);
+  queueProjectSettingsSave();
+}
+
 function findSavedSourceAudioByHash(audioHash) {
   if (!audioHash) return null;
   for (const sample of state.sourceAudioSamples) {
@@ -1960,7 +1977,7 @@ function wireDragAndDrop() {
     const dt = event.dataTransfer;
     const file = dt && dt.files && dt.files.length ? dt.files[0] : null;
     if (file) {
-      updateAudioSelection(file);
+      selectUploadedAudioFile(file);
       void saveSelectedAudioFile(file).catch((err) => {
         setSavedSourceAudioStatus(`Could not save uploaded audio: ${String(err)}`, true);
       });
@@ -1969,7 +1986,7 @@ function wireDragAndDrop() {
 
   audioFileInputNode.addEventListener("change", () => {
     const file = audioFileInputNode.files && audioFileInputNode.files.length ? audioFileInputNode.files[0] : null;
-    updateAudioSelection(file || null);
+    selectUploadedAudioFile(file || null);
     if (file) {
       void saveSelectedAudioFile(file).catch((err) => {
         setSavedSourceAudioStatus(`Could not save uploaded audio: ${String(err)}`, true);
