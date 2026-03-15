@@ -549,6 +549,7 @@ class SpeechCleanupService:
                 window_seconds=profile.window_seconds,
                 overlap_seconds=profile.overlap_seconds,
             )
+            segments = _dedupe_caption_segments(segments)
 
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
@@ -568,6 +569,7 @@ class SpeechCleanupService:
                     prompt_text=caption_prompt,
                     cancel_check=cancel_check,
                 )
+                segments = _dedupe_caption_segments(segments)
                 quality_report = _build_caption_quality_report(segments)
 
             output_path = audio_path.with_suffix(f".{caption_format.value}")
@@ -1294,6 +1296,7 @@ def _collect_timing_rows(
             continue
         text = str(seg.text or "").strip()
         segment_probabilities: list[float] = []
+        segment_words: list[str] = []
         segments.append(
             TranscriptSegmentTiming(
                 text=text,
@@ -1309,16 +1312,20 @@ def _collect_timing_rows(
             probability = float(word.probability) if word.probability is not None else None
             if probability is not None:
                 segment_probabilities.append(probability)
+            token_text = str(word.word or "").strip()
+            if token_text:
+                segment_words.append(token_text)
             words.append(
                 TranscriptWordTiming(
-                    text=str(word.word or "").strip(),
+                    text=token_text,
                     start=window_offset_seconds + max(word_start, keep_start_seconds),
                     end=window_offset_seconds + min(word_end, keep_end_seconds),
                     probability=probability,
                 )
             )
+        segment_text = " ".join(segment_words).strip() or text
         segments[-1] = TranscriptSegmentTiming(
-            text=segments[-1].text,
+            text=segment_text,
             start=segments[-1].start,
             end=segments[-1].end,
             average_probability=(sum(segment_probabilities) / len(segment_probabilities)) if segment_probabilities else None,
@@ -1362,6 +1369,86 @@ def _dedupe_transcript_segments(segments: list[TranscriptSegmentTiming]) -> list
             continue
         deduped.append(segment)
     return deduped
+
+
+def _dedupe_caption_segments(segments: list[TranscriptSegmentTiming]) -> list[TranscriptSegmentTiming]:
+    if not segments:
+        return []
+    deduped: list[TranscriptSegmentTiming] = []
+    for segment in sorted(segments, key=lambda item: (item.start, item.end, item.text.lower())):
+        cleaned_text = _clean_caption_text(segment.text)
+        candidate = TranscriptSegmentTiming(
+            text=cleaned_text or segment.text,
+            start=segment.start,
+            end=segment.end,
+            average_probability=segment.average_probability,
+        )
+        if not deduped:
+            deduped.append(candidate)
+            continue
+        previous = deduped[-1]
+        if _caption_segments_look_duplicate(previous, candidate):
+            deduped[-1] = _preferred_caption_segment(previous, candidate)
+            continue
+        deduped.append(candidate)
+    return deduped
+
+
+def _caption_segments_look_duplicate(first: TranscriptSegmentTiming, second: TranscriptSegmentTiming) -> bool:
+    first_text = _clean_caption_text(first.text).lower()
+    second_text = _clean_caption_text(second.text).lower()
+    if not first_text or not second_text:
+        return False
+    overlap_ratio = _segment_overlap(first.start, first.end, second.start, second.end)
+    gap_seconds = max(0.0, second.start - first.end)
+    if overlap_ratio <= 0.0 and gap_seconds > 0.3:
+        return False
+    if first_text == second_text:
+        return overlap_ratio >= 0.08 or gap_seconds <= 0.22
+
+    shorter_text, longer_text = (first_text, second_text) if len(first_text) <= len(second_text) else (second_text, first_text)
+    if len(shorter_text) >= 12 and shorter_text in longer_text:
+        return overlap_ratio >= 0.06 or gap_seconds <= 0.18
+
+    first_tokens = _caption_tokens(first_text)
+    second_tokens = _caption_tokens(second_text)
+    if min(len(first_tokens), len(second_tokens)) < 3:
+        return False
+    shared_ratio = _caption_shared_token_ratio(first_tokens, second_tokens)
+    return shared_ratio >= 0.8 and (overlap_ratio >= 0.08 or gap_seconds <= 0.14)
+
+
+def _preferred_caption_segment(first: TranscriptSegmentTiming, second: TranscriptSegmentTiming) -> TranscriptSegmentTiming:
+    first_text = _clean_caption_text(first.text)
+    second_text = _clean_caption_text(second.text)
+    if len(second_text) > len(first_text) + 4:
+        return second
+    if len(first_text) > len(second_text) + 4:
+        return first
+    first_probability = first.average_probability if first.average_probability is not None else -1.0
+    second_probability = second.average_probability if second.average_probability is not None else -1.0
+    if second_probability > first_probability + 0.03:
+        return second
+    if first_probability > second_probability + 0.03:
+        return first
+    first_duration = max(0.0, first.end - first.start)
+    second_duration = max(0.0, second.end - second.start)
+    if second_duration > first_duration + 0.12:
+        return second
+    return first
+
+
+def _caption_tokens(text: str) -> list[str]:
+    return [token for token in _TOKEN_RE.split(text.lower()) if token]
+
+
+def _caption_shared_token_ratio(first_tokens: list[str], second_tokens: list[str]) -> float:
+    if not first_tokens or not second_tokens:
+        return 0.0
+    first_set = set(first_tokens)
+    second_set = set(second_tokens)
+    shared = len(first_set & second_set)
+    return shared / max(1, min(len(first_set), len(second_set)))
 
 
 def _merge_touching_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:

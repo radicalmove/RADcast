@@ -14,6 +14,7 @@ from radcast.services.speech_cleanup import (
     SpeechCleanupService,
     TranscriptSegmentTiming,
     TranscriptWordTiming,
+    _collect_timing_rows,
     _transcription_eta_seconds,
     _windowed_transcription_eta_seconds,
     _read_pcm16_wav,
@@ -443,6 +444,33 @@ def test_generate_caption_file_writes_vtt(monkeypatch, tmp_path: Path):
     assert "Caption text" in text
 
 
+def test_collect_timing_rows_trims_segment_text_to_kept_words():
+    segment = SimpleNamespace(
+        start=0.0,
+        end=2.0,
+        text="Kia ora and welcome",
+        words=[
+            SimpleNamespace(word="Kia", start=0.0, end=0.28, probability=0.91),
+            SimpleNamespace(word="ora", start=0.31, end=0.58, probability=0.9),
+            SimpleNamespace(word="and", start=0.72, end=0.94, probability=0.89),
+            SimpleNamespace(word="welcome", start=1.25, end=1.72, probability=0.88),
+        ],
+    )
+
+    words, segments = _collect_timing_rows(
+        [segment],
+        window_offset_seconds=10.0,
+        keep_start_seconds=0.65,
+        keep_end_seconds=1.05,
+    )
+
+    assert [word.text for word in words] == ["and"]
+    assert len(segments) == 1
+    assert segments[0].text == "and"
+    assert segments[0].start == 10.65
+    assert segments[0].end == 11.05
+
+
 def test_generate_caption_file_uses_accurate_profile_and_maori_glossary(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
@@ -475,6 +503,36 @@ def test_generate_caption_file_uses_accurate_profile_and_maori_glossary(monkeypa
     assert "tikanga" in str(captured["initial_prompt"])
     assert "whānau" in str(captured["initial_prompt"])
     assert "organisation" in str(captured["initial_prompt"])
+
+
+def test_generate_caption_file_dedupes_overlapping_duplicate_lines(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 3.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda *args, **kwargs: (
+            [],
+            [
+                TranscriptSegmentTiming(text="Kia ora and welcome everyone", start=0.0, end=1.8, average_probability=0.84),
+                TranscriptSegmentTiming(text="Kia ora and welcome everyone", start=1.62, end=2.08, average_probability=0.79),
+                TranscriptSegmentTiming(text="We will start with tikanga.", start=2.15, end=3.2, average_probability=0.88),
+            ],
+        ),
+    )
+
+    result = service.generate_caption_file(audio_path=audio_path, caption_format=CaptionFormat.VTT)
+
+    assert result.segment_count == 2
+    text = result.caption_path.read_text(encoding="utf-8")
+    assert text.count("Kia ora and welcome everyone") == 1
+    assert "We will start with tikanga." in text
 
 
 def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossary(monkeypatch, tmp_path: Path):
