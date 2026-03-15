@@ -39,9 +39,9 @@ def test_ui_homepage_renders():
     assert "RADcast Studio" in response.text
     assert "Create project" in response.text
     assert "Recent projects" in response.text
+    assert "Don't enhance audio" in response.text
     assert "Reduce silence longer than" in response.text
     assert "Remove umms and ahhs" in response.text
-    assert "Filler cleanup strength" in response.text
     assert "Closed captions" in response.text
 
 

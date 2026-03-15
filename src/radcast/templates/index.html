@@ -158,12 +158,12 @@
                   <option value="wav">WAV</option>
                 </select>
               </label>
-              <label class="stack settings-compact-field settings-control-model">
-                <span>Enhancement model</span>
-                <select id="enhancement-model">
-                  <option value="resemble">Loading models...</option>
-                </select>
-                <small id="enhancement-model-status" class="field-note">Checking available enhancement models...</small>
+              <label class="simple-check stack settings-control-model settings-control-enhancement" for="dont-enhance-audio">
+                <span class="checkline">
+                  <input id="dont-enhance-audio" type="checkbox" />
+                  <span>Don't enhance audio</span>
+                </span>
+                <small id="enhancement-model-status" class="field-note">RADcast Optimized enhancement runs by default.</small>
               </label>
               <label class="stack settings-compact-field settings-control-captions">
                 <span>Closed captions</span>
@@ -195,14 +195,7 @@
                   <input id="remove-filler-words" type="checkbox" />
                   <span>Remove umms and ahhs</span>
                 </span>
-                <span class="stack">
-                  <span>Filler cleanup strength</span>
-                  <select id="filler-removal-mode">
-                    <option value="aggressive">Aggressive</option>
-                    <option value="normal">Normal</option>
-                  </select>
-                </span>
-                <small id="speech-cleanup-status" class="field-note">Conservative cleanup of clear filler words between phrases.</small>
+                <small id="speech-cleanup-status" class="field-note">Aggressive cleanup of hesitation runs and clear filler words between phrases.</small>
               </label>
             </div>
           </section>

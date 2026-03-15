@@ -25,13 +25,12 @@ const outputFormatNode = document.getElementById("output-format");
 const captionFormatNode = document.getElementById("caption-format");
 const captionQualityModeNode = document.getElementById("caption-quality-mode");
 const captionFormatStatusNode = document.getElementById("caption-format-status");
-const enhancementModelNode = document.getElementById("enhancement-model");
+const dontEnhanceAudioNode = document.getElementById("dont-enhance-audio");
 const enhancementModelStatusNode = document.getElementById("enhancement-model-status");
 const reduceSilenceEnabledNode = document.getElementById("reduce-silence-enabled");
 const reduceSilenceSecondsNode = document.getElementById("reduce-silence-seconds");
 const reduceSilenceValueNode = document.getElementById("reduce-silence-value");
 const removeFillerWordsNode = document.getElementById("remove-filler-words");
-const fillerRemovalModeNode = document.getElementById("filler-removal-mode");
 const speechCleanupStatusNode = document.getElementById("speech-cleanup-status");
 
 const workerStatusPillNode = document.getElementById("worker-status-pill");
@@ -122,7 +121,7 @@ const state = {
   workerSetupMacosUrl: "",
   sourcePreviewObjectUrl: null,
   jobPollErrorCount: 0,
-  enhancementModels: [],
+  optimizedEnhancementAvailable: null,
   speechCleanupAvailable: true,
   speechCleanupDetail: "",
   shareProjectUsers: [],
@@ -148,10 +147,6 @@ function clampSilenceSeconds(value) {
   const numeric = Number(value ?? 1);
   if (!Number.isFinite(numeric)) return 1;
   return Math.max(0, Math.min(4, numeric));
-}
-
-function normalizeFillerRemovalMode(value) {
-  return String(value || "").trim().toLowerCase() === "normal" ? "normal" : "aggressive";
 }
 
 function normalizeCaptionFormat(value) {
@@ -218,7 +213,9 @@ function normalizeProjectSettings(payload) {
   const outputFormat = cleanOptional(data.output_format);
   const captionFormat = normalizeCaptionFormat(data.caption_format);
   const captionQualityMode = normalizeCaptionQualityMode(data.caption_quality_mode);
-  const enhancementModel = cleanOptional(data.enhancement_model);
+  const enhancementModel = String(cleanOptional(data.enhancement_model) || "").trim().toLowerCase() === "none"
+    ? "none"
+    : "studio_v18";
   const selectedAudioHash = cleanOptional(data.selected_audio_hash);
 
   return {
@@ -226,11 +223,11 @@ function normalizeProjectSettings(payload) {
     output_format: outputFormat === "wav" ? "wav" : "mp3",
     caption_format: captionFormat,
     caption_quality_mode: captionQualityMode,
-    enhancement_model: enhancementModel || "studio_v18",
+    enhancement_model: enhancementModel,
     reduce_silence_enabled: Boolean(data.reduce_silence_enabled),
     max_silence_seconds: clampSilenceSeconds(data.max_silence_seconds),
     remove_filler_words: Boolean(data.remove_filler_words),
-    filler_removal_mode: normalizeFillerRemovalMode(data.filler_removal_mode),
+    filler_removal_mode: "aggressive",
   };
 }
 
@@ -247,13 +244,8 @@ function applyProjectSettingsToControls(settings) {
   if (captionQualityModeNode) {
     captionQualityModeNode.value = normalized.caption_quality_mode;
   }
-  if (enhancementModelNode) {
-    const desiredOption = Array.from(enhancementModelNode.options).find((option) => {
-      return option.value === normalized.enhancement_model && !option.disabled;
-    });
-    if (desiredOption) {
-      enhancementModelNode.value = desiredOption.value;
-    }
+  if (dontEnhanceAudioNode) {
+    dontEnhanceAudioNode.checked = normalized.enhancement_model === "none";
   }
   if (reduceSilenceEnabledNode) {
     reduceSilenceEnabledNode.checked = normalized.reduce_silence_enabled;
@@ -263,9 +255,6 @@ function applyProjectSettingsToControls(settings) {
   }
   if (removeFillerWordsNode) {
     removeFillerWordsNode.checked = normalized.remove_filler_words;
-  }
-  if (fillerRemovalModeNode) {
-    fillerRemovalModeNode.value = normalized.filler_removal_mode;
   }
 
   updateEnhancementModelStatusFromSelection();
@@ -289,7 +278,7 @@ function currentProjectSettingsPayload() {
     reduce_silence_enabled: Boolean(reduceSilenceEnabledNode?.checked),
     max_silence_seconds: reduceSilenceSecondsNode?.value ?? 1,
     remove_filler_words: Boolean(removeFillerWordsNode?.checked),
-    filler_removal_mode: fillerRemovalModeNode?.value,
+    filler_removal_mode: "aggressive",
   });
 }
 
@@ -701,7 +690,7 @@ function formatOutputTime(value) {
 }
 
 function selectedEnhancementModelId() {
-  return cleanOptional(enhancementModelNode?.value) || "studio_v18";
+  return dontEnhanceAudioNode?.checked ? "none" : "studio_v18";
 }
 
 function selectedCaptionFormat() {
@@ -727,7 +716,7 @@ function selectedMaxSilenceSeconds() {
 }
 
 function selectedFillerRemovalMode() {
-  return normalizeFillerRemovalMode(fillerRemovalModeNode?.value);
+  return "aggressive";
 }
 
 function updateSpeechCleanupControls() {
@@ -746,9 +735,6 @@ function updateSpeechCleanupControls() {
   }
   if (removeFillerWordsNode) {
     removeFillerWordsNode.disabled = !available;
-  }
-  if (fillerRemovalModeNode) {
-    fillerRemovalModeNode.disabled = !available || !removeFillerWordsNode?.checked;
   }
   if (reduceSilenceValueNode) {
     reduceSilenceValueNode.textContent = formatSilenceThresholdLabel(reduceSilenceSecondsNode?.value ?? 1);
@@ -805,16 +791,12 @@ function updateSpeechCleanupStatusFromSelection() {
     parts.push(`Speech gaps over ${formatSilenceThresholdLabel(maxSilenceSeconds)} will be shortened.`);
   }
   if (removeFillerWordsNode?.checked) {
-    if (selectedFillerRemovalMode() === "aggressive") {
-      parts.push("Aggressive filler cleanup will remove more hesitation runs and low-confidence umms and ahhs.");
-    } else {
-      parts.push("Normal filler cleanup will remove clearer standalone umms and ahhs.");
-    }
+    parts.push("Aggressive filler cleanup will remove more hesitation runs and low-confidence umms and ahhs.");
   }
   if (!parts.length) {
     parts.push(
       cleanupOnly
-        ? "Speech cleanup can shorten long pauses and remove filler words without changing the enhancement model."
+        ? "Speech cleanup can shorten long pauses and remove filler words without changing the audio quality."
         : (state.speechCleanupDetail || "Speech cleanup can shorten long pauses and remove filler words after enhancement.")
     );
   } else {
@@ -827,88 +809,44 @@ function updateSpeechCleanupStatusFromSelection() {
   setSpeechCleanupStatus(parts.join(" "));
 }
 
-function enhancementModelById(modelId) {
-  return state.enhancementModels.find((item) => item && item.id === modelId) || null;
-}
-
 function updateEnhancementModelStatusFromSelection() {
-  const item = enhancementModelById(selectedEnhancementModelId());
-  if (!item) {
-    setEnhancementModelStatus("Choose the enhancement backend to use.");
+  if (selectedEnhancementModelId() === "none") {
+    setEnhancementModelStatus("Keeps the original audio quality. Silence reduction, filler cleanup, and captions can still run.");
     return;
   }
-  const parts = [String(item.description || "").trim(), String(item.detail || "").trim()].filter(Boolean);
-  setEnhancementModelStatus(parts.join(" "));
+  if (state.optimizedEnhancementAvailable === false) {
+    setEnhancementModelStatus("RADcast Optimized enhancement is enabled by default, but availability could not be confirmed on this machine.");
+    return;
+  }
+  setEnhancementModelStatus("RADcast Optimized enhancement runs by default before any optional silence cleanup, filler cleanup, or captions.");
 }
 
 async function loadEnhancementModels() {
-  if (!enhancementModelNode) return;
-  enhancementModelNode.disabled = true;
-  enhancementModelNode.innerHTML = '<option value="studio_v18">Loading models...</option>';
-  setEnhancementModelStatus("Checking available enhancement models...");
+  setEnhancementModelStatus("RADcast Optimized enhancement runs by default.");
   setSpeechCleanupStatus("Checking speech cleanup availability...");
 
   try {
     const data = await requestJSON("/enhancement/models", "GET");
     const models = Array.isArray(data.models) ? data.models : [];
-    state.enhancementModels = models;
+    const optimizedModel = models.find((item) => item && item.id === "studio_v18");
+    state.optimizedEnhancementAvailable = optimizedModel ? optimizedModel.available !== false : null;
     const speechCleanup = data.speech_cleanup && typeof data.speech_cleanup === "object" ? data.speech_cleanup : {};
     state.speechCleanupAvailable = speechCleanup.available !== false;
     state.speechCleanupDetail = String(speechCleanup.detail || "").trim();
-
-    enhancementModelNode.innerHTML = "";
-    for (const item of models) {
-      const option = document.createElement("option");
-      option.value = String(item.id || "");
-      const unavailable = item.available === false ? " (not available)" : "";
-      const experimental = item.experimental ? " [experimental]" : "";
-      option.textContent = `${String(item.label || item.id || "model")}${experimental}${unavailable}`;
-      option.disabled = item.available === false;
-      enhancementModelNode.appendChild(option);
-    }
-
-    const preferred = String(data.default_model || "studio_v18");
-    const availablePreferred = enhancementModelById(preferred);
-    if (availablePreferred && availablePreferred.available !== false) {
-      enhancementModelNode.value = preferred;
-    } else {
-      const firstEnabled = Array.from(enhancementModelNode.options).find((option) => !option.disabled);
-      if (firstEnabled) enhancementModelNode.value = firstEnabled.value;
-    }
-    if (state.projectSettings) {
-      const desiredModel = normalizeProjectSettings(state.projectSettings).enhancement_model;
-      const desiredOption = Array.from(enhancementModelNode.options).find((option) => {
-        return option.value === desiredModel && !option.disabled;
-      });
-      if (desiredOption) {
-        enhancementModelNode.value = desiredOption.value;
-      }
-    }
     updateEnhancementModelStatusFromSelection();
     updateSpeechCleanupControls();
     updateSpeechCleanupStatusFromSelection();
     updateCaptionFormatStatus();
     updateGenerateButtonLabel();
   } catch (err) {
-    enhancementModelNode.innerHTML = '<option value="studio_v18">RADcast Optimized</option>';
-    state.enhancementModels = [
-      {
-        id: "studio_v18",
-        label: "RADcast Optimized",
-        description: "Fallback option when model discovery fails.",
-        detail: "",
-        available: true,
-      },
-    ];
+    state.optimizedEnhancementAvailable = null;
     state.speechCleanupAvailable = false;
     state.speechCleanupDetail = `Could not load speech cleanup availability: ${String(err)}`;
-    setEnhancementModelStatus(`Could not load enhancement models: ${String(err)}`, true);
+    updateEnhancementModelStatusFromSelection();
     updateSpeechCleanupControls();
     updateSpeechCleanupStatusFromSelection();
     updateCaptionFormatStatus();
     updateGenerateButtonLabel();
-  } finally {
-    enhancementModelNode.disabled = false;
   }
 }
 
@@ -2213,9 +2151,10 @@ async function init() {
       queueProjectSettingsSave();
     });
   }
-  if (enhancementModelNode) {
-    enhancementModelNode.addEventListener("change", () => {
+  if (dontEnhanceAudioNode) {
+    dontEnhanceAudioNode.addEventListener("change", () => {
       updateEnhancementModelStatusFromSelection();
+      updateSpeechCleanupStatusFromSelection();
       updateGenerateButtonLabel();
       queueProjectSettingsSave();
     });
@@ -2237,12 +2176,6 @@ async function init() {
   if (removeFillerWordsNode) {
     removeFillerWordsNode.addEventListener("change", () => {
       updateSpeechCleanupControls();
-      updateSpeechCleanupStatusFromSelection();
-      queueProjectSettingsSave();
-    });
-  }
-  if (fillerRemovalModeNode) {
-    fillerRemovalModeNode.addEventListener("change", () => {
       updateSpeechCleanupStatusFromSelection();
       queueProjectSettingsSave();
     });
