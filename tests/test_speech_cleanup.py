@@ -15,6 +15,7 @@ from radcast.services.speech_cleanup import (
     TranscriptSegmentTiming,
     TranscriptWordTiming,
     _transcription_eta_seconds,
+    _windowed_transcription_eta_seconds,
     _read_pcm16_wav,
 )
 
@@ -475,9 +476,71 @@ def test_generate_caption_file_uses_accurate_profile_and_maori_glossary(monkeypa
     assert "whānau" in str(captured["initial_prompt"])
 
 
+def test_generate_caption_file_writes_review_notes_for_low_confidence_segments(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda *args, **kwargs: (
+            [],
+            [
+                TranscriptSegmentTiming(text="This line should be checked", start=0.0, end=1.4, average_probability=0.39),
+                TranscriptSegmentTiming(text="This line is okay", start=1.6, end=2.2, average_probability=0.83),
+            ],
+        ),
+    )
+
+    result = service.generate_caption_file(audio_path=audio_path, caption_format=CaptionFormat.VTT)
+
+    assert result.review_path is not None
+    assert result.review_path.exists()
+    assert result.quality_report is not None
+    assert result.quality_report.review_recommended is True
+    assert result.quality_report.low_confidence_segment_count == 1
+    review_text = result.review_path.read_text(encoding="utf-8")
+    assert "low-confidence" in review_text.lower()
+    assert "This line should be checked" in review_text
+
+
+def test_estimate_caption_runtime_seconds_adds_cold_start_for_uncached_accurate_model(monkeypatch):
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "_model_cache_ready", lambda model_size: False)
+
+    cold_seconds = service.estimate_caption_runtime_seconds(120, quality_mode=CaptionQualityMode.ACCURATE)
+
+    monkeypatch.setattr(service, "_model_cache_ready", lambda model_size: True)
+    warm_seconds = service.estimate_caption_runtime_seconds(120, quality_mode=CaptionQualityMode.ACCURATE)
+
+    assert cold_seconds > warm_seconds
+
+
 def test_transcription_eta_stays_conservative_until_late_caption_stage():
     assert _transcription_eta_seconds(elapsed_seconds=65, cleanup_eta_seconds=95, coverage=0.86) >= 15
     assert _transcription_eta_seconds(elapsed_seconds=88, cleanup_eta_seconds=95, coverage=0.95) >= 5
+
+
+def test_windowed_transcription_eta_stays_conservative_across_tail():
+    assert _windowed_transcription_eta_seconds(
+        elapsed_seconds=70,
+        cleanup_eta_seconds=140,
+        processed_windows=6,
+        total_windows=12,
+        coverage=0.52,
+    ) >= 40
+    assert _windowed_transcription_eta_seconds(
+        elapsed_seconds=118,
+        cleanup_eta_seconds=140,
+        processed_windows=11,
+        total_windows=12,
+        coverage=0.94,
+    ) >= 8
 
 
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):

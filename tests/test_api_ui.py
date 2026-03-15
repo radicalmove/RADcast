@@ -406,11 +406,13 @@ def test_project_outputs_endpoint_includes_output_card_metadata():
         store = ManifestStore(manifests)
         output_path = project_root / "assets" / "enhanced_audio" / "sample.mp3"
         caption_path = project_root / "assets" / "enhanced_audio" / "sample.vtt"
+        review_path = project_root / "assets" / "enhanced_audio" / "sample.vtt.review.txt"
         input_path = project_root / "assets" / "source_audio" / "sample.wav"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         input_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"fake-mp3")
         caption_path.write_text("WEBVTT\n", encoding="utf-8")
+        review_path.write_text("review me\n", encoding="utf-8")
         input_path.write_bytes(b"fake-wav")
         metadata = OutputMetadata(
             output_file=output_path,
@@ -418,7 +420,12 @@ def test_project_outputs_endpoint_includes_output_card_metadata():
             duration_seconds=4.2,
             output_format=OutputFormat.MP3,
             caption_file=caption_path,
+            caption_review_file=review_path,
             caption_format=CaptionFormat.VTT,
+            caption_review_required=True,
+            caption_average_probability=0.63,
+            caption_low_confidence_segments=3,
+            caption_total_segments=12,
             enhancement_model=EnhancementModel.RESEMBLE,
             audio_tuning_label="Version 7",
             project_id=project_id,
@@ -434,6 +441,9 @@ def test_project_outputs_endpoint_includes_output_card_metadata():
         assert payload["outputs"][0]["version_number"] == 1
         assert payload["outputs"][0]["caption_format"] == "vtt"
         assert payload["outputs"][0]["caption_download_url"].endswith("sample.vtt&download=true")
+        assert payload["outputs"][0]["caption_review_required"] is True
+        assert payload["outputs"][0]["caption_low_confidence_segments"] == 3
+        assert payload["outputs"][0]["caption_review_download_url"].endswith("sample.vtt.review.txt&download=true")
         assert payload["outputs"][0]["folder_path"].endswith("/assets/enhanced_audio")
     finally:
         for path in Path("projects").glob(f"*__{project_id}"):

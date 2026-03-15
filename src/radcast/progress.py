@@ -32,8 +32,8 @@ def estimate_caption_seconds(
 ) -> int:
     safe_duration = max(1.0, float(duration_seconds or 1.0))
     if quality_mode == CaptionQualityMode.FAST:
-        return max(14, min(int(round(8.0 + (safe_duration * 0.55))), 10 * 60))
-    return max(24, min(int(round(16.0 + (safe_duration * 1.05))), 16 * 60))
+        return max(18, min(int(round(12.0 + (safe_duration * 0.62))), 12 * 60))
+    return max(30, min(int(round(24.0 + (safe_duration * 1.22))), 18 * 60))
 
 
 def map_local_stage_progress(stage: str, progress: float, *, reserve_cleanup_band: bool) -> float:
@@ -94,12 +94,12 @@ def map_postprocess_stage_progress(
     normalized = str(stage or "").strip().lower()
     if normalized == "cleanup":
         if caption_requested:
-            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.68, target_end=0.76)
-        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.68, target_end=0.95)
+            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.66, target_end=0.74)
+        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.66, target_end=0.93)
     if normalized == "captions":
         if cleanup_requested:
-            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.76, target_end=0.98)
-        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.68, target_end=0.98)
+            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.74, target_end=0.985)
+        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.64, target_end=0.985)
     return clamped
 
 

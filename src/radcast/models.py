@@ -125,8 +125,13 @@ class OutputMetadata(BaseModel):
     duration_seconds: float
     output_format: OutputFormat
     caption_file: Path | None = None
+    caption_review_file: Path | None = None
     caption_format: CaptionFormat | None = None
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE
+    caption_review_required: bool = False
+    caption_average_probability: float | None = None
+    caption_low_confidence_segments: int = 0
+    caption_total_segments: int = 0
     enhancement_model: EnhancementModel | None = None
     audio_tuning_label: str | None = None
     max_silence_seconds: float | None = None
@@ -236,10 +241,15 @@ class WorkerJobCompleteRequest(BaseModel):
     api_key: str
     output_audio_b64: str = Field(min_length=32)
     caption_b64: str | None = None
+    caption_review_b64: str | None = None
     output_format: OutputFormat
     duration_seconds: float = Field(gt=0)
     cleanup_applied: bool = False
     cleanup_summary: str | None = None
+    caption_review_required: bool = False
+    caption_average_probability: float | None = None
+    caption_low_confidence_segments: int = Field(default=0, ge=0)
+    caption_total_segments: int = Field(default=0, ge=0)
     stage_durations_seconds: dict[str, float] = Field(default_factory=dict)
 
 

@@ -1191,6 +1191,13 @@ button.worker-mini-btn {
   flex: 0 1 auto;
 }
 
+.output-review-note {
+  margin-top: 8px;
+  font-size: 0.82rem;
+  color: var(--uc-red);
+  font-weight: 600;
+}
+
 [data-theme="dark"] .dropzone:hover,
 [data-theme="dark"] .dropzone.drag-over,
 [data-theme="dark"] .dropzone-active {

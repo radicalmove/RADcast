@@ -34,7 +34,6 @@ from radcast.models import (
 )
 from radcast.project import ProjectManager
 from radcast.progress import (
-    estimate_caption_seconds,
     estimate_speech_cleanup_seconds,
     extend_eta_with_postprocess,
     map_postprocess_stage_progress,
@@ -386,6 +385,10 @@ class WorkerManager:
             if req.caption_b64 and payload.caption_format is not None:
                 helper_caption_path = output_path.with_suffix(f".{payload.caption_format.value}")
                 helper_caption_path.write_bytes(base64.b64decode(req.caption_b64.encode("utf-8")))
+            helper_caption_review_path = None
+            if req.caption_review_b64 and payload.caption_format is not None and helper_caption_path is not None:
+                helper_caption_review_path = helper_caption_path.parent / f"{helper_caption_path.name}.review.txt"
+                helper_caption_review_path.write_bytes(base64.b64decode(req.caption_review_b64.encode("utf-8")))
             cleanup_requested = payload.speech_cleanup_requested() and not req.cleanup_applied
             caption_requested = payload.caption_requested() and helper_caption_path is None
             cleanup_band_reserved = payload.speech_cleanup_requested()
@@ -400,7 +403,10 @@ class WorkerManager:
                     else None
                 )
                 caption_eta_seconds = (
-                    estimate_caption_seconds(req.duration_seconds, quality_mode=payload.caption_quality_mode)
+                    speech_cleanup_service.estimate_caption_runtime_seconds(
+                        req.duration_seconds,
+                        quality_mode=payload.caption_quality_mode,
+                    )
                     if caption_requested
                     else None
                 )
@@ -449,6 +455,11 @@ class WorkerManager:
                         "cleanup_already_applied": req.cleanup_applied,
                         "cleanup_summary": req.cleanup_summary,
                         "helper_caption_path": helper_caption_path,
+                        "helper_caption_review_path": helper_caption_review_path,
+                        "helper_caption_review_required": req.caption_review_required,
+                        "helper_caption_average_probability": req.caption_average_probability,
+                        "helper_caption_low_confidence_segments": req.caption_low_confidence_segments,
+                        "helper_caption_total_segments": req.caption_total_segments,
                     },
                     name=f"radcast-worker-finalize-{job_id}",
                     daemon=True,
@@ -466,6 +477,11 @@ class WorkerManager:
                 cleanup_already_applied=req.cleanup_applied,
                 cleanup_summary=req.cleanup_summary,
                 helper_caption_path=helper_caption_path,
+                helper_caption_review_path=helper_caption_review_path,
+                helper_caption_review_required=req.caption_review_required,
+                helper_caption_average_probability=req.caption_average_probability,
+                helper_caption_low_confidence_segments=req.caption_low_confidence_segments,
+                helper_caption_total_segments=req.caption_total_segments,
             )
             return "completed"
         except Exception as exc:
@@ -494,6 +510,11 @@ class WorkerManager:
         cleanup_already_applied: bool = False,
         cleanup_summary: str | None = None,
         helper_caption_path: Path | None = None,
+        helper_caption_review_path: Path | None = None,
+        helper_caption_review_required: bool = False,
+        helper_caption_average_probability: float | None = None,
+        helper_caption_low_confidence_segments: int = 0,
+        helper_caption_total_segments: int = 0,
     ) -> None:
         try:
             paths = self.project_manager.ensure_project(payload.project_id)
@@ -503,7 +524,10 @@ class WorkerManager:
             caption_requested = payload.caption_requested() and helper_caption_path is None
             cleanup_band_reserved = payload.speech_cleanup_requested()
             caption_eta_seconds = (
-                estimate_caption_seconds(duration_seconds, quality_mode=payload.caption_quality_mode)
+                speech_cleanup_service.estimate_caption_runtime_seconds(
+                    duration_seconds,
+                    quality_mode=payload.caption_quality_mode,
+                )
                 if caption_requested
                 else None
             )
@@ -540,7 +564,12 @@ class WorkerManager:
                 final_duration_seconds = cleanup_result.duration_seconds or probe_duration_seconds(output_path)
 
             caption_path = helper_caption_path
+            caption_review_path = helper_caption_review_path
             caption_format = payload.caption_format if helper_caption_path is not None else None
+            caption_review_required = bool(helper_caption_review_required)
+            caption_average_probability = helper_caption_average_probability
+            caption_low_confidence_segments = max(0, int(helper_caption_low_confidence_segments or 0))
+            caption_total_segments = max(0, int(helper_caption_total_segments or 0))
             if caption_requested and payload.caption_format is not None:
                 caption_result = speech_cleanup_service.generate_caption_file(
                     audio_path=output_path,
@@ -562,7 +591,14 @@ class WorkerManager:
                     ),
                 )
                 caption_path = caption_result.caption_path
+                caption_review_path = getattr(caption_result, "review_path", None)
                 caption_format = caption_result.caption_format
+                quality_report = getattr(caption_result, "quality_report", None)
+                if quality_report is not None:
+                    caption_review_required = bool(quality_report.review_recommended)
+                    caption_average_probability = quality_report.average_probability
+                    caption_low_confidence_segments = quality_report.low_confidence_segment_count
+                    caption_total_segments = quality_report.total_segment_count
 
             metadata = OutputMetadata(
                 output_file=output_path,
@@ -570,8 +606,13 @@ class WorkerManager:
                 duration_seconds=final_duration_seconds,
                 output_format=output_format,
                 caption_file=caption_path,
+                caption_review_file=caption_review_path,
                 caption_format=caption_format,
                 caption_quality_mode=payload.caption_quality_mode,
+                caption_review_required=caption_review_required,
+                caption_average_probability=caption_average_probability,
+                caption_low_confidence_segments=caption_low_confidence_segments,
+                caption_total_segments=caption_total_segments,
                 enhancement_model=payload.enhancement_model,
                 audio_tuning_label=current_audio_tuning_label(payload.enhancement_model),
                 max_silence_seconds=payload.max_silence_seconds,
@@ -591,6 +632,8 @@ class WorkerManager:
             if caption_path is not None and caption_format is not None:
                 outputs["caption_path"] = str(caption_path)
                 outputs["caption_format"] = caption_format.value
+            if caption_review_path is not None:
+                outputs["caption_review_path"] = str(caption_review_path)
             self._mark_queue_job(job_id, status="completed")
             self._update_job_manifest(
                 project_id=payload.project_id,

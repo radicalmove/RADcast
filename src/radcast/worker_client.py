@@ -18,7 +18,6 @@ import requests
 from radcast.exceptions import JobCancelledError
 from radcast.models import OutputFormat, WorkerEnhanceEnqueueRequest
 from radcast.progress import (
-    estimate_caption_seconds,
     estimate_speech_cleanup_seconds,
     extend_eta_with_postprocess,
     map_postprocess_stage_progress,
@@ -204,7 +203,7 @@ class WorkerClient:
                             filler_removal_mode=req.filler_removal_mode,
                         )
                     if caption_requested:
-                        caption_eta_seconds = estimate_caption_seconds(
+                        caption_eta_seconds = self.speech_cleanup_service.estimate_caption_runtime_seconds(
                             input_duration_seconds,
                             quality_mode=req.caption_quality_mode,
                         )
@@ -257,6 +256,11 @@ class WorkerClient:
                 started_at = time.monotonic()
                 cleanup_result = None
                 caption_b64 = None
+                caption_review_b64 = None
+                caption_review_required = False
+                caption_average_probability = None
+                caption_low_confidence_segments = 0
+                caption_total_segments = 0
 
                 def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
                     emit_progress(
@@ -387,6 +391,15 @@ class WorkerClient:
                     )
                     stage_durations_seconds["captions"] = round(time.monotonic() - caption_started_at, 3)
                     caption_b64 = base64.b64encode(caption_result.caption_path.read_bytes()).decode("utf-8")
+                    review_path = getattr(caption_result, "review_path", None)
+                    quality_report = getattr(caption_result, "quality_report", None)
+                    if review_path is not None and review_path.exists():
+                        caption_review_b64 = base64.b64encode(review_path.read_bytes()).decode("utf-8")
+                    if quality_report is not None:
+                        caption_review_required = bool(quality_report.review_recommended)
+                        caption_average_probability = quality_report.average_probability
+                        caption_low_confidence_segments = quality_report.low_confidence_segment_count
+                        caption_total_segments = quality_report.total_segment_count
                     emit_progress(
                         map_postprocess_stage_progress(
                             0.99,
@@ -415,10 +428,16 @@ class WorkerClient:
                     "duration_seconds": probe_duration_seconds(final_path),
                     "cleanup_applied": bool(cleanup_result and cleanup_result.applied),
                     "cleanup_summary": cleanup_result.summary_text() if cleanup_result else None,
+                    "caption_review_required": caption_review_required,
+                    "caption_average_probability": caption_average_probability,
+                    "caption_low_confidence_segments": caption_low_confidence_segments,
+                    "caption_total_segments": caption_total_segments,
                     "stage_durations_seconds": stage_durations_seconds,
                 }
                 if caption_b64 is not None:
                     response["caption_b64"] = caption_b64
+                if caption_review_b64 is not None:
+                    response["caption_review_b64"] = caption_review_b64
                 return response
             finally:
                 stop_heartbeat.set()

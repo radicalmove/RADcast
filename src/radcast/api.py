@@ -51,7 +51,6 @@ from radcast.models import (
 )
 from radcast.project import ProjectManager
 from radcast.progress import (
-    estimate_caption_seconds,
     estimate_speech_cleanup_seconds,
     extend_eta_with_postprocess,
     map_local_stage_progress,
@@ -827,7 +826,7 @@ def _run_enhancement_job(
     caption_eta_seconds = None
     if caption_requested:
         try:
-            caption_eta_seconds = estimate_caption_seconds(
+            caption_eta_seconds = speech_cleanup_service.estimate_caption_runtime_seconds(
                 probe_duration_seconds(input_audio_path),
                 quality_mode=caption_quality_mode,
             )
@@ -930,8 +929,29 @@ def _run_enhancement_job(
             duration_seconds=duration_seconds,
             output_format=output_format,
             caption_file=caption_result.caption_path if caption_result else None,
+            caption_review_file=getattr(caption_result, "review_path", None) if caption_result else None,
             caption_format=caption_format,
             caption_quality_mode=caption_quality_mode,
+            caption_review_required=bool(
+                caption_result
+                and getattr(caption_result, "quality_report", None)
+                and getattr(caption_result.quality_report, "review_recommended", False)
+            ),
+            caption_average_probability=(
+                getattr(caption_result.quality_report, "average_probability", None)
+                if caption_result and getattr(caption_result, "quality_report", None)
+                else None
+            ),
+            caption_low_confidence_segments=(
+                getattr(caption_result.quality_report, "low_confidence_segment_count", 0)
+                if caption_result and getattr(caption_result, "quality_report", None)
+                else 0
+            ),
+            caption_total_segments=(
+                getattr(caption_result.quality_report, "total_segment_count", 0)
+                if caption_result and getattr(caption_result, "quality_report", None)
+                else 0
+            ),
             enhancement_model=enhancement_model,
             audio_tuning_label=enhance_service.output_tuning_label_for_model(enhancement_model),
             max_silence_seconds=max_silence_seconds,
@@ -956,6 +976,13 @@ def _run_enhancement_job(
                 f"/projects/{visible_project_id}/artifact?path={encoded_caption}&download=true"
             )
             outputs["caption_format"] = caption_result.caption_format.value
+            review_path = getattr(caption_result, "review_path", None)
+            if review_path is not None:
+                encoded_review = quote(str(review_path), safe="")
+                outputs["caption_review_path"] = str(review_path)
+                outputs["caption_review_download_url"] = (
+                    f"/projects/{visible_project_id}/artifact?path={encoded_review}&download=true"
+                )
         _update_job(
             manifests_dir,
             job_id=job_id,
@@ -1592,12 +1619,17 @@ def list_project_outputs(request: Request, project_id: str):
                     "created_at": str(item.get("created_at") or ""),
                     "duration_seconds": float(item.get("duration_seconds") or 0.0),
                     "caption_format": str(item.get("caption_format") or ""),
+                    "caption_review_required": bool(item.get("caption_review_required")),
+                    "caption_average_probability": item.get("caption_average_probability"),
+                    "caption_low_confidence_segments": int(item.get("caption_low_confidence_segments") or 0),
+                    "caption_total_segments": int(item.get("caption_total_segments") or 0),
                     "enhancement_model": str(item.get("enhancement_model") or ""),
                     "audio_tuning_label": str(item.get("audio_tuning_label") or ""),
                     "version_number": total_outputs - reverse_index,
                     "download_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=true",
                     "play_url": f"/projects/{project_id}/artifact?path={encoded_path}&download=false",
                     "caption_download_url": _artifact_download_url(project_id, item.get("caption_file")),
+                    "caption_review_download_url": _artifact_download_url(project_id, item.get("caption_review_file")),
                 }
             )
         except Exception:  # noqa: BLE001

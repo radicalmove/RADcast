@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import wave
+import math
 from dataclasses import dataclass
 from importlib.util import find_spec
 from pathlib import Path
@@ -100,6 +101,35 @@ class TranscriptSegmentTiming:
     text: str
     start: float
     end: float
+    average_probability: float | None = None
+
+
+@dataclass(frozen=True)
+class CaptionReviewFlag:
+    start: float
+    end: float
+    text: str
+    average_probability: float | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class CaptionQualityReport:
+    average_probability: float | None
+    low_confidence_segment_count: int
+    total_segment_count: int
+    flagged_segments: list[CaptionReviewFlag]
+    review_recommended: bool
+
+    def summary_text(self) -> str:
+        if not self.total_segment_count:
+            return "No caption segments were generated."
+        if not self.review_recommended:
+            return "Caption confidence looked stable."
+        return (
+            f"Caption review suggested: {self.low_confidence_segment_count} "
+            f"low-confidence segment{'s' if self.low_confidence_segment_count != 1 else ''}."
+        )
 
 
 @dataclass(frozen=True)
@@ -125,6 +155,8 @@ class CaptionExportResult:
     caption_path: Path
     caption_format: CaptionFormat
     segment_count: int
+    review_path: Path | None = None
+    quality_report: CaptionQualityReport | None = None
 
 
 @dataclass(frozen=True)
@@ -197,6 +229,20 @@ class SpeechCleanupService:
         self._models: dict[str, object] = {}
         self._model_lock = threading.Lock()
 
+    def estimate_caption_runtime_seconds(
+        self,
+        duration_seconds: float,
+        *,
+        quality_mode: CaptionQualityMode = CaptionQualityMode.ACCURATE,
+    ) -> int:
+        normalized_quality = _normalize_caption_quality_mode(quality_mode)
+        base_seconds = estimate_caption_seconds(duration_seconds, quality_mode=normalized_quality)
+        profile = self._caption_profile_for_mode(normalized_quality)
+        if self._model_cache_ready(profile.model_size):
+            return base_seconds
+        cold_start_seconds = 18 if normalized_quality == CaptionQualityMode.FAST else 95
+        return min(base_seconds + cold_start_seconds, 22 * 60)
+
     @staticmethod
     def cleanup_requested(max_silence_seconds: float | None, remove_filler_words: bool) -> bool:
         return max_silence_seconds is not None or bool(remove_filler_words)
@@ -229,6 +275,27 @@ class SpeechCleanupService:
             base_seconds = 7.0
             per_second = 0.22
         return max(6, min(int(round(base_seconds + (safe_duration * per_second))), 12 * 60))
+
+    def _model_cache_ready(self, model_size: str | None) -> bool:
+        resolved_model_size = str(model_size or "").strip()
+        if not resolved_model_size:
+            return False
+        if resolved_model_size in self._models:
+            return True
+        if "/" in resolved_model_size:
+            owner, repo = resolved_model_size.split("/", 1)
+        else:
+            owner, repo = "Systran", f"faster-whisper-{resolved_model_size}"
+        repo_cache_name = f"models--{owner.replace('/', '--')}--{repo.replace('/', '--')}"
+        cache_roots: list[Path] = []
+        hf_home = os.environ.get("HF_HOME", "").strip()
+        if hf_home:
+            cache_roots.append(Path(hf_home) / "hub")
+        hub_cache = os.environ.get("HUGGINGFACE_HUB_CACHE", "").strip()
+        if hub_cache:
+            cache_roots.append(Path(hub_cache))
+        cache_roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+        return any((root / repo_cache_name).exists() for root in cache_roots)
 
     def cleanup_audio_file(
         self,
@@ -370,10 +437,15 @@ class SpeechCleanupService:
         input_duration = probe_duration_seconds(audio_path)
         quality_mode = _normalize_caption_quality_mode(caption_quality_mode)
         profile = self._caption_profile_for_mode(quality_mode)
-        caption_eta_seconds = estimate_caption_seconds(input_duration, quality_mode=quality_mode)
+        caption_eta_seconds = self.estimate_caption_runtime_seconds(input_duration, quality_mode=quality_mode)
         started_at = time.monotonic()
         if on_stage:
-            on_stage(0.02, "Transcribing speech for captions.", caption_eta_seconds)
+            detail = (
+                f"Loading {profile.model_size} caption model and transcribing speech for captions."
+                if not self._model_cache_ready(profile.model_size)
+                else "Transcribing speech for captions."
+            )
+            on_stage(0.02, detail, caption_eta_seconds)
 
         with tempfile.TemporaryDirectory(prefix="radcast_captions_") as tmp:
             tmp_path = Path(tmp)
@@ -403,6 +475,8 @@ class SpeechCleanupService:
                 raise JobCancelledError("job cancelled")
 
             output_path = audio_path.with_suffix(f".{caption_format.value}")
+            quality_report = _build_caption_quality_report(segments)
+            review_path = None
             if on_stage:
                 on_stage(
                     0.92,
@@ -413,10 +487,15 @@ class SpeechCleanupService:
                 _format_caption_document(segments, caption_format=caption_format),
                 encoding="utf-8",
             )
+            if quality_report.review_recommended:
+                review_path = output_path.parent / f"{output_path.name}.review.txt"
+                review_path.write_text(_format_caption_review_document(quality_report), encoding="utf-8")
         return CaptionExportResult(
             caption_path=output_path,
             caption_format=caption_format,
             segment_count=len([segment for segment in segments if _clean_caption_text(segment.text)]),
+            review_path=review_path,
+            quality_report=quality_report,
         )
 
     def _load_model(self, model_size: str | None = None):
@@ -523,7 +602,18 @@ class SpeechCleanupService:
             start = max(0.0, float(seg.start))
             end = max(start, float(seg.end))
             text = str(seg.text or "").strip()
-            segments.append(TranscriptSegmentTiming(text=text, start=start, end=end))
+            probabilities: list[float] = []
+            for word in seg.words or []:
+                if word.probability is not None:
+                    probabilities.append(float(word.probability))
+            segments.append(
+                TranscriptSegmentTiming(
+                    text=text,
+                    start=start,
+                    end=end,
+                    average_probability=(sum(probabilities) / len(probabilities)) if probabilities else None,
+                )
+            )
             for word in seg.words or []:
                 word_start = max(0.0, float(word.start))
                 word_end = max(word_start, float(word.end))
@@ -592,6 +682,7 @@ class SpeechCleanupService:
             tmp_path = Path(tmp)
             window_start = 0.0
             window_index = 0
+            total_windows = max(1, int(math.ceil(max(total_duration - resolved_window_seconds, 0.0) / step_seconds)) + 1)
             while True:
                 if cancel_check and cancel_check():
                     raise JobCancelledError("job cancelled")
@@ -625,12 +716,15 @@ class SpeechCleanupService:
                 if on_stage:
                     coverage = min(1.0, window_end / max(total_duration, 0.01))
                     progress = min(0.68, 0.08 + (coverage * 0.6))
+                    processed_windows = min(total_windows, window_index + 1)
                     on_stage(
                         progress,
                         transcribe_detail,
-                        _transcription_eta_seconds(
+                        _windowed_transcription_eta_seconds(
                             elapsed_seconds=max(0.0, time.monotonic() - started_at),
                             cleanup_eta_seconds=cleanup_eta_seconds,
+                            processed_windows=processed_windows,
+                            total_windows=total_windows,
                             coverage=coverage,
                         ),
                     )
@@ -907,6 +1001,44 @@ def _transcription_eta_seconds(*, elapsed_seconds: float, cleanup_eta_seconds: i
     return max(floor_seconds, int(round(max(1.0, remaining))))
 
 
+def _windowed_transcription_eta_seconds(
+    *,
+    elapsed_seconds: float,
+    cleanup_eta_seconds: int,
+    processed_windows: int,
+    total_windows: int,
+    coverage: float,
+) -> int:
+    safe_processed_windows = max(1, int(processed_windows))
+    safe_total_windows = max(safe_processed_windows, int(total_windows))
+    remaining_windows = max(0, safe_total_windows - safe_processed_windows)
+    average_window_seconds = max(1.0, float(elapsed_seconds) / safe_processed_windows)
+    window_projection = remaining_windows * average_window_seconds
+    coverage_projection = _transcription_eta_seconds(
+        elapsed_seconds=elapsed_seconds,
+        cleanup_eta_seconds=cleanup_eta_seconds,
+        coverage=coverage,
+    )
+    remaining = max(window_projection, coverage_projection * 0.95)
+    progress_ratio = safe_processed_windows / safe_total_windows
+    if progress_ratio < 0.3:
+        remaining *= 1.22
+    elif progress_ratio < 0.55:
+        remaining *= 1.14
+    elif progress_ratio < 0.8:
+        remaining *= 1.08
+    remaining += 6.0
+    if remaining_windows >= 6:
+        floor_seconds = 24
+    elif remaining_windows >= 3:
+        floor_seconds = 14
+    elif remaining_windows >= 1:
+        floor_seconds = 8
+    else:
+        floor_seconds = 3
+    return max(floor_seconds, int(round(max(1.0, remaining))))
+
+
 def _collect_timing_rows(
     transcribed_segments: list[object],
     *,
@@ -922,6 +1054,7 @@ def _collect_timing_rows(
         if seg_end <= keep_start_seconds or seg_start >= keep_end_seconds:
             continue
         text = str(seg.text or "").strip()
+        segment_probabilities: list[float] = []
         segments.append(
             TranscriptSegmentTiming(
                 text=text,
@@ -934,14 +1067,23 @@ def _collect_timing_rows(
             word_end = max(word_start, float(word.end))
             if word_end <= keep_start_seconds or word_start >= keep_end_seconds:
                 continue
+            probability = float(word.probability) if word.probability is not None else None
+            if probability is not None:
+                segment_probabilities.append(probability)
             words.append(
                 TranscriptWordTiming(
                     text=str(word.word or "").strip(),
                     start=window_offset_seconds + max(word_start, keep_start_seconds),
                     end=window_offset_seconds + min(word_end, keep_end_seconds),
-                    probability=float(word.probability) if word.probability is not None else None,
+                    probability=probability,
                 )
             )
+        segments[-1] = TranscriptSegmentTiming(
+            text=segments[-1].text,
+            start=segments[-1].start,
+            end=segments[-1].end,
+            average_probability=(sum(segment_probabilities) / len(segment_probabilities)) if segment_probabilities else None,
+        )
     return words, segments
 
 
@@ -1112,6 +1254,87 @@ def _splice_waveform(
         blended = (result[-overlap:] * fade_out) + (chunk[:overlap] * fade_in)
         result = np.concatenate([result[:-overlap], blended, chunk[overlap:]], axis=0)
     return result
+
+
+def _build_caption_quality_report(segments: list[TranscriptSegmentTiming]) -> CaptionQualityReport:
+    clean_segments = [segment for segment in segments if _clean_caption_text(segment.text)]
+    probabilities = [segment.average_probability for segment in clean_segments if segment.average_probability is not None]
+    average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
+    flagged_segments: list[CaptionReviewFlag] = []
+    for segment in clean_segments:
+        text = _clean_caption_text(segment.text)
+        reason = _caption_review_reason(segment, average_probability=average_probability)
+        if not reason:
+            continue
+        flagged_segments.append(
+            CaptionReviewFlag(
+                start=segment.start,
+                end=segment.end,
+                text=text,
+                average_probability=segment.average_probability,
+                reason=reason,
+            )
+        )
+    low_confidence_segment_count = len(flagged_segments)
+    review_recommended = low_confidence_segment_count > 0 or (
+        average_probability is not None and average_probability < 0.72 and len(clean_segments) >= 4
+    )
+    return CaptionQualityReport(
+        average_probability=average_probability,
+        low_confidence_segment_count=low_confidence_segment_count,
+        total_segment_count=len(clean_segments),
+        flagged_segments=flagged_segments[:24],
+        review_recommended=review_recommended,
+    )
+
+
+def _caption_review_reason(
+    segment: TranscriptSegmentTiming,
+    *,
+    average_probability: float | None,
+) -> str | None:
+    text = _clean_caption_text(segment.text)
+    if not text:
+        return None
+    probability = segment.average_probability
+    if probability is None:
+        return "No word confidence data was available for this caption line."
+    low_threshold = 0.45
+    warn_threshold = 0.58
+    if average_probability is not None:
+        low_threshold = min(low_threshold, max(0.34, average_probability - 0.22))
+        warn_threshold = min(warn_threshold, max(0.46, average_probability - 0.14))
+    token_count = len(text.split())
+    if probability < low_threshold:
+        return "Very low confidence caption line."
+    if probability < warn_threshold and token_count >= 5:
+        return "Low confidence on a longer caption line."
+    return None
+
+
+def _format_caption_review_document(report: CaptionQualityReport) -> str:
+    lines = ["RADcast Caption Review", ""]
+    if report.average_probability is not None:
+        lines.append(f"Average word confidence: {report.average_probability:.0%}")
+    lines.append(f"Low-confidence caption lines: {report.low_confidence_segment_count}")
+    lines.append(f"Total caption lines: {report.total_segment_count}")
+    lines.append("")
+    if not report.flagged_segments:
+        lines.append("No specific caption lines were flagged.")
+        return "\n".join(lines).rstrip() + "\n"
+    lines.append("Review these timestamp ranges:")
+    lines.append("")
+    for flag in report.flagged_segments:
+        start_text = _format_caption_timestamp(flag.start, separator=".")
+        end_text = _format_caption_timestamp(max(flag.end, flag.start + 0.2), separator=".")
+        confidence_text = (
+            f"{flag.average_probability:.0%}" if flag.average_probability is not None else "unknown"
+        )
+        lines.append(f"{start_text} --> {end_text} | confidence {confidence_text}")
+        lines.append(f"Reason: {flag.reason}")
+        lines.append(flag.text)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption_format: CaptionFormat) -> str:

@@ -43,7 +43,7 @@ def test_cleanup_stage_progress_maps_into_reserved_tail():
     start = map_cleanup_stage_progress(0.0)
     end = map_cleanup_stage_progress(1.0)
 
-    assert 0.68 <= start < end <= 0.95
+    assert 0.66 <= start < end <= 0.93
 
 
 def test_eta_extension_adds_cleanup_reserve():
@@ -56,12 +56,12 @@ def test_caption_progress_uses_tail_after_cleanup():
     caption_start = map_postprocess_stage_progress(0.0, stage="captions", cleanup_requested=True, caption_requested=True)
 
     assert cleanup_end <= caption_start
-    assert caption_start >= 0.76
+    assert caption_start >= 0.74
 
 
 def test_postprocess_eta_extension_adds_cleanup_and_caption_time():
     assert estimate_caption_seconds(30, quality_mode=CaptionQualityMode.FAST) >= 20
-    assert estimate_caption_seconds(120, quality_mode=CaptionQualityMode.ACCURATE) >= 120
+    assert estimate_caption_seconds(120, quality_mode=CaptionQualityMode.ACCURATE) >= 150
     assert estimate_caption_seconds(120, quality_mode=CaptionQualityMode.ACCURATE) > estimate_caption_seconds(
         120,
         quality_mode=CaptionQualityMode.FAST,

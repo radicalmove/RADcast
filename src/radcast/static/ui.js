@@ -770,8 +770,8 @@ function updateCaptionFormatStatus() {
   const qualityMode = selectedCaptionQualityMode();
   const qualityHint =
     qualityMode === "fast"
-      ? "Fast captions use the lighter transcription path."
-      : "Accurate captions use a larger transcription pass and a te reo Maori glossary.";
+      ? "Fast captions use the lighter transcription path and still flag low-confidence lines for review."
+      : "Accurate captions use a larger transcription pass, a te reo Maori glossary, and flag low-confidence lines for review.";
   if (format === "srt") {
     captionFormatStatusNode.textContent = `Generate timestamped SRT captions from the final audio for Echo360 upload. ${qualityHint}`;
     return;
@@ -1847,6 +1847,7 @@ async function loadOutputs() {
       const captionFormat = String(item.caption_format || "").trim().toLowerCase();
       const versionNumber = Number(item.version_number || 0);
       const summaryLabel = formatOutputSummary(item);
+      const reviewNote = formatCaptionReviewNote(item);
 
       if (item.download_url) {
         if (playUrl) {
@@ -1863,6 +1864,9 @@ async function loadOutputs() {
         const captionLabel = captionFormat === "vtt" ? "Save VTT captions" : "Save SRT captions";
         actions.push(`<a href="${escapeHtml(item.caption_download_url)}" download>${escapeHtml(captionLabel)}</a>`);
       }
+      if (item.caption_review_download_url) {
+        actions.push(`<a href="${escapeHtml(item.caption_review_download_url)}" download>Save caption review</a>`);
+      }
 
       return `
         <li class="output-item">
@@ -1874,6 +1878,7 @@ async function loadOutputs() {
             ${summaryLabel ? `<span class="output-summary">${escapeHtml(summaryLabel)}</span>` : ""}
           </div>
           <div class="output-actions">${actions.join(" ")}</div>
+          ${reviewNote ? `<div class="output-review-note">${escapeHtml(reviewNote)}</div>` : ""}
           ${
             playUrl
               ? `<div class="output-audio-player" data-output-id="${escapeHtml(outputId)}" hidden>
@@ -1907,6 +1912,24 @@ function formatOutputSummary(item) {
     parts.push(timeText);
   }
   return parts.join(" | ");
+}
+
+function formatCaptionReviewNote(item) {
+  if (!item || !item.caption_review_required) return "";
+  const lowConfidenceCount = Number(item.caption_low_confidence_segments || 0);
+  const averageProbability = Number(item.caption_average_probability);
+  if (lowConfidenceCount > 0 && Number.isFinite(averageProbability) && averageProbability > 0) {
+    return `Caption review suggested: ${lowConfidenceCount} low-confidence lines (${Math.round(
+      averageProbability * 100
+    )}% average confidence).`;
+  }
+  if (lowConfidenceCount > 0) {
+    return `Caption review suggested: ${lowConfidenceCount} low-confidence lines.`;
+  }
+  if (Number.isFinite(averageProbability) && averageProbability > 0) {
+    return `Caption review suggested (${Math.round(averageProbability * 100)}% average confidence).`;
+  }
+  return "Caption review suggested.";
 }
 
 function toggleOutputAudioPlayer(button) {
