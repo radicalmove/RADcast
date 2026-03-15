@@ -19,7 +19,7 @@ import numpy as np
 
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
 from radcast.models import CaptionFormat, CaptionQualityMode, FillerRemovalMode, OutputFormat
-from radcast.progress import estimate_caption_seconds
+from radcast.progress import estimate_caption_seconds, estimate_speech_cleanup_seconds
 from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
 
 CleanupStageCallback = Callable[[float, str, int | None], None]
@@ -41,8 +41,8 @@ _FILLER_MAX_DURATION_SECONDS = 1.35
 _CUT_CROSSFADE_SECONDS = 0.012
 _TRANSCRIBE_PROGRESS_MIN_INTERVAL_SECONDS = 0.8
 _TOKEN_RE = re.compile(r"[^a-z']+")
-_AGGRESSIVE_TRANSCRIBE_WINDOW_SECONDS = 4.0
-_AGGRESSIVE_TRANSCRIBE_OVERLAP_SECONDS = 1.0
+_AGGRESSIVE_TRANSCRIBE_WINDOW_SECONDS = 5.0
+_AGGRESSIVE_TRANSCRIBE_OVERLAP_SECONDS = 1.25
 _CAPTION_FAST_WINDOW_SECONDS = 8.0
 _CAPTION_FAST_OVERLAP_SECONDS = 1.5
 _CAPTION_ACCURATE_WINDOW_SECONDS = 12.0
@@ -294,6 +294,7 @@ class SpeechCleanupService:
         self.caption_reviewed_model_size = os.environ.get("RADCAST_CAPTION_REVIEWED_MODEL", "large-v3").strip() or "large-v3"
         self.device = os.environ.get("RADCAST_SPEECH_CLEANUP_DEVICE", "auto").strip() or "auto"
         self.compute_type = os.environ.get("RADCAST_SPEECH_CLEANUP_COMPUTE_TYPE", "int8").strip() or "int8"
+        self.transcribe_language = os.environ.get("RADCAST_SPEECH_CLEANUP_LANGUAGE", "en").strip().lower() or "en"
         self.beam_size = max(1, int(os.environ.get("RADCAST_SPEECH_CLEANUP_BEAM_SIZE", "3")))
         self.caption_fast_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_FAST_BEAM_SIZE", str(self.beam_size))))
         self.caption_accurate_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_ACCURATE_BEAM_SIZE", "5")))
@@ -339,19 +340,11 @@ class SpeechCleanupService:
         remove_filler_words: bool,
         filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE,
     ) -> int:
-        safe_duration = max(1.0, float(duration_seconds))
-        normalized_mode = _normalize_filler_mode(filler_removal_mode)
-        if remove_filler_words:
-            if normalized_mode == FillerRemovalMode.AGGRESSIVE:
-                base_seconds = 18.0
-                per_second = 0.55
-            else:
-                base_seconds = 11.0
-                per_second = 0.32
-        else:
-            base_seconds = 7.0
-            per_second = 0.22
-        return max(6, min(int(round(base_seconds + (safe_duration * per_second))), 12 * 60))
+        return estimate_speech_cleanup_seconds(
+            duration_seconds,
+            remove_filler_words=remove_filler_words,
+            filler_removal_mode=_normalize_filler_mode(filler_removal_mode),
+        )
 
     def _model_cache_ready(self, model_size: str | None) -> bool:
         resolved_model_size = str(model_size or "").strip()
@@ -635,6 +628,8 @@ class SpeechCleanupService:
             prompt_text = _AGGRESSIVE_FILLER_PROMPT
         if prompt_text:
             kwargs["initial_prompt"] = prompt_text
+        if self.transcribe_language and self.transcribe_language != "auto":
+            kwargs["language"] = self.transcribe_language
         segment_iter, _info = model.transcribe(str(audio_path), **kwargs)
         return segment_iter
 

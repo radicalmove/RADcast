@@ -1568,7 +1568,11 @@ function updateProgressVisuals() {
 function progressAnimationTick() {
   if (state.displayProgress < state.actualProgress) {
     const delta = state.actualProgress - state.displayProgress;
-    state.displayProgress = Math.min(state.actualProgress, state.displayProgress + Math.max(0.2, Math.min(0.9, delta * 0.12)));
+    const flexibleStage = flexibleEtaStages.has(state.currentStage);
+    const increment = flexibleStage
+      ? Math.max(0.04, Math.min(0.18, delta * 0.012))
+      : Math.max(0.2, Math.min(0.9, delta * 0.12));
+    state.displayProgress = Math.min(state.actualProgress, state.displayProgress + increment);
   } else if (state.displayProgress > state.actualProgress) {
     state.displayProgress = Math.max(state.actualProgress, state.displayProgress - 0.4);
   }

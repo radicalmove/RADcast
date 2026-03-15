@@ -700,13 +700,17 @@ class WorkerManager:
     @staticmethod
     def _progress_stage_for_update(stage: str | None, detail: str | None) -> str:
         normalized = str(stage or "").strip().lower()
-        if normalized in {"queued_remote", "worker_running", "prepare", "enhance", "finalize"}:
+        if normalized in {"queued_remote", "worker_running", "prepare", "enhance", "cleanup", "captions", "finalize"}:
             return normalized
         lower_detail = str(detail or "").strip().lower()
         if lower_detail.startswith("loading enhancement runtime"):
             return "prepare"
         if lower_detail.startswith("enhancing audio"):
             return "enhance"
+        if lower_detail.startswith("transcribing speech timing for cleanup") or lower_detail.startswith("applying speech cleanup"):
+            return "cleanup"
+        if lower_detail.startswith("transcribing speech for captions") or lower_detail.startswith("generating captions"):
+            return "captions"
         if lower_detail.startswith("saving enhanced audio"):
             return "finalize"
         return "worker_running"

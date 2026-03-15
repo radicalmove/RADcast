@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import math
+
 from radcast.models import CaptionQualityMode, FillerRemovalMode
+
+_AGGRESSIVE_CLEANUP_WINDOW_SECONDS = 5.0
+_AGGRESSIVE_CLEANUP_OVERLAP_SECONDS = 1.25
 
 
 def estimate_speech_cleanup_seconds(
@@ -14,8 +19,10 @@ def estimate_speech_cleanup_seconds(
     safe_duration = max(1.0, float(duration_seconds or 1.0))
     if remove_filler_words:
         if filler_removal_mode == FillerRemovalMode.AGGRESSIVE:
-            base_seconds = 18.0
-            per_second = 0.55
+            step_seconds = max(0.5, _AGGRESSIVE_CLEANUP_WINDOW_SECONDS - _AGGRESSIVE_CLEANUP_OVERLAP_SECONDS)
+            total_windows = max(1, int(math.ceil(max(safe_duration - _AGGRESSIVE_CLEANUP_WINDOW_SECONDS, 0.0) / step_seconds)) + 1)
+            projected = 22.0 + (total_windows * 9.5) + (safe_duration * 0.18)
+            return max(40, min(int(round(projected)), 20 * 60))
         else:
             base_seconds = 11.0
             per_second = 0.32
@@ -44,11 +51,11 @@ def map_local_stage_progress(stage: str, progress: float, *, reserve_cleanup_ban
     if not reserve_cleanup_band:
         return clamped
     if normalized == "prepare":
-        return _remap(clamped, source_start=0.08, source_end=0.22, target_start=0.08, target_end=0.16)
+        return _remap(clamped, source_start=0.08, source_end=0.22, target_start=0.08, target_end=0.14)
     if normalized == "enhance":
-        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.16, target_end=0.64)
+        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.14, target_end=0.54)
     if normalized == "finalize":
-        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.64, target_end=0.68)
+        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.54, target_end=0.58)
     return clamped
 
 
@@ -66,9 +73,9 @@ def map_worker_stage_progress(stage: str, progress: float, *, reserve_cleanup_ba
     if normalized == "prepare":
         return _remap(clamped, source_start=0.08, source_end=0.22, target_start=0.14, target_end=0.18)
     if normalized == "enhance":
-        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.18, target_end=0.64)
+        return _remap(clamped, source_start=0.2, source_end=0.88, target_start=0.18, target_end=0.54)
     if normalized == "finalize":
-        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.64, target_end=0.68)
+        return _remap(clamped, source_start=0.9, source_end=0.96, target_start=0.54, target_end=0.58)
     return clamped
 
 
@@ -96,12 +103,12 @@ def map_postprocess_stage_progress(
     normalized = str(stage or "").strip().lower()
     if normalized == "cleanup":
         if caption_requested:
-            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.66, target_end=0.74)
-        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.66, target_end=0.93)
+            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.58, target_end=0.72)
+        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.58, target_end=0.93)
     if normalized == "captions":
         if cleanup_requested:
-            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.74, target_end=0.985)
-        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.64, target_end=0.985)
+            return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.72, target_end=0.985)
+        return _remap(clamped, source_start=0.0, source_end=1.0, target_start=0.58, target_end=0.985)
     return clamped
 
 

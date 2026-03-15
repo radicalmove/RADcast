@@ -119,6 +119,84 @@ def test_worker_queue_round_trip_completes_job(monkeypatch):
             shutil.rmtree(project_root)
 
 
+def test_worker_progress_preserves_helper_cleanup_stage(monkeypatch):
+    client = TestClient(app)
+    project_id = f"radcast-worker-{uuid.uuid4().hex[:8]}"
+    sample_b64 = base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8")
+    from radcast import api as api_module
+
+    monkeypatch.setattr(api_module.worker_manager, "list_workers", lambda: [])
+    original_is_model_available = api_module.enhance_service.is_model_available
+    api_module.enhance_service.is_model_available = lambda _model: True
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        invite = client.post("/workers/invite", json={"capabilities": ["enhance"]})
+        assert invite.status_code == 200
+        token = invite.json()["invite_token"]
+
+        register = client.post(
+            "/workers/register",
+            json={
+                "invite_token": token,
+                "worker_name": "test-worker",
+                "capabilities": ["enhance"],
+            },
+        )
+        assert register.status_code == 200
+        worker_id = register.json()["worker_id"]
+        api_key = register.json()["api_key"]
+
+        queued = client.post(
+            "/enhance/simple",
+            json={
+                "project_id": project_id,
+                "input_audio_b64": sample_b64,
+                "input_audio_filename": "lecture.wav",
+                "output_format": "mp3",
+                "enhancement_model": "none",
+                "max_silence_seconds": 1.0,
+                "remove_filler_words": True,
+            },
+        )
+        assert queued.status_code == 200
+        job_id = queued.json()["job_id"]
+
+        pull = client.post("/workers/pull", json={"worker_id": worker_id, "api_key": api_key})
+        assert pull.status_code == 200
+
+        progress = client.post(
+            f"/workers/jobs/{job_id}/progress",
+            json={
+                "worker_id": worker_id,
+                "api_key": api_key,
+                "progress": 0.72,
+                "stage": "cleanup",
+                "detail": "Transcribing speech timing for cleanup. On your local helper device.",
+                "eta_seconds": 244,
+            },
+        )
+        assert progress.status_code == 200
+        assert progress.json()["status"] == "running"
+
+        running = client.get(f"/jobs/{job_id}", params={"project_id": project_id})
+        assert running.status_code == 200
+        running_payload = running.json()
+        assert running_payload["status"] == "running"
+        assert running_payload["stage"] == "cleanup"
+        assert running_payload["eta_seconds"] == 244
+    finally:
+        api_module.enhance_service.is_model_available = original_is_model_available
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        project_root = Path("projects") / project_id
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_worker_completion_applies_server_side_speech_cleanup(monkeypatch):
     client = TestClient(app)
     project_id = f"radcast-worker-{uuid.uuid4().hex[:8]}"
@@ -443,7 +521,7 @@ def test_worker_progress_is_ignored_after_server_caption_finalization_starts(mon
 
         in_progress = client.get(f"/jobs/{job_id}", params={"project_id": project_id}).json()
         assert in_progress["stage"] == "captions"
-        assert in_progress["progress"] == pytest.approx(0.74)
+        assert in_progress["progress"] == pytest.approx(0.72)
 
         stale_progress = client.post(
             f"/workers/jobs/{job_id}/progress",
@@ -461,7 +539,7 @@ def test_worker_progress_is_ignored_after_server_caption_finalization_starts(mon
 
         after_stale_update = client.get(f"/jobs/{job_id}", params={"project_id": project_id}).json()
         assert after_stale_update["stage"] == "captions"
-        assert after_stale_update["progress"] == pytest.approx(0.74)
+        assert after_stale_update["progress"] == pytest.approx(0.72)
 
         release.set()
         for _ in range(20):

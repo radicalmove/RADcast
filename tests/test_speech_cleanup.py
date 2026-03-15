@@ -355,7 +355,7 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
                     words=[SimpleNamespace(start=1.2, end=1.45, word="um", probability=0.02)],
                 )
             ]
-        if clip_path.name == "window_003000.wav":
+        if clip_path.name == "window_003750.wav":
             return [
                 SimpleNamespace(
                     start=1.1,
@@ -379,11 +379,11 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
     )
 
     assert ("window_000000.wav", True) in calls
-    assert ("window_003000.wav", True) in calls
+    assert ("window_003750.wav", True) in calls
     assert all(preserve_fillers for _, preserve_fillers in calls)
     assert [word.text for word in words] == ["um", "uh"]
     assert words[0].start == 1.2
-    assert words[1].start == 4.1
+    assert words[1].start == 4.85
 
 
 def test_generate_caption_file_writes_srt(monkeypatch, tmp_path: Path):
