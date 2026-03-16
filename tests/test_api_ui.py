@@ -60,6 +60,7 @@ def test_worker_invite_and_status_endpoints_render(monkeypatch):
     assert "torchcodec==0.10.0" in payload["install_command_macos"]
     assert "resemble-enhance" in payload["install_command_macos"]
     assert "radcast.worker_setup" in payload["install_command_macos"]
+    assert payload["install_command_macos"].index("resemble-enhance") < payload["install_command_macos"].index("torch==2.10.0")
     assert payload["windows_installer_url"].startswith("http://testserver/workers/bootstrap/windows.cmd?")
 
     status = client.get("/workers/status")

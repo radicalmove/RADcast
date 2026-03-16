@@ -1794,8 +1794,8 @@ def worker_bootstrap_macos_command(request: Request, invite_token: str = Query(.
         "git lfs install\n"
         "\"$BREW_PREFIX/bin/python3.11\" -m venv \"$HOME/.radcast/venv\"\n"
         "\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade pip\n"
-        f"\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade {MACOS_HELPER_TORCH_INSTALL}\n"
         f"\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade \"{install_spec}\" resemble-enhance deepfilternet\n"
+        f"\"$HOME/.radcast/venv/bin/python\" -m pip install --upgrade {MACOS_HELPER_TORCH_INSTALL}\n"
         f"\"$HOME/.radcast/venv/bin/python\" -m radcast.worker_setup --server-url {base_url} --invite-token {quote(invite_token, safe='')} --platform macos\n"
         "echo \"Setup complete. You can close this window.\"\n"
     )
@@ -1858,8 +1858,8 @@ def _macos_worker_install_command(base_url: str, token: str) -> str:
         'git lfs install; '
         '"$BREW_PREFIX/bin/python3.11" -m venv "$HOME/.radcast/venv"; '
         '"$HOME/.radcast/venv/bin/python" -m pip install --upgrade pip; '
-        f'"$HOME/.radcast/venv/bin/python" -m pip install --upgrade {MACOS_HELPER_TORCH_INSTALL}; '
         f'"$HOME/.radcast/venv/bin/python" -m pip install --upgrade "{install_spec}" resemble-enhance deepfilternet; '
+        f'"$HOME/.radcast/venv/bin/python" -m pip install --upgrade {MACOS_HELPER_TORCH_INSTALL}; '
         f'"$HOME/.radcast/venv/bin/python" -m radcast.worker_setup --server-url {safe_base_url} --invite-token {safe_token} --platform macos'
         "'"
     )
