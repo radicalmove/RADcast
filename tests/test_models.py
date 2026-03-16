@@ -16,6 +16,7 @@ from radcast.services.enhance import (
     _estimate_timeout_seconds,
     _resolve_command,
     _resolve_enhance_device,
+    _tail_backend_log,
 )
 
 
@@ -188,6 +189,12 @@ def test_estimate_timeout_seconds_gives_studio_jobs_extra_headroom():
     assert timeout > 120
 
 
+def test_tail_backend_log_returns_recent_text(tmp_path: Path):
+    log_path = tmp_path / "backend.log"
+    log_path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    assert _tail_backend_log(log_path, max_chars=9) == "eta\ngamma"
+
+
 def test_resolve_enhance_device_prefers_configured_value():
     assert _resolve_enhance_device("mps") == "mps"
 
@@ -230,6 +237,9 @@ def test_enhance_service_applies_prefilter_before_enhancement(
         returncode = 0
 
         def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
             return 0
 
         def communicate(self):
@@ -309,6 +319,9 @@ def test_studio_model_uses_studio_postfilter(monkeypatch: pytest.MonkeyPatch, tm
         def poll(self):
             return 0
 
+        def wait(self, timeout=None):
+            return 0
+
         def communicate(self):
             return ("", "")
 
@@ -354,6 +367,9 @@ def test_studio_v18_model_uses_studio_v18_postfilter(monkeypatch: pytest.MonkeyP
         returncode = 0
 
         def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
             return 0
 
         def communicate(self):

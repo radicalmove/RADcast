@@ -227,49 +227,48 @@ class EnhanceService:
             )
             timeout_seconds = _estimate_timeout_seconds(expected_runtime_seconds, enhancement_model=model)
             on_stage("enhance", 0.2, initial_detail, None)
-            try:
-                proc = subprocess.Popen(
-                    ["/bin/bash", "-lc", command] if use_shell else command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-            except FileNotFoundError as exc:
-                raise EnhancementRuntimeError(self._missing_command_message(model)) from exc
+            backend_log_path = tmp_path / f"{model.value}.backend.log"
+            with backend_log_path.open("w+", encoding="utf-8") as backend_log:
+                try:
+                    proc = subprocess.Popen(
+                        ["/bin/bash", "-lc", command] if use_shell else command,
+                        stdout=backend_log,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                except FileNotFoundError as exc:
+                    raise EnhancementRuntimeError(self._missing_command_message(model)) from exc
 
-            with self._lock:
-                self._processes[job_id] = proc
-
-            started = time.monotonic()
-            try:
-                while proc.poll() is None:
-                    if cancel_check():
-                        proc.terminate()
-                        raise JobCancelledError("job cancelled")
-                    elapsed = time.monotonic() - started
-                    if elapsed >= timeout_seconds:
-                        proc.terminate()
-                        try:
-                            proc.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                            proc.wait(timeout=5)
-                        raise EnhancementRuntimeError(
-                            f"{MODEL_LABELS[model]} timed out after {int(round(elapsed))}s on the helper device."
-                        )
-                    progress = _estimate_progress(elapsed, expected_runtime_seconds)
-                    eta_seconds = _estimate_remaining_seconds(elapsed, expected_runtime_seconds)
-                    detail_text = _progress_detail_for_model(model, elapsed, expected_runtime_seconds, eta_seconds)
-                    on_stage("enhance", progress, detail_text, eta_seconds)
-                    time.sleep(0.6)
-
-                stdout, stderr = proc.communicate()
-                if proc.returncode != 0:
-                    msg = (stderr or stdout or "Enhancement process failed").strip()
-                    raise EnhancementRuntimeError(msg[-2000:])
-            finally:
                 with self._lock:
-                    self._processes.pop(job_id, None)
+                    self._processes[job_id] = proc
+
+                started = time.monotonic()
+                try:
+                    while proc.poll() is None:
+                        if cancel_check():
+                            proc.terminate()
+                            raise JobCancelledError("job cancelled")
+                        elapsed = time.monotonic() - started
+                        if elapsed >= timeout_seconds:
+                            _terminate_process(proc)
+                            log_tail = _tail_backend_log(backend_log_path)
+                            message = f"{MODEL_LABELS[model]} timed out after {int(round(elapsed))}s on the helper device."
+                            if log_tail:
+                                message = f"{message}\n\nRecent backend output:\n{log_tail}"
+                            raise EnhancementRuntimeError(message)
+                        progress = _estimate_progress(elapsed, expected_runtime_seconds)
+                        eta_seconds = _estimate_remaining_seconds(elapsed, expected_runtime_seconds)
+                        detail_text = _progress_detail_for_model(model, elapsed, expected_runtime_seconds, eta_seconds)
+                        on_stage("enhance", progress, detail_text, eta_seconds)
+                        time.sleep(0.6)
+
+                    proc.wait()
+                    if proc.returncode != 0:
+                        msg = _tail_backend_log(backend_log_path) or "Enhancement process failed"
+                        raise EnhancementRuntimeError(msg[-2000:])
+                finally:
+                    with self._lock:
+                        self._processes.pop(job_id, None)
 
             if cancel_check():
                 raise JobCancelledError("job cancelled")
@@ -642,6 +641,27 @@ def _estimate_timeout_seconds(expected_runtime_seconds: int, *, enhancement_mode
     if enhancement_model == EnhancementModel.DEEPFILTERNET:
         return max(6 * 60, int(round(expected * 2.2)), expected + 90)
     return max(2 * 60, int(round(expected * 2.0)))
+
+
+def _terminate_process(proc: subprocess.Popen[str]) -> None:
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def _tail_backend_log(log_path: Path, *, max_chars: int = 2000) -> str:
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[-max_chars:]
 
 
 def _progress_detail_for_model(
