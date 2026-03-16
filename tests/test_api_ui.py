@@ -56,6 +56,8 @@ def test_worker_invite_and_status_endpoints_render(monkeypatch):
     assert "deepfilternet" in payload["install_command_macos"]
     assert "git-lfs" in payload["install_command_macos"]
     assert "python@3.11" in payload["install_command_macos"]
+    assert "torch==2.10.0" in payload["install_command_macos"]
+    assert "torchcodec==0.10.0" in payload["install_command_macos"]
     assert "resemble-enhance" in payload["install_command_macos"]
     assert "radcast.worker_setup" in payload["install_command_macos"]
     assert payload["windows_installer_url"].startswith("http://testserver/workers/bootstrap/windows.cmd?")

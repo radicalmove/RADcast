@@ -133,6 +133,7 @@ Those are only used if `RADCAST_STUDIO_V18_DEREVERB_METHOD` is changed away from
 - The optimized dereverb stage is CPU-bound and already relatively cheap.
 - The slow stage is `Resemble Enhance`.
 - On Apple Silicon helpers, `RADcast Optimized` now prefers `mps` for the enhancement stage when available.
+- The macOS helper bootstrap also installs current `torch`, `torchaudio`, `torchvision`, and `torchcodec` wheels before installing RADcast.
 - On Windows GPU helpers, `RADcast Optimized` should use `cuda` automatically when available.
 - The stage-specific override is `RADCAST_STUDIO_V18_ENHANCE_DEVICE`.
 
