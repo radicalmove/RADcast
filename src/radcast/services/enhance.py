@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -93,7 +94,7 @@ class EnhanceService:
             os.environ.get("RADCAST_DEEPFILTERNET_POST_FILTER"),
             DEFAULT_DEEPFILTERNET_POST_FILTER,
         )
-        self.device = os.environ.get("RADCAST_ENHANCE_DEVICE", DEFAULT_ENHANCE_DEVICE).strip() or DEFAULT_ENHANCE_DEVICE
+        self.device = _resolve_enhance_device(os.environ.get("RADCAST_ENHANCE_DEVICE"))
         self.nfe = _safe_int(os.environ.get("RADCAST_ENHANCE_NFE"), DEFAULT_ENHANCE_NFE)
         self.lambd = _safe_float(os.environ.get("RADCAST_ENHANCE_LAMBD"), DEFAULT_ENHANCE_LAMBD)
         self.tau = _safe_float(os.environ.get("RADCAST_ENHANCE_TAU"), DEFAULT_ENHANCE_TAU)
@@ -571,13 +572,13 @@ def _estimate_runtime_seconds(duration_seconds: float, *, device: str, nfe: int,
 
     if enhancement_model in {EnhancementModel.STUDIO, EnhancementModel.STUDIO_V18}:
         if accelerated:
-            base_seconds = 18.0
-            per_second = 2.4
-            minimum = 24
+            base_seconds = 24.0
+            per_second = 2.8
+            minimum = 32
         else:
-            base_seconds = 42.0
-            per_second = 5.0
-            minimum = 55
+            base_seconds = 58.0
+            per_second = 5.8
+            minimum = 72
         estimate = base_seconds + (safe_duration * per_second)
         return max(minimum, min(int(round(estimate)), 40 * 60))
 
@@ -599,21 +600,26 @@ def _estimate_progress(elapsed_seconds: float, expected_runtime_seconds: int) ->
     ratio = max(0.0, elapsed_seconds / expected)
 
     if ratio <= 1.0:
-        eased = ratio ** 0.92
-        return min(0.88, 0.2 + (0.66 * eased))
+        eased = ratio ** 0.98
+        return min(0.82, 0.18 + (0.60 * eased))
 
-    overtime_ratio = min(1.0, (ratio - 1.0) / 0.75)
-    return min(0.94, 0.86 + (0.08 * overtime_ratio))
+    overtime_ratio = min(1.0, (ratio - 1.0) / 1.4)
+    return min(0.94, 0.82 + (0.12 * overtime_ratio))
 
 
 def _estimate_remaining_seconds(elapsed_seconds: float, expected_runtime_seconds: int) -> int | None:
     if elapsed_seconds < 8.0:
         return None
 
-    remaining = int(round(expected_runtime_seconds - elapsed_seconds))
-    if remaining <= 0:
-        return None
-    return remaining
+    expected = max(1.0, float(expected_runtime_seconds))
+    remaining = expected - elapsed_seconds
+    if remaining > 0:
+        return int(round(remaining))
+
+    overtime = max(0.0, elapsed_seconds - expected)
+    tail_seconds = max(expected * 0.14, 12.0)
+    overtime_buffer = max(0.0, min(expected * 0.18, overtime * 0.3))
+    return int(round(max(8.0, tail_seconds - overtime_buffer)))
 
 
 def _progress_detail_for_model(
@@ -632,4 +638,39 @@ def _progress_detail_for_model(
         return f"Loading {label}. First run can take longer."
     if eta_seconds is None:
         return f"Improving audio with {label}. Finishing soon."
+    if eta_seconds <= 12:
+        return f"Improving audio with {label}. Final render can take a little longer."
     return f"Improving audio with {label}."
+
+
+def _resolve_enhance_device(raw_device: str | None) -> str:
+    configured = str(raw_device or "").strip().lower()
+    if configured:
+        return configured
+
+    auto_detected = _detect_accelerated_device()
+    if auto_detected:
+        return auto_detected
+    return DEFAULT_ENHANCE_DEVICE
+
+
+def _detect_accelerated_device() -> str | None:
+    try:
+        import torch
+    except Exception:
+        return None
+
+    try:
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+
+    try:
+        if platform.system() == "Darwin" and platform.machine() == "arm64":
+            if torch.backends.mps.is_built() and torch.backends.mps.is_available():
+                return "mps"
+    except Exception:
+        pass
+
+    return None

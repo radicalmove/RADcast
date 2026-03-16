@@ -9,10 +9,12 @@ from radcast.constants import DEFAULT_ENHANCE_COMMAND, DEFAULT_STUDIO_COMMAND
 from radcast.models import CaptionFormat, CaptionQualityMode, EnhancementModel, FillerRemovalMode, OutputFormat, SimpleEnhanceRequest
 from radcast.services.enhance import (
     EnhanceService,
+    _detect_accelerated_device,
     _estimate_progress,
     _estimate_remaining_seconds,
     _estimate_runtime_seconds,
     _resolve_command,
+    _resolve_enhance_device,
 )
 
 
@@ -167,7 +169,37 @@ def test_estimate_progress_moves_through_enhancement_band():
 def test_estimate_remaining_seconds_hides_unstable_early_estimate():
     assert _estimate_remaining_seconds(4, 60) is None
     assert _estimate_remaining_seconds(25, 60) == 35
-    assert _estimate_remaining_seconds(80, 60) is None
+    assert _estimate_remaining_seconds(80, 60) == 8
+
+
+def test_estimate_remaining_seconds_keeps_countdown_during_overtime():
+    near_finish = _estimate_remaining_seconds(70, 60)
+    later_overtime = _estimate_remaining_seconds(82, 60)
+
+    assert near_finish is not None
+    assert later_overtime is not None
+    assert near_finish > later_overtime >= 8
+
+
+def test_resolve_enhance_device_prefers_configured_value():
+    assert _resolve_enhance_device("mps") == "mps"
+
+
+def test_resolve_enhance_device_falls_back_to_cpu_when_no_acceleration(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("radcast.services.enhance._detect_accelerated_device", lambda: None)
+    assert _resolve_enhance_device(None) == "cpu"
+
+
+def test_detect_accelerated_device_returns_none_without_torch(monkeypatch: pytest.MonkeyPatch):
+    original_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "torch":
+            raise ImportError("torch unavailable")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    assert _detect_accelerated_device() is None
 
 
 def test_enhance_service_applies_prefilter_before_enhancement(
