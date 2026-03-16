@@ -83,7 +83,7 @@ const stageLabels = {
   cancelled: "Cancelled",
 };
 
-const flexibleEtaStages = new Set(["cleanup", "captions"]);
+const flexibleEtaStages = new Set(["enhance", "cleanup", "captions"]);
 
 const state = {
   activeProjectRef: null,

@@ -652,7 +652,8 @@ def _estimate_progress_from_chunks(
     fractional = 0.0
     if safe_completed < safe_total:
         chunk_elapsed = max(0.0, elapsed_seconds - (safe_completed * expected_per_chunk))
-        fractional = min(0.92, chunk_elapsed / expected_per_chunk)
+        max_fractional = 0.35 if safe_completed == 0 else 0.92
+        fractional = min(max_fractional, chunk_elapsed / expected_per_chunk)
     ratio = min(1.0, (safe_completed + fractional) / safe_total)
     return min(0.78, 0.2 + (0.58 * ratio))
 
@@ -688,12 +689,13 @@ def _estimate_remaining_seconds_from_chunks(
     if safe_completed > 0:
         observed_per_chunk = max(expected_per_chunk, elapsed_seconds / safe_completed)
     else:
-        observed_per_chunk = expected_per_chunk
+        observed_per_chunk = max(expected_per_chunk, elapsed_seconds * 1.2)
 
     fractional = 0.0
     if safe_completed < safe_total:
         chunk_elapsed = max(0.0, elapsed_seconds - (safe_completed * observed_per_chunk))
-        fractional = min(0.92, chunk_elapsed / observed_per_chunk)
+        max_fractional = 0.35 if safe_completed == 0 else 0.92
+        fractional = min(max_fractional, chunk_elapsed / observed_per_chunk)
     remaining_chunks = max(0.0, safe_total - (safe_completed + fractional))
     return int(round(max(8.0, remaining_chunks * observed_per_chunk)))
 

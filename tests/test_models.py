@@ -198,6 +198,17 @@ def test_chunk_remaining_seconds_uses_observed_chunk_runtime():
     assert eta >= 120
 
 
+def test_chunk_remaining_seconds_stays_conservative_before_first_chunk_finishes():
+    eta = _estimate_remaining_seconds_from_chunks(
+        completed_chunks=0,
+        total_chunks=4,
+        elapsed_seconds=180,
+        expected_runtime_seconds=160,
+    )
+    assert eta is not None
+    assert eta >= 600
+
+
 def test_estimate_remaining_seconds_keeps_countdown_during_overtime():
     near_finish = _estimate_remaining_seconds(70, 60)
     later_overtime = _estimate_remaining_seconds(82, 60)
