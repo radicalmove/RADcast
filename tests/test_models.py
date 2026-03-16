@@ -11,9 +11,12 @@ from radcast.services.enhance import (
     EnhanceService,
     _detect_accelerated_device,
     _estimate_progress,
+    _estimate_progress_from_chunks,
     _estimate_remaining_seconds,
+    _estimate_remaining_seconds_from_chunks,
     _estimate_runtime_seconds,
     _estimate_timeout_seconds,
+    _parse_backend_progress,
     _resolve_command,
     _resolve_enhance_device,
     _tail_backend_log,
@@ -168,10 +171,31 @@ def test_estimate_progress_moves_through_enhancement_band():
     assert 0.2 < halfway < expected_finish < overtime < 0.95
 
 
+def test_chunk_progress_estimate_moves_more_slowly_than_elapsed_guess():
+    chunk_progress = _estimate_progress_from_chunks(
+        completed_chunks=0,
+        total_chunks=4,
+        elapsed_seconds=40,
+        expected_runtime_seconds=160,
+    )
+    assert 0.2 < chunk_progress < 0.4
+
+
 def test_estimate_remaining_seconds_hides_unstable_early_estimate():
     assert _estimate_remaining_seconds(4, 60) is None
     assert _estimate_remaining_seconds(25, 60) == 35
     assert _estimate_remaining_seconds(80, 60) == 8
+
+
+def test_chunk_remaining_seconds_uses_observed_chunk_runtime():
+    eta = _estimate_remaining_seconds_from_chunks(
+        completed_chunks=1,
+        total_chunks=4,
+        elapsed_seconds=80,
+        expected_runtime_seconds=160,
+    )
+    assert eta is not None
+    assert eta >= 120
 
 
 def test_estimate_remaining_seconds_keeps_countdown_during_overtime():
@@ -193,6 +217,17 @@ def test_tail_backend_log_returns_recent_text(tmp_path: Path):
     log_path = tmp_path / "backend.log"
     log_path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     assert _tail_backend_log(log_path, max_chars=9) == "eta\ngamma"
+
+
+def test_parse_backend_progress_reads_latest_marker(tmp_path: Path):
+    log_path = tmp_path / "backend.log"
+    log_path.write_text(
+        "RADCAST_ENHANCE_PROGRESS 0/4\n"
+        "RADCAST_ENHANCE_PROGRESS 1/4\n"
+        "RADCAST_ENHANCE_PROGRESS 2/4\n",
+        encoding="utf-8",
+    )
+    assert _parse_backend_progress(log_path) == (2, 4)
 
 
 def test_resolve_enhance_device_prefers_configured_value():

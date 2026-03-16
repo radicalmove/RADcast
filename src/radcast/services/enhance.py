@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -256,9 +257,30 @@ class EnhanceService:
                             if log_tail:
                                 message = f"{message}\n\nRecent backend output:\n{log_tail}"
                             raise EnhancementRuntimeError(message)
-                        progress = _estimate_progress(elapsed, expected_runtime_seconds)
-                        eta_seconds = _estimate_remaining_seconds(elapsed, expected_runtime_seconds)
-                        detail_text = _progress_detail_for_model(model, elapsed, expected_runtime_seconds, eta_seconds)
+                        chunk_progress = _parse_backend_progress(backend_log_path)
+                        if chunk_progress is not None:
+                            progress = _estimate_progress_from_chunks(
+                                completed_chunks=chunk_progress[0],
+                                total_chunks=chunk_progress[1],
+                                elapsed_seconds=elapsed,
+                                expected_runtime_seconds=expected_runtime_seconds,
+                            )
+                            eta_seconds = _estimate_remaining_seconds_from_chunks(
+                                completed_chunks=chunk_progress[0],
+                                total_chunks=chunk_progress[1],
+                                elapsed_seconds=elapsed,
+                                expected_runtime_seconds=expected_runtime_seconds,
+                            )
+                        else:
+                            progress = _estimate_progress(elapsed, expected_runtime_seconds)
+                            eta_seconds = _estimate_remaining_seconds(elapsed, expected_runtime_seconds)
+                        detail_text = _progress_detail_for_model(
+                            model,
+                            elapsed,
+                            expected_runtime_seconds,
+                            eta_seconds,
+                            chunk_progress=chunk_progress,
+                        )
                         on_stage("enhance", progress, detail_text, eta_seconds)
                         time.sleep(0.6)
 
@@ -617,6 +639,24 @@ def _estimate_progress(elapsed_seconds: float, expected_runtime_seconds: int) ->
     return min(0.94, 0.82 + (0.12 * overtime_ratio))
 
 
+def _estimate_progress_from_chunks(
+    *,
+    completed_chunks: int,
+    total_chunks: int,
+    elapsed_seconds: float,
+    expected_runtime_seconds: int,
+) -> float:
+    safe_total = max(1, int(total_chunks))
+    safe_completed = max(0, min(int(completed_chunks), safe_total))
+    expected_per_chunk = max(1.0, float(expected_runtime_seconds) / safe_total)
+    fractional = 0.0
+    if safe_completed < safe_total:
+        chunk_elapsed = max(0.0, elapsed_seconds - (safe_completed * expected_per_chunk))
+        fractional = min(0.92, chunk_elapsed / expected_per_chunk)
+    ratio = min(1.0, (safe_completed + fractional) / safe_total)
+    return min(0.78, 0.2 + (0.58 * ratio))
+
+
 def _estimate_remaining_seconds(elapsed_seconds: float, expected_runtime_seconds: int) -> int | None:
     if elapsed_seconds < 8.0:
         return None
@@ -630,6 +670,32 @@ def _estimate_remaining_seconds(elapsed_seconds: float, expected_runtime_seconds
     tail_seconds = max(expected * 0.14, 12.0)
     overtime_buffer = max(0.0, min(expected * 0.18, overtime * 0.3))
     return int(round(max(8.0, tail_seconds - overtime_buffer)))
+
+
+def _estimate_remaining_seconds_from_chunks(
+    *,
+    completed_chunks: int,
+    total_chunks: int,
+    elapsed_seconds: float,
+    expected_runtime_seconds: int,
+) -> int | None:
+    if elapsed_seconds < 8.0:
+        return None
+
+    safe_total = max(1, int(total_chunks))
+    safe_completed = max(0, min(int(completed_chunks), safe_total))
+    expected_per_chunk = max(1.0, float(expected_runtime_seconds) / safe_total)
+    if safe_completed > 0:
+        observed_per_chunk = max(expected_per_chunk, elapsed_seconds / safe_completed)
+    else:
+        observed_per_chunk = expected_per_chunk
+
+    fractional = 0.0
+    if safe_completed < safe_total:
+        chunk_elapsed = max(0.0, elapsed_seconds - (safe_completed * observed_per_chunk))
+        fractional = min(0.92, chunk_elapsed / observed_per_chunk)
+    remaining_chunks = max(0.0, safe_total - (safe_completed + fractional))
+    return int(round(max(8.0, remaining_chunks * observed_per_chunk)))
 
 
 def _estimate_timeout_seconds(expected_runtime_seconds: int, *, enhancement_model: EnhancementModel) -> int:
@@ -664,17 +730,38 @@ def _tail_backend_log(log_path: Path, *, max_chars: int = 2000) -> str:
     return text[-max_chars:]
 
 
+def _parse_backend_progress(log_path: Path) -> tuple[int, int] | None:
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    matches = re.findall(r"RADCAST_ENHANCE_PROGRESS\s+(\d+)/(\d+)", text)
+    if not matches:
+        return None
+    completed_raw, total_raw = matches[-1]
+    total = max(1, int(total_raw))
+    completed = max(0, min(int(completed_raw), total))
+    return (completed, total)
+
+
 def _progress_detail_for_model(
     model: EnhancementModel,
     elapsed_seconds: float,
     expected_runtime_seconds: int,
     eta_seconds: int | None,
+    *,
+    chunk_progress: tuple[int, int] | None = None,
 ) -> str:
     if model == EnhancementModel.NONE:
         if eta_seconds is None:
             return "Keeping the original audio quality. Finishing soon."
         return "Keeping the original audio quality."
     label = MODEL_LABELS[model]
+    if chunk_progress is not None:
+        completed, total = chunk_progress
+        if completed < total:
+            return f"Improving audio with {label}. Processing chunk {completed + 1} of {total}."
+        return f"Improving audio with {label}. Final render can take a little longer."
     warmup_seconds = min(10.0, expected_runtime_seconds * 0.18)
     if elapsed_seconds < warmup_seconds:
         return f"Loading {label}. First run can take longer."
