@@ -32,6 +32,7 @@ from radcast.constants import (
     DEFAULT_STUDIO_POSTFILTER,
     DEFAULT_STUDIO_COMMAND,
     DEFAULT_STUDIO_V18_DEREVERB_METHOD,
+    DEFAULT_STUDIO_V18_ENHANCE_DEVICE,
     DEFAULT_STUDIO_V18_LAMBD,
     DEFAULT_STUDIO_V18_NFE,
     DEFAULT_STUDIO_V18_NARA_CHUNK_SECONDS,
@@ -97,6 +98,11 @@ class EnhanceService:
         )
         self.device = _resolve_enhance_device(os.environ.get("RADCAST_ENHANCE_DEVICE"))
         self.nfe = _safe_int(os.environ.get("RADCAST_ENHANCE_NFE"), DEFAULT_ENHANCE_NFE)
+        self.studio_v18_enhance_device = _resolve_enhance_device(
+            os.environ.get("RADCAST_STUDIO_V18_ENHANCE_DEVICE", DEFAULT_STUDIO_V18_ENHANCE_DEVICE),
+            fallback=self.device,
+            allow_mps=True,
+        )
         self.lambd = _safe_float(os.environ.get("RADCAST_ENHANCE_LAMBD"), DEFAULT_ENHANCE_LAMBD)
         self.tau = _safe_float(os.environ.get("RADCAST_ENHANCE_TAU"), DEFAULT_ENHANCE_TAU)
         self.prefilter = os.environ.get("RADCAST_ENHANCE_PREFILTER", DEFAULT_ENHANCE_PREFILTER).strip()
@@ -222,7 +228,7 @@ class EnhanceService:
             command, use_shell, initial_detail = self._build_backend_command(model=model, in_dir=in_dir, in_wav=in_wav, out_dir=out_dir)
             expected_runtime_seconds = _estimate_runtime_seconds(
                 input_duration_seconds,
-                device=self.device,
+                device=self._device_for_model(model),
                 nfe=self.nfe,
                 enhancement_model=model,
             )
@@ -421,7 +427,7 @@ class EnhanceService:
                 "--suffix",
                 ".wav",
                 "--device",
-                self.device,
+                self.studio_v18_enhance_device,
                 "--nfe",
                 str(self.studio_v18_nfe),
                 "--lambd",
@@ -514,6 +520,11 @@ class EnhanceService:
         if model == EnhancementModel.STUDIO_V18:
             return self.studio_v18_prefilter
         return self.prefilter
+
+    def _device_for_model(self, model: EnhancementModel) -> str:
+        if model == EnhancementModel.STUDIO_V18:
+            return self.studio_v18_enhance_device
+        return self.device
 
 
 def _parse_model(raw: str | None, default: str) -> EnhancementModel:
@@ -774,18 +785,25 @@ def _progress_detail_for_model(
     return f"Improving audio with {label}."
 
 
-def _resolve_enhance_device(raw_device: str | None) -> str:
+def _resolve_enhance_device(
+    raw_device: str | None,
+    *,
+    fallback: str | None = None,
+    allow_mps: bool | None = None,
+) -> str:
     configured = str(raw_device or "").strip().lower()
-    if configured:
+    if configured and configured != "auto":
         return configured
 
-    auto_detected = _detect_accelerated_device()
+    auto_detected = _detect_accelerated_device(allow_mps=allow_mps)
     if auto_detected:
         return auto_detected
+    if fallback:
+        return fallback
     return DEFAULT_ENHANCE_DEVICE
 
 
-def _detect_accelerated_device() -> str | None:
+def _detect_accelerated_device(*, allow_mps: bool | None = None) -> str | None:
     try:
         import torch
     except Exception:
@@ -797,15 +815,16 @@ def _detect_accelerated_device() -> str | None:
     except Exception:
         pass
 
-    # The RADcast restoration backends can wedge on Apple Silicon when torch
-    # auto-selects MPS and then falls back to CPU for unsupported ops. Keep
-    # macOS on CPU unless the device is explicitly overridden.
-    allow_mps = str(os.environ.get("RADCAST_ALLOW_MPS_ENHANCEMENT", "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    # Older RADcast experiments forced Apple Silicon onto CPU because mixed
+    # MPS/CPU fallback was unstable. Keep the global opt-in, but allow callers
+    # to explicitly enable MPS for the optimized path.
+    if allow_mps is None:
+        allow_mps = str(os.environ.get("RADCAST_ALLOW_MPS_ENHANCEMENT", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
     if allow_mps:
         try:
             if platform.system() == "Darwin" and platform.machine() == "arm64":

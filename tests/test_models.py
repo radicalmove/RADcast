@@ -246,8 +246,13 @@ def test_resolve_enhance_device_prefers_configured_value():
 
 
 def test_resolve_enhance_device_falls_back_to_cpu_when_no_acceleration(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("radcast.services.enhance._detect_accelerated_device", lambda: None)
+    monkeypatch.setattr("radcast.services.enhance._detect_accelerated_device", lambda **_: None)
     assert _resolve_enhance_device(None) == "cpu"
+
+def test_resolve_enhance_device_uses_fallback_when_auto_detect_fails(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("radcast.services.enhance._detect_accelerated_device", lambda **_: None)
+    assert _resolve_enhance_device("auto", fallback="cpu", allow_mps=True) == "cpu"
+
 
 
 def test_detect_accelerated_device_returns_none_without_torch(monkeypatch: pytest.MonkeyPatch):
@@ -334,6 +339,14 @@ def test_detect_accelerated_device_can_opt_into_mps_on_macos(monkeypatch: pytest
     monkeypatch.setattr("builtins.__import__", fake_import)
 
     assert _detect_accelerated_device() == "mps"
+
+
+def test_enhance_service_uses_stage_specific_device_for_studio_v18(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("RADCAST_STUDIO_V18_ENHANCE_DEVICE", "auto")
+    monkeypatch.setattr("radcast.services.enhance._detect_accelerated_device", lambda **kwargs: "mps" if kwargs.get("allow_mps") else None)
+    service = EnhanceService()
+    assert service.device == "cpu"
+    assert service.studio_v18_enhance_device == "mps"
 
 
 def test_enhance_service_applies_prefilter_before_enhancement(

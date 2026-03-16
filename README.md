@@ -59,6 +59,7 @@ Environment variables for the default model:
 - `RADCAST_STUDIO_COMMAND`
 - `RADCAST_STUDIO_V18_TUNING_LABEL`
 - `RADCAST_STUDIO_V18_DEREVERB_METHOD`
+- `RADCAST_STUDIO_V18_ENHANCE_DEVICE`
 - `RADCAST_STUDIO_V18_PREFILTER`
 - `RADCAST_STUDIO_V18_NFE`
 - `RADCAST_STUDIO_V18_LAMBD`
@@ -86,7 +87,7 @@ Legacy backend variables still exist for non-default models:
 
 For Ubuntu CPU deployments, use [`scripts/install-linux-cpu.sh`](/Users/rcd58/RADcast/scripts/install-linux-cpu.sh). It installs the CPU PyTorch wheels, `torchcodec`, `deepspeed` without custom ops, `resemble-enhance`, and `nara-wpe`.
 
-If the default optimized model appears unavailable, check that the active environment can import both `resemble_enhance` and `nara_wpe`.
+If the default optimized model appears unavailable, check that the active environment can import both `resemble_enhance` and `nara_wpe`. On Apple Silicon helpers, the optimized path now prefers `mps` for the Resemble stage when available.
 
 ## Experimental paired restoration
 

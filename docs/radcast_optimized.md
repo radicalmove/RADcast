@@ -108,6 +108,7 @@ The optimized path is controlled by these env vars:
 - `RADCAST_DEFAULT_ENHANCEMENT_MODEL=studio_v18`
 - `RADCAST_STUDIO_V18_TUNING_LABEL=RADcast Optimized`
 - `RADCAST_STUDIO_V18_DEREVERB_METHOD=nara`
+- `RADCAST_STUDIO_V18_ENHANCE_DEVICE=auto`
 - `RADCAST_STUDIO_V18_PREFILTER=`
 - `RADCAST_STUDIO_V18_NFE=32`
 - `RADCAST_STUDIO_V18_LAMBD=0.62`
@@ -126,6 +127,14 @@ Fallback variables for the older built-in dereverb path still exist:
 - `RADCAST_STUDIO_V18_WPE_ITERATIONS`
 
 Those are only used if `RADCAST_STUDIO_V18_DEREVERB_METHOD` is changed away from `nara`.
+
+## Performance notes
+
+- The optimized dereverb stage is CPU-bound and already relatively cheap.
+- The slow stage is `Resemble Enhance`.
+- On Apple Silicon helpers, `RADcast Optimized` now prefers `mps` for the enhancement stage when available.
+- On Windows GPU helpers, `RADcast Optimized` should use `cuda` automatically when available.
+- The stage-specific override is `RADCAST_STUDIO_V18_ENHANCE_DEVICE`.
 
 ## Dependencies
 
