@@ -708,11 +708,21 @@ def _detect_accelerated_device() -> str | None:
     except Exception:
         pass
 
-    try:
-        if platform.system() == "Darwin" and platform.machine() == "arm64":
-            if torch.backends.mps.is_built() and torch.backends.mps.is_available():
-                return "mps"
-    except Exception:
-        pass
+    # The RADcast restoration backends can wedge on Apple Silicon when torch
+    # auto-selects MPS and then falls back to CPU for unsupported ops. Keep
+    # macOS on CPU unless the device is explicitly overridden.
+    allow_mps = str(os.environ.get("RADCAST_ALLOW_MPS_ENHANCEMENT", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if allow_mps:
+        try:
+            if platform.system() == "Darwin" and platform.machine() == "arm64":
+                if torch.backends.mps.is_built() and torch.backends.mps.is_available():
+                    return "mps"
+        except Exception:
+            pass
 
     return None

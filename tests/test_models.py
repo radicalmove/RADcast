@@ -216,6 +216,80 @@ def test_detect_accelerated_device_returns_none_without_torch(monkeypatch: pytes
     assert _detect_accelerated_device() is None
 
 
+def test_detect_accelerated_device_skips_mps_auto_detect_on_macos(monkeypatch: pytest.MonkeyPatch):
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    class FakeMpsBackend:
+        @staticmethod
+        def is_built() -> bool:
+            return True
+
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeBackends:
+        mps = FakeMpsBackend()
+
+    class FakeTorch:
+        cuda = FakeCuda()
+        backends = FakeBackends()
+
+    original_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "torch":
+            return FakeTorch
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.delenv("RADCAST_ALLOW_MPS_ENHANCEMENT", raising=False)
+    monkeypatch.setattr("radcast.services.enhance.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("radcast.services.enhance.platform.machine", lambda: "arm64")
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    assert _detect_accelerated_device() is None
+
+
+def test_detect_accelerated_device_can_opt_into_mps_on_macos(monkeypatch: pytest.MonkeyPatch):
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    class FakeMpsBackend:
+        @staticmethod
+        def is_built() -> bool:
+            return True
+
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeBackends:
+        mps = FakeMpsBackend()
+
+    class FakeTorch:
+        cuda = FakeCuda()
+        backends = FakeBackends()
+
+    original_import = __import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "torch":
+            return FakeTorch
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setenv("RADCAST_ALLOW_MPS_ENHANCEMENT", "1")
+    monkeypatch.setattr("radcast.services.enhance.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("radcast.services.enhance.platform.machine", lambda: "arm64")
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    assert _detect_accelerated_device() == "mps"
+
+
 def test_enhance_service_applies_prefilter_before_enhancement(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

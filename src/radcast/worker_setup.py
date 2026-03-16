@@ -82,6 +82,8 @@ def linux_service_unit_text(*, python_exe: Path, server_url: str, config_path: P
 def macos_launch_agent_payload(*, label: str, python_exe: Path, server_url: str, config_path: Path, poll_seconds: int) -> dict[str, object]:
     logs_dir = config_path.parent
     logs_dir.mkdir(parents=True, exist_ok=True)
+    environment = {"PATH": default_worker_path([str(python_exe.parent)])}
+    environment.setdefault("RADCAST_ENHANCE_DEVICE", "cpu")
     return {
         "Label": label,
         "ProgramArguments": build_worker_command_args(
@@ -90,7 +92,7 @@ def macos_launch_agent_payload(*, label: str, python_exe: Path, server_url: str,
             config_path=config_path,
             poll_seconds=poll_seconds,
         ),
-        "EnvironmentVariables": {"PATH": default_worker_path([str(python_exe.parent)])},
+        "EnvironmentVariables": environment,
         "WorkingDirectory": str(logs_dir),
         "ProcessType": "Background",
         "RunAtLoad": True,
