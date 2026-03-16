@@ -1,9 +1,8 @@
 """Stable CLI wrapper around resemble-enhance.
 
-The upstream resemble-enhance console entrypoint passes ``Path`` objects
-directly into ``torchaudio.load()``, which breaks on the torchaudio build we
-run on macOS. This wrapper keeps the same folder-in/folder-out contract but
-coerces paths to plain strings before handing them to torchaudio.
+This wrapper keeps inference on a plain torch path instead of importing the
+library's training-oriented helpers, which pull DeepSpeed into macOS helper
+runs and can wedge the RADcast helper on Apple Silicon.
 """
 
 from __future__ import annotations
@@ -12,9 +11,9 @@ import argparse
 import time
 from pathlib import Path
 
-import resemble_enhance
 import torchaudio
-from resemble_enhance.enhancer.inference import denoise, enhance
+
+from radcast.services.resemble_safe import default_run_dir, denoise, enhance
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,10 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _default_run_dir() -> Path | None:
-    package_root = Path(resemble_enhance.__file__).resolve().parent
-    run_dir = package_root / "model_repo" / "enhancer_stage2"
-    weights = run_dir / "ds" / "G" / "default" / "mp_rank_00_model_states.pt"
-    return run_dir if weights.exists() else None
+    return default_run_dir()
 
 
 def main() -> None:

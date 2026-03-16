@@ -1,4 +1,4 @@
-"""Studio Cleanup backend: custom dereverb followed by Resemble Enhance."""
+"""Studio Cleanup backend: custom dereverb followed by RADcast Optimized inference."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ from pathlib import Path
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import numpy as np
-import resemble_enhance
 import torch
 import torchaudio
-from resemble_enhance.enhancer.inference import enhance
+
+from radcast.services.resemble_safe import default_run_dir, enhance
 
 from radcast.services.studio import chunked_nara_wpe_dereverb, suppress_late_reverb, wpe_dereverb
 
@@ -65,10 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _default_run_dir() -> Path | None:
-    package_root = Path(resemble_enhance.__file__).resolve().parent
-    run_dir = package_root / "model_repo" / "enhancer_stage2"
-    weights = run_dir / "ds" / "G" / "default" / "mp_rank_00_model_states.pt"
-    return run_dir if weights.exists() else None
+    return default_run_dir()
 
 
 def main() -> None:
