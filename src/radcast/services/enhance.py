@@ -225,83 +225,100 @@ class EnhanceService:
             if cancel_check():
                 raise JobCancelledError("job cancelled")
 
-            command, use_shell, initial_detail = self._build_backend_command(model=model, in_dir=in_dir, in_wav=in_wav, out_dir=out_dir)
             expected_runtime_seconds = _estimate_runtime_seconds(
                 input_duration_seconds,
                 device=self._device_for_model(model),
-                nfe=self.nfe,
+                nfe=self._nfe_for_model(model),
                 enhancement_model=model,
             )
             timeout_seconds = _estimate_timeout_seconds(expected_runtime_seconds, enhancement_model=model)
+            if model == EnhancementModel.STUDIO_V18:
+                initial_detail = "Loading RADcast Optimized. First run can take longer."
+            else:
+                command, use_shell, initial_detail = self._build_backend_command(
+                    model=model,
+                    in_dir=in_dir,
+                    in_wav=in_wav,
+                    out_dir=out_dir,
+                )
             on_stage("enhance", 0.2, initial_detail, None)
-            backend_log_path = tmp_path / f"{model.value}.backend.log"
-            with backend_log_path.open("w+", encoding="utf-8") as backend_log:
-                try:
-                    proc = subprocess.Popen(
-                        ["/bin/bash", "-lc", command] if use_shell else command,
-                        stdout=backend_log,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                    )
-                except FileNotFoundError as exc:
-                    raise EnhancementRuntimeError(self._missing_command_message(model)) from exc
-
-                with self._lock:
-                    self._processes[job_id] = proc
-
-                started = time.monotonic()
-                try:
-                    while proc.poll() is None:
-                        if cancel_check():
-                            proc.terminate()
-                            raise JobCancelledError("job cancelled")
-                        elapsed = time.monotonic() - started
-                        if elapsed >= timeout_seconds:
-                            _terminate_process(proc)
-                            log_tail = _tail_backend_log(backend_log_path)
-                            message = f"{MODEL_LABELS[model]} timed out after {int(round(elapsed))}s on the helper device."
-                            if log_tail:
-                                message = f"{message}\n\nRecent backend output:\n{log_tail}"
-                            raise EnhancementRuntimeError(message)
-                        chunk_progress = _parse_backend_progress(backend_log_path)
-                        if chunk_progress is not None:
-                            progress = _estimate_progress_from_chunks(
-                                completed_chunks=chunk_progress[0],
-                                total_chunks=chunk_progress[1],
-                                elapsed_seconds=elapsed,
-                                expected_runtime_seconds=expected_runtime_seconds,
-                            )
-                            eta_seconds = _estimate_remaining_seconds_from_chunks(
-                                completed_chunks=chunk_progress[0],
-                                total_chunks=chunk_progress[1],
-                                elapsed_seconds=elapsed,
-                                expected_runtime_seconds=expected_runtime_seconds,
-                            )
-                        else:
-                            progress = _estimate_progress(elapsed, expected_runtime_seconds)
-                            eta_seconds = _estimate_remaining_seconds(elapsed, expected_runtime_seconds)
-                        detail_text = _progress_detail_for_model(
-                            model,
-                            elapsed,
-                            expected_runtime_seconds,
-                            eta_seconds,
-                            chunk_progress=chunk_progress,
+            if model == EnhancementModel.STUDIO_V18:
+                enhanced_wav = self._run_studio_v18_inprocess(
+                    in_wav=in_wav,
+                    out_dir=out_dir,
+                    on_stage=on_stage,
+                    cancel_check=cancel_check,
+                    expected_runtime_seconds=expected_runtime_seconds,
+                    timeout_seconds=timeout_seconds,
+                )
+            else:
+                backend_log_path = tmp_path / f"{model.value}.backend.log"
+                with backend_log_path.open("w+", encoding="utf-8") as backend_log:
+                    try:
+                        proc = subprocess.Popen(
+                            ["/bin/bash", "-lc", command] if use_shell else command,
+                            stdout=backend_log,
+                            stderr=subprocess.STDOUT,
+                            text=True,
                         )
-                        on_stage("enhance", progress, detail_text, eta_seconds)
-                        time.sleep(0.6)
+                    except FileNotFoundError as exc:
+                        raise EnhancementRuntimeError(self._missing_command_message(model)) from exc
 
-                    proc.wait()
-                    if proc.returncode != 0:
-                        msg = _tail_backend_log(backend_log_path) or "Enhancement process failed"
-                        raise EnhancementRuntimeError(msg[-2000:])
-                finally:
                     with self._lock:
-                        self._processes.pop(job_id, None)
+                        self._processes[job_id] = proc
 
-            if cancel_check():
-                raise JobCancelledError("job cancelled")
+                    started = time.monotonic()
+                    try:
+                        while proc.poll() is None:
+                            if cancel_check():
+                                proc.terminate()
+                                raise JobCancelledError("job cancelled")
+                            elapsed = time.monotonic() - started
+                            if elapsed >= timeout_seconds:
+                                _terminate_process(proc)
+                                log_tail = _tail_backend_log(backend_log_path)
+                                message = f"{MODEL_LABELS[model]} timed out after {int(round(elapsed))}s on the helper device."
+                                if log_tail:
+                                    message = f"{message}\n\nRecent backend output:\n{log_tail}"
+                                raise EnhancementRuntimeError(message)
+                            chunk_progress = _parse_backend_progress(backend_log_path)
+                            if chunk_progress is not None:
+                                progress = _estimate_progress_from_chunks(
+                                    completed_chunks=chunk_progress[0],
+                                    total_chunks=chunk_progress[1],
+                                    elapsed_seconds=elapsed,
+                                    expected_runtime_seconds=expected_runtime_seconds,
+                                )
+                                eta_seconds = _estimate_remaining_seconds_from_chunks(
+                                    completed_chunks=chunk_progress[0],
+                                    total_chunks=chunk_progress[1],
+                                    elapsed_seconds=elapsed,
+                                    expected_runtime_seconds=expected_runtime_seconds,
+                                )
+                            else:
+                                progress = _estimate_progress(elapsed, expected_runtime_seconds)
+                                eta_seconds = _estimate_remaining_seconds(elapsed, expected_runtime_seconds)
+                            detail_text = _progress_detail_for_model(
+                                model,
+                                elapsed,
+                                expected_runtime_seconds,
+                                eta_seconds,
+                                chunk_progress=chunk_progress,
+                            )
+                            on_stage("enhance", progress, detail_text, eta_seconds)
+                            time.sleep(0.6)
 
-            enhanced_wav = self._collect_backend_output(model=model, out_dir=out_dir)
+                        proc.wait()
+                        if proc.returncode != 0:
+                            msg = _tail_backend_log(backend_log_path) or "Enhancement process failed"
+                            raise EnhancementRuntimeError(msg[-2000:])
+                    finally:
+                        with self._lock:
+                            self._processes.pop(job_id, None)
+                if cancel_check():
+                    raise JobCancelledError("job cancelled")
+
+                enhanced_wav = self._collect_backend_output(model=model, out_dir=out_dir)
 
             on_stage("finalize", 0.96, "Saving the enhanced audio", 8)
             output_base_path.parent.mkdir(parents=True, exist_ok=True)
@@ -363,9 +380,7 @@ class EnhanceService:
             module_names = ["numpy", "scipy", "soundfile", "resemble_enhance", "torchaudio"]
             if self.studio_v18_dereverb_method == "nara":
                 module_names.append("nara_wpe")
-            available = _command_available(self.studio_command) and _python_modules_available(
-                module_names
-            )
+            available = _python_modules_available(module_names)
             detail = (
                 "RADcast Optimized path is installed."
                 if available
@@ -525,6 +540,114 @@ class EnhanceService:
         if model == EnhancementModel.STUDIO_V18:
             return self.studio_v18_enhance_device
         return self.device
+
+    def _nfe_for_model(self, model: EnhancementModel) -> int:
+        if model == EnhancementModel.STUDIO_V18:
+            return self.studio_v18_nfe
+        return self.nfe
+
+    def _run_studio_v18_inprocess(
+        self,
+        *,
+        in_wav: Path,
+        out_dir: Path,
+        on_stage: Callable[[str, float, str, int | None], None],
+        cancel_check: Callable[[], bool],
+        expected_runtime_seconds: int,
+        timeout_seconds: int,
+    ) -> Path:
+        import numpy as np
+        import torch
+        import torchaudio
+
+        from radcast.services.resemble_safe import default_run_dir, enhance as resemble_enhance
+        from radcast.services.studio import chunked_nara_wpe_dereverb, suppress_late_reverb, wpe_dereverb
+
+        started = time.monotonic()
+
+        def check_runtime(*, progress: float, detail: str, eta_seconds: int | None = None) -> float:
+            if cancel_check():
+                raise JobCancelledError("job cancelled")
+            elapsed = time.monotonic() - started
+            if elapsed >= timeout_seconds:
+                raise EnhancementRuntimeError(
+                    f"{MODEL_LABELS[EnhancementModel.STUDIO_V18]} timed out after {int(round(elapsed))}s on the helper device."
+                )
+            on_stage("enhance", progress, detail, eta_seconds)
+            return elapsed
+
+        waveform, sample_rate = torchaudio.load(str(in_wav))
+        mono = waveform.mean(0).cpu().numpy().astype(np.float32, copy=False)
+
+        check_runtime(progress=0.22, detail="Loading RADcast Optimized runtime.", eta_seconds=None)
+
+        if self.studio_v18_dereverb_method == "nara":
+            def on_dereverb_progress(completed_chunks: int, total_chunks: int) -> None:
+                fraction = completed_chunks / max(total_chunks, 1)
+                progress = 0.24 + (0.08 * fraction)
+                detail = f"Reducing room tail ({completed_chunks}/{total_chunks})" if completed_chunks else "Reducing room tail"
+                check_runtime(progress=progress, detail=detail, eta_seconds=None)
+
+            dereverbed = chunked_nara_wpe_dereverb(
+                mono,
+                sample_rate,
+                chunk_seconds=self.studio_v18_nara_chunk_seconds,
+                overlap_seconds=self.studio_v18_nara_overlap_seconds,
+                taps=self.studio_v18_nara_taps,
+                delay=self.studio_v18_nara_delay,
+                iterations=self.studio_v18_nara_iterations,
+                psd_context=self.studio_v18_nara_psd_context,
+                progress_callback=on_dereverb_progress,
+            )
+        elif self.studio_v18_dereverb_method == "wpe":
+            check_runtime(progress=0.26, detail="Reducing room tail", eta_seconds=None)
+            dereverbed = wpe_dereverb(
+                mono,
+                sample_rate,
+                taps=self.studio_v18_wpe_taps,
+                delay=self.studio_v18_wpe_delay,
+                iterations=self.studio_v18_wpe_iterations,
+            )
+            check_runtime(progress=0.32, detail="Room tail reduction complete", eta_seconds=None)
+        else:
+            check_runtime(progress=0.26, detail="Reducing room tail", eta_seconds=None)
+            dereverbed = suppress_late_reverb(mono, sample_rate)
+            check_runtime(progress=0.32, detail="Room tail reduction complete", eta_seconds=None)
+
+        dereverbed_tensor = torch.from_numpy(dereverbed)
+
+        def on_enhance_progress(completed_chunks: int, total_chunks: int) -> None:
+            elapsed = time.monotonic() - started
+            progress = 0.32 + (0.56 * (completed_chunks / max(total_chunks, 1)))
+            eta_seconds = _estimate_remaining_seconds_from_chunks(
+                completed_chunks=completed_chunks,
+                total_chunks=total_chunks,
+                elapsed_seconds=elapsed,
+                expected_runtime_seconds=expected_runtime_seconds,
+            )
+            detail = (
+                f"Restoring speech detail ({completed_chunks}/{total_chunks})"
+                if completed_chunks
+                else "Restoring speech detail"
+            )
+            check_runtime(progress=progress, detail=detail, eta_seconds=eta_seconds)
+
+        enhanced, enhanced_sr = resemble_enhance(
+            dwav=dereverbed_tensor,
+            sr=sample_rate,
+            device=self.studio_v18_enhance_device,
+            nfe=self.studio_v18_nfe,
+            solver="midpoint",
+            lambd=self.studio_v18_lambd,
+            tau=self.studio_v18_tau,
+            run_dir=default_run_dir(),
+            progress_callback=on_enhance_progress,
+        )
+        check_runtime(progress=0.9, detail="Enhancement complete. Preparing output.", eta_seconds=8)
+
+        output_path = out_dir / "studio_v18.wav"
+        torchaudio.save(str(output_path), enhanced.detach().cpu()[None], enhanced_sr)
+        return output_path
 
 
 def _parse_model(raw: str | None, default: str) -> EnhancementModel:

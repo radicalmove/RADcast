@@ -134,8 +134,12 @@ Those are only used if `RADCAST_STUDIO_V18_DEREVERB_METHOD` is changed away from
 - The slow stage is `Resemble Enhance`.
 - On Apple Silicon helpers, `RADcast Optimized` now prefers `mps` for the enhancement stage when available.
 - The macOS helper bootstrap also installs current `torch`, `torchaudio`, `torchvision`, and `torchcodec` wheels before installing RADcast.
+- `RADcast Optimized` now runs in-process inside the long-lived helper/server process instead of spawning a fresh `radcast-studio-enhance` subprocess for every job.
+- That means repeated jobs can reuse the loaded `Resemble` model through `radcast.services.resemble_safe.load_enhancer()`.
+- On this Apple Silicon Mac, a real `6s` clip dropped from `28.7s` on the first in-process run to `11.7s` on the second run because the model stayed warm in memory.
 - On Windows GPU helpers, `RADcast Optimized` should use `cuda` automatically when available.
 - The stage-specific override is `RADCAST_STUDIO_V18_ENHANCE_DEVICE`.
+- This specific Mac is still blocked from using `mps` by the local PyTorch runtime reporting `mps_built=True` but `mps_available=False` on macOS `26.x`, so the current speed win here comes from eliminating cold starts rather than GPU acceleration.
 
 ## Dependencies
 

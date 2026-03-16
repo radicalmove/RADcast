@@ -126,6 +126,7 @@ def enhance(
     lambd: float = 0.5,
     tau: float = 0.5,
     run_dir: Path | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ):
     enhancer = load_enhancer(run_dir, device)
     enhancer.configurate_(nfe=nfe, solver=solver, lambd=lambd, tau=tau)
@@ -137,6 +138,7 @@ def enhance(
         device=device,
         chunk_seconds=chunk_seconds,
         overlap_seconds=overlap_seconds,
+        progress_callback=progress_callback,
     )
 
 
@@ -165,6 +167,7 @@ def _run_inference_with_progress(
     device: str,
     chunk_seconds: float,
     overlap_seconds: float,
+    progress_callback: Callable[[int, int], None] | None = None,
 ):
     remove_weight_norm_recursively(model)
     hp = model.hp
@@ -191,10 +194,14 @@ def _run_inference_with_progress(
     total_chunks = max(1, len(chunk_starts))
 
     print(f"RADCAST_ENHANCE_PROGRESS 0/{total_chunks}", flush=True)
+    if progress_callback is not None:
+        progress_callback(0, total_chunks)
     chunks = []
     for index, start in enumerate(chunk_starts, start=1):
         chunks.append(run_inference_chunk(model, dwav[start : start + chunk_length], sr, device))
         print(f"RADCAST_ENHANCE_PROGRESS {index}/{total_chunks}", flush=True)
+        if progress_callback is not None:
+            progress_callback(index, total_chunks)
 
     hwav = run_merge_chunks(chunks, chunk_length, hop_length, sr=sr, length=dwav.shape[-1])
 

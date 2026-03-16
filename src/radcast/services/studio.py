@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Callable
 
 import numpy as np
 from scipy.linalg import solve
@@ -190,6 +191,7 @@ def chunked_nara_wpe_dereverb(
     psd_context: int = 1,
     fft_size: int = 512,
     hop_size: int = 128,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> np.ndarray:
     """Run single-channel nara_wpe dereverberation in overlapping chunks.
 
@@ -220,6 +222,11 @@ def chunked_nara_wpe_dereverb(
     output = np.zeros(len(audio), dtype=np.float64)
     weights = np.zeros(len(audio), dtype=np.float64)
     start = 0
+    total_chunks = max(1, math.ceil(max(1, len(audio) - overlap_samples) / max(1, step_samples)))
+    completed_chunks = 0
+
+    if progress_callback is not None:
+        progress_callback(0, total_chunks)
 
     while start < len(audio):
         end = min(len(audio), start + chunk_samples)
@@ -248,6 +255,9 @@ def chunked_nara_wpe_dereverb(
 
         output[start:end] += dereverbed * fade
         weights[start:end] += fade
+        completed_chunks += 1
+        if progress_callback is not None:
+            progress_callback(min(completed_chunks, total_chunks), total_chunks)
         start += step_samples
 
     mask = weights > 1e-8

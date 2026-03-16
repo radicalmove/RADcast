@@ -485,9 +485,7 @@ def test_studio_v18_model_uses_studio_v18_postfilter(monkeypatch: pytest.MonkeyP
     source = tmp_path / "input.wav"
     source.write_bytes(b"fake-wav")
     calls: list[str | None] = []
-    backend_commands: list[list[str]] = []
 
-    monkeypatch.setattr("radcast.services.enhance._command_available", lambda _cmd: True)
     monkeypatch.setattr("radcast.services.enhance._python_modules_available", lambda _mods: True)
     monkeypatch.setattr("radcast.services.enhance.probe_duration_seconds", lambda _path: 5.0)
 
@@ -496,28 +494,14 @@ def test_studio_v18_model_uses_studio_v18_postfilter(monkeypatch: pytest.MonkeyP
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(b"converted")
 
-    class FakeProc:
-        returncode = 0
-
-        def poll(self):
-            return 0
-
-        def wait(self, timeout=None):
-            return 0
-
-        def communicate(self):
-            return ("", "")
-
-        def terminate(self):
-            return None
-
-    def fake_popen(command, *args, **kwargs):
-        backend_commands.append(command)
-        return FakeProc()
+    def fake_run_studio_v18(self, *, out_dir: Path, **kwargs) -> Path:
+        output = out_dir / "studio_v18.wav"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"fake-wav")
+        return output
 
     monkeypatch.setattr("radcast.services.enhance.run_ffmpeg_convert", fake_convert)
-    monkeypatch.setattr("radcast.services.enhance.subprocess.Popen", fake_popen)
-    monkeypatch.setattr(EnhanceService, "_collect_backend_output", lambda self, *, model, out_dir: source)
+    monkeypatch.setattr(EnhanceService, "_run_studio_v18_inprocess", fake_run_studio_v18)
 
     final_path = service.enhance(
         job_id="job1",
@@ -531,9 +515,14 @@ def test_studio_v18_model_uses_studio_v18_postfilter(monkeypatch: pytest.MonkeyP
 
     assert final_path.suffix == ".mp3"
     assert calls == [service.studio_v18_postfilter]
-    assert backend_commands
-    assert "--dereverb-method" in backend_commands[0]
-    assert "nara" in backend_commands[0]
-    assert "--nara-chunk-seconds" in backend_commands[0]
     assert service.output_tuning_label_for_model(EnhancementModel.STUDIO_V18) == "RADcast Optimized"
     assert service.output_tuning_label_for_model(EnhancementModel.NONE) is None
+
+
+def test_studio_v18_availability_does_not_require_cli_command(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("radcast.services.enhance._command_available", lambda _cmd: False)
+    monkeypatch.setattr("radcast.services.enhance._python_modules_available", lambda _mods: True)
+
+    service = EnhanceService()
+
+    assert service.is_model_available(EnhancementModel.STUDIO_V18) is True
