@@ -13,6 +13,7 @@ from radcast.services.enhance import (
     _estimate_progress,
     _estimate_remaining_seconds,
     _estimate_runtime_seconds,
+    _estimate_timeout_seconds,
     _resolve_command,
     _resolve_enhance_device,
 )
@@ -179,6 +180,12 @@ def test_estimate_remaining_seconds_keeps_countdown_during_overtime():
     assert near_finish is not None
     assert later_overtime is not None
     assert near_finish > later_overtime >= 8
+
+
+def test_estimate_timeout_seconds_gives_studio_jobs_extra_headroom():
+    timeout = _estimate_timeout_seconds(120, enhancement_model=EnhancementModel.STUDIO_V18)
+    assert timeout >= 12 * 60
+    assert timeout > 120
 
 
 def test_resolve_enhance_device_prefers_configured_value():

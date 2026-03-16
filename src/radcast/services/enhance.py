@@ -225,6 +225,7 @@ class EnhanceService:
                 nfe=self.nfe,
                 enhancement_model=model,
             )
+            timeout_seconds = _estimate_timeout_seconds(expected_runtime_seconds, enhancement_model=model)
             on_stage("enhance", 0.2, initial_detail, None)
             try:
                 proc = subprocess.Popen(
@@ -246,6 +247,16 @@ class EnhanceService:
                         proc.terminate()
                         raise JobCancelledError("job cancelled")
                     elapsed = time.monotonic() - started
+                    if elapsed >= timeout_seconds:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait(timeout=5)
+                        raise EnhancementRuntimeError(
+                            f"{MODEL_LABELS[model]} timed out after {int(round(elapsed))}s on the helper device."
+                        )
                     progress = _estimate_progress(elapsed, expected_runtime_seconds)
                     eta_seconds = _estimate_remaining_seconds(elapsed, expected_runtime_seconds)
                     detail_text = _progress_detail_for_model(model, elapsed, expected_runtime_seconds, eta_seconds)
@@ -620,6 +631,17 @@ def _estimate_remaining_seconds(elapsed_seconds: float, expected_runtime_seconds
     tail_seconds = max(expected * 0.14, 12.0)
     overtime_buffer = max(0.0, min(expected * 0.18, overtime * 0.3))
     return int(round(max(8.0, tail_seconds - overtime_buffer)))
+
+
+def _estimate_timeout_seconds(expected_runtime_seconds: int, *, enhancement_model: EnhancementModel) -> int:
+    expected = max(1, int(expected_runtime_seconds))
+    if enhancement_model in {EnhancementModel.STUDIO, EnhancementModel.STUDIO_V18}:
+        return max(12 * 60, int(round(expected * 2.75)), expected + (4 * 60))
+    if enhancement_model == EnhancementModel.RESEMBLE:
+        return max(8 * 60, int(round(expected * 2.4)), expected + (2 * 60))
+    if enhancement_model == EnhancementModel.DEEPFILTERNET:
+        return max(6 * 60, int(round(expected * 2.2)), expected + 90)
+    return max(2 * 60, int(round(expected * 2.0)))
 
 
 def _progress_detail_for_model(
