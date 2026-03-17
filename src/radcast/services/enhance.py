@@ -231,7 +231,11 @@ class EnhanceService:
                 nfe=self._nfe_for_model(model),
                 enhancement_model=model,
             )
-            timeout_seconds = _estimate_timeout_seconds(expected_runtime_seconds, enhancement_model=model)
+            timeout_seconds = _estimate_timeout_seconds(
+                expected_runtime_seconds,
+                enhancement_model=model,
+                device=self._device_for_model(model),
+            )
             if model == EnhancementModel.STUDIO_V18:
                 initial_detail = "Loading RADcast Optimized. First run can take longer."
             else:
@@ -834,8 +838,17 @@ def _estimate_remaining_seconds_from_chunks(
     return int(round(max(8.0, remaining_chunks * observed_per_chunk)))
 
 
-def _estimate_timeout_seconds(expected_runtime_seconds: int, *, enhancement_model: EnhancementModel) -> int:
+def _estimate_timeout_seconds(
+    expected_runtime_seconds: int,
+    *,
+    enhancement_model: EnhancementModel,
+    device: str = DEFAULT_ENHANCE_DEVICE,
+) -> int:
     expected = max(1, int(expected_runtime_seconds))
+    normalized_device = (device or DEFAULT_ENHANCE_DEVICE).strip().lower()
+    accelerated = normalized_device.startswith("cuda") or normalized_device == "mps"
+    if enhancement_model == EnhancementModel.STUDIO_V18 and not accelerated:
+        return max(30 * 60, int(round(expected * 4.5)), expected + (15 * 60))
     if enhancement_model in {EnhancementModel.STUDIO, EnhancementModel.STUDIO_V18}:
         return max(12 * 60, int(round(expected * 2.75)), expected + (4 * 60))
     if enhancement_model == EnhancementModel.RESEMBLE:

@@ -224,6 +224,16 @@ def test_estimate_timeout_seconds_gives_studio_jobs_extra_headroom():
     assert timeout > 120
 
 
+def test_estimate_timeout_seconds_gives_cpu_optimized_jobs_more_headroom():
+    timeout = _estimate_timeout_seconds(
+        420,
+        enhancement_model=EnhancementModel.STUDIO_V18,
+        device="cpu",
+    )
+    assert timeout >= 30 * 60
+    assert timeout > _estimate_timeout_seconds(420, enhancement_model=EnhancementModel.STUDIO_V18, device="mps")
+
+
 def test_tail_backend_log_returns_recent_text(tmp_path: Path):
     log_path = tmp_path / "backend.log"
     log_path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
