@@ -87,7 +87,7 @@ Legacy backend variables still exist for non-default models:
 
 For Ubuntu CPU deployments, use [`scripts/install-linux-cpu.sh`](/Users/rcd58/RADcast/scripts/install-linux-cpu.sh). It installs the CPU PyTorch wheels, `torchcodec`, `deepspeed` without custom ops, `resemble-enhance`, and `nara-wpe`.
 
-If the default optimized model appears unavailable, check that the active environment can import both `resemble_enhance` and `nara_wpe`. On Apple Silicon helpers, the bootstrap path now installs `RADcast`, `resemble-enhance`, and `deepfilternet` first, then reapplies the current `torch`/`torchaudio`/`torchvision`/`torchcodec` stack so `resemble-enhance` does not pin the helper back to the older 2.1 runtime. `RADcast Optimized` also now runs in-process inside the long-lived helper/server process, so repeated jobs reuse the loaded `Resemble` model instead of paying a fresh CLI cold start every time.
+If the default optimized model appears unavailable, check that the active environment can import both `resemble_enhance` and `nara_wpe`. On Apple Silicon helpers, the bootstrap path now keeps the helper on the known-good `resemble-enhance` Torch stack (`torch 2.1.1`, `torchaudio 2.1.1`, `torchvision 0.16.1`) and leaves the optimized enhancement stage on `cpu` by default. `RADcast Optimized` still runs in-process inside the long-lived helper/server process, so repeated jobs reuse the loaded `Resemble` model instead of paying a fresh CLI cold start every time.
 
 ## Experimental paired restoration
 

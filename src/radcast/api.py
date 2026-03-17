@@ -113,9 +113,7 @@ WORKER_INSTALL_SPEC = (
     os.environ.get("RADCAST_WORKER_INSTALL_SPEC", "git+https://github.com/radicalmove/RADcast.git").strip()
     or "git+https://github.com/radicalmove/RADcast.git"
 )
-MACOS_HELPER_TORCH_INSTALL = (
-    "torch==2.10.0 torchaudio==2.10.0 torchvision==0.25.0 torchcodec==0.10.0"
-)
+MACOS_HELPER_TORCH_INSTALL = "torch==2.1.1 torchaudio==2.1.1 torchvision==0.16.1"
 
 
 app = FastAPI(title="RADcast API", version="0.1.0")

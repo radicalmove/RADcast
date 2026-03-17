@@ -83,9 +83,7 @@ def macos_launch_agent_payload(*, label: str, python_exe: Path, server_url: str,
     logs_dir = config_path.parent
     logs_dir.mkdir(parents=True, exist_ok=True)
     environment = {"PATH": default_worker_path([str(python_exe.parent)])}
-    environment.setdefault("RADCAST_STUDIO_V18_ENHANCE_DEVICE", "auto")
-    environment.setdefault("RADCAST_ALLOW_MPS_ENHANCEMENT", "1")
-    environment.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    environment.setdefault("RADCAST_STUDIO_V18_ENHANCE_DEVICE", "cpu")
     return {
         "Label": label,
         "ProgramArguments": build_worker_command_args(

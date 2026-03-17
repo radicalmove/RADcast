@@ -132,14 +132,14 @@ Those are only used if `RADCAST_STUDIO_V18_DEREVERB_METHOD` is changed away from
 
 - The optimized dereverb stage is CPU-bound and already relatively cheap.
 - The slow stage is `Resemble Enhance`.
-- On Apple Silicon helpers, `RADcast Optimized` now prefers `mps` for the enhancement stage when available.
-- The macOS helper bootstrap installs `RADcast`, `resemble-enhance`, and `deepfilternet` first, then reapplies the current `torch`, `torchaudio`, `torchvision`, and `torchcodec` wheels so the helper does not get pinned back to the older 2.1 Torch runtime.
+- On Apple Silicon helpers, the default optimized enhancement stage now stays on `cpu`.
+- The macOS helper bootstrap installs `RADcast`, `resemble-enhance`, and `deepfilternet` first, then reapplies the known-good `resemble-enhance` Torch stack: `torch 2.1.1`, `torchaudio 2.1.1`, and `torchvision 0.16.1`.
 - `RADcast Optimized` now runs in-process inside the long-lived helper/server process instead of spawning a fresh `radcast-studio-enhance` subprocess for every job.
 - That means repeated jobs can reuse the loaded `Resemble` model through `radcast.services.resemble_safe.load_enhancer()`.
 - On this Apple Silicon Mac, a real `6s` clip dropped from `28.7s` on the first in-process run to `11.7s` on the second run because the model stayed warm in memory.
 - On Windows GPU helpers, `RADcast Optimized` should use `cuda` automatically when available.
 - The stage-specific override is `RADCAST_STUDIO_V18_ENHANCE_DEVICE`.
-- This specific Mac is still blocked from using `mps` by the local PyTorch runtime reporting `mps_built=True` but `mps_available=False` on macOS `26.x`, so the current speed win here comes from eliminating cold starts rather than GPU acceleration.
+- This specific Mac is still blocked from using `mps` reliably. The attempted Torch `2.10` Apple Silicon runtime produced a severe quality regression on the held-out lecture, so the helper now stays on the known-good CPU path until a validated MPS stack exists.
 
 ## Dependencies
 
