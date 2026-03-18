@@ -80,6 +80,41 @@ def test_worker_invite_and_status_endpoints_render(monkeypatch):
     assert "speech_cleanup" in models_payload
 
 
+def test_worker_timeout_failure_switches_to_server_fallback(monkeypatch):
+    client = TestClient(app)
+
+    called: dict[str, object] = {}
+
+    def fake_fallback(job_id: str, *, reason: str, allowed_statuses: set[str] | None = None) -> bool:
+        called["job_id"] = job_id
+        called["reason"] = reason
+        called["allowed_statuses"] = allowed_statuses
+        return True
+
+    monkeypatch.setattr(radcast_api, "_run_claimed_fallback_job", fake_fallback)
+    monkeypatch.setattr(radcast_api, "WORKER_FALLBACK_ENABLED", True)
+
+    def unexpected_fail(job_id, req):
+        raise AssertionError("worker_manager.fail_job should not be called for helper timeout fallback")
+
+    monkeypatch.setattr(radcast_api.worker_manager, "fail_job", unexpected_fail)
+
+    response = client.post(
+        "/workers/jobs/job_timeout/fail",
+        json={
+            "worker_id": "wrk_test",
+            "api_key": "secret",
+            "error": "RADcast Optimized timed out after 1816s on the helper device.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "fallback_local"}
+    assert called["job_id"] == "job_timeout"
+    assert called["allowed_statuses"] == {"running"}
+    assert "Switching to RADcast server fallback." in str(called["reason"])
+
+
 def test_project_create_and_list_roundtrip():
     client = TestClient(app)
     project_id = f"radcast-{uuid.uuid4().hex[:8]}"

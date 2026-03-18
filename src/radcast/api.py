@@ -1756,6 +1756,18 @@ def worker_progress(job_id: str, req: WorkerJobProgressRequest):
 
 @app.post("/workers/jobs/{job_id}/fail")
 def worker_fail(job_id: str, req: WorkerJobFailRequest):
+    error_text = (req.error or "").strip()
+    if (
+        WORKER_FALLBACK_ENABLED
+        and "timed out after" in error_text.lower()
+        and "helper device" in error_text.lower()
+        and _run_claimed_fallback_job(
+            job_id,
+            reason=f"{error_text} Switching to RADcast server fallback.",
+            allowed_statuses={"running"},
+        )
+    ):
+        return {"status": "fallback_local"}
     return {"status": worker_manager.fail_job(job_id, req)}
 
 
