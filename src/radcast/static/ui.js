@@ -20,6 +20,17 @@ const deleteSourceAudioBtn = document.getElementById("delete-source-audio-btn");
 const savedSourceAudioStatusNode = document.getElementById("saved-source-audio-status");
 const sourcePreviewLabelNode = document.getElementById("source-preview-label");
 const sourceAudioPreviewNode = document.getElementById("source-audio-preview");
+const trimBlockNode = document.getElementById("trim-block");
+const trimRailNode = document.getElementById("trim-rail");
+const trimSelectionNode = document.getElementById("trim-selection");
+const trimPlayheadNode = document.getElementById("trim-playhead");
+const trimStartHandleNode = document.getElementById("trim-start-handle");
+const trimEndHandleNode = document.getElementById("trim-end-handle");
+const trimStatusNode = document.getElementById("trim-status");
+const trimStartValueNode = document.getElementById("trim-start-value");
+const trimEndValueNode = document.getElementById("trim-end-value");
+const trimOutputLengthValueNode = document.getElementById("trim-output-length-value");
+const trimResetBtn = document.getElementById("trim-reset-btn");
 
 const outputFormatNode = document.getElementById("output-format");
 const captionFormatNode = document.getElementById("caption-format");
@@ -84,15 +95,24 @@ const stageLabels = {
 };
 
 const flexibleEtaStages = new Set(["enhance", "cleanup", "captions"]);
+const MIN_TRIM_OUTPUT_SECONDS = 0.5;
 
 const state = {
   activeProjectRef: null,
   activeProjectLabel: null,
   selectedAudioFile: null,
   selectedAudioHash: null,
+  selectedAudioTempKey: null,
+  selectedAudioDurationSeconds: null,
   projectSettings: null,
   projectSettingsSaveTimer: null,
   sourceAudioSamples: [],
+  transientTrimRangesByAudioKey: {},
+  activeTrimAudioKey: null,
+  activeTrimStartSeconds: 0,
+  activeTrimEndSeconds: null,
+  trimDragMode: null,
+  trimPointerId: null,
   activeJobId: null,
   pollTimer: null,
   progressAnimator: null,
@@ -162,9 +182,114 @@ function normalizeCaptionQualityMode(value) {
   return "reviewed";
 }
 
+function makeTemporaryAudioKey(file) {
+  if (!(file instanceof File)) return null;
+  return `temp:${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function normalizeTrimRangeEntry(value) {
+  const payload = value && typeof value === "object" ? value : null;
+  if (!payload) return null;
+  const start = Number(payload.clip_start_seconds);
+  const end = Number(payload.clip_end_seconds);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (start < 0 || end <= start) return null;
+  return {
+    clip_start_seconds: start,
+    clip_end_seconds: end,
+  };
+}
+
+function normalizeTrimRangesMap(value) {
+  const payload = value && typeof value === "object" ? value : {};
+  const ranges = {};
+  for (const [key, entry] of Object.entries(payload)) {
+    const audioHash = cleanOptional(key);
+    const normalized = normalizeTrimRangeEntry(entry);
+    if (!audioHash || !normalized) continue;
+    ranges[audioHash] = normalized;
+  }
+  return ranges;
+}
+
+function getSelectedAudioDurationSeconds() {
+  const duration = Number(state.selectedAudioDurationSeconds);
+  return Number.isFinite(duration) && duration > 0 ? duration : null;
+}
+
+function formatTrimSeconds(value) {
+  const numeric = Number(value || 0);
+  const safe = Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
+  return `${safe.toFixed(1)}s`;
+}
+
+function effectiveMinTrimOutputSeconds(duration) {
+  const safeDuration = Number(duration || 0);
+  if (!Number.isFinite(safeDuration) || safeDuration <= 0) return MIN_TRIM_OUTPUT_SECONDS;
+  return Math.max(0.05, Math.min(MIN_TRIM_OUTPUT_SECONDS, safeDuration));
+}
+
+function buildClampedTrimRange(startSeconds, endSeconds, durationSeconds) {
+  const duration = Number(durationSeconds || 0);
+  if (!Number.isFinite(duration) || duration <= 0) return null;
+  const minOutput = effectiveMinTrimOutputSeconds(duration);
+  if (duration <= minOutput) {
+    return {
+      clip_start_seconds: 0,
+      clip_end_seconds: duration,
+    };
+  }
+
+  let start = Number(startSeconds);
+  let end = Number(endSeconds);
+  start = Number.isFinite(start) ? start : 0;
+  end = Number.isFinite(end) ? end : duration;
+
+  start = Math.max(0, Math.min(start, duration - minOutput));
+  end = Math.max(minOutput, Math.min(end, duration));
+
+  if (end - start < minOutput) {
+    end = Math.min(duration, start + minOutput);
+  }
+  if (end - start < minOutput) {
+    start = Math.max(0, end - minOutput);
+  }
+
+  return {
+    clip_start_seconds: start,
+    clip_end_seconds: end,
+  };
+}
+
+function isFullTrimRange(range, durationSeconds) {
+  const duration = Number(durationSeconds || 0);
+  if (!range || !Number.isFinite(duration) || duration <= 0) return true;
+  const epsilon = 0.05;
+  return range.clip_start_seconds <= epsilon && range.clip_end_seconds >= duration - epsilon;
+}
+
+function currentSelectedAudioKeyInfo() {
+  if (state.selectedAudioHash) {
+    return { kind: "saved", key: state.selectedAudioHash };
+  }
+  if (state.selectedAudioTempKey) {
+    return { kind: "temp", key: state.selectedAudioTempKey };
+  }
+  return null;
+}
+
+function getStoredTrimRangeForKey(keyInfo) {
+  if (!keyInfo?.key) return null;
+  if (keyInfo.kind === "saved") {
+    return normalizeTrimRangeEntry(state.projectSettings?.trim_ranges_by_audio_hash?.[keyInfo.key]);
+  }
+  return normalizeTrimRangeEntry(state.transientTrimRangesByAudioKey[keyInfo.key]);
+}
+
 function defaultProjectSettings() {
   return {
     selected_audio_hash: null,
+    trim_ranges_by_audio_hash: {},
     output_format: "mp3",
     caption_format: null,
     caption_quality_mode: "reviewed",
@@ -221,6 +346,7 @@ function normalizeProjectSettings(payload) {
 
   return {
     selected_audio_hash: selectedAudioHash && selectedAudioHash.length >= 16 ? selectedAudioHash : null,
+    trim_ranges_by_audio_hash: normalizeTrimRangesMap(data.trim_ranges_by_audio_hash),
     output_format: outputFormat === "wav" ? "wav" : "mp3",
     caption_format: captionFormat,
     caption_quality_mode: captionQualityMode,
@@ -263,15 +389,280 @@ function applyProjectSettingsToControls(settings) {
   updateSpeechCleanupStatusFromSelection();
   updateCaptionFormatStatus();
   updateGenerateButtonLabel();
+  renderTrimRail();
 }
 
 function resetProjectSettingsControls() {
   applyProjectSettingsToControls(defaultProjectSettings());
+  renderTrimRail();
+}
+
+function setTrimStatus(message, isError = false) {
+  if (!trimStatusNode) return;
+  trimStatusNode.textContent = message || "";
+  trimStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function trimPercentForSeconds(seconds) {
+  const duration = getSelectedAudioDurationSeconds();
+  if (!duration) return 0;
+  const safeSeconds = Math.max(0, Math.min(duration, Number(seconds || 0)));
+  return (safeSeconds / duration) * 100;
+}
+
+function currentPreviewTimeSeconds() {
+  const duration = getSelectedAudioDurationSeconds();
+  if (!duration) return 0;
+  if (sourceAudioPreviewNode) {
+    const current = Number(sourceAudioPreviewNode.currentTime);
+    if (Number.isFinite(current)) {
+      return Math.max(0, Math.min(duration, current));
+    }
+  }
+  return Math.max(0, Math.min(duration, Number(state.activeTrimStartSeconds || 0)));
+}
+
+function currentActiveTrimRange() {
+  const duration = getSelectedAudioDurationSeconds();
+  if (!duration) return null;
+  return buildClampedTrimRange(
+    state.activeTrimStartSeconds,
+    state.activeTrimEndSeconds ?? duration,
+    duration
+  );
+}
+
+function currentTrimRangePayload() {
+  const duration = getSelectedAudioDurationSeconds();
+  const range = currentActiveTrimRange();
+  if (!duration || !range || isFullTrimRange(range, duration)) {
+    return null;
+  }
+  return range;
+}
+
+function buildTrimRangesPayload() {
+  const trimRanges = normalizeTrimRangesMap(state.projectSettings?.trim_ranges_by_audio_hash);
+  const keyInfo = currentSelectedAudioKeyInfo();
+  if (keyInfo?.kind !== "saved") {
+    return trimRanges;
+  }
+  const activeRange = currentTrimRangePayload();
+  if (activeRange) {
+    trimRanges[keyInfo.key] = activeRange;
+  } else {
+    delete trimRanges[keyInfo.key];
+  }
+  return trimRanges;
+}
+
+function renderTrimRail() {
+  const duration = getSelectedAudioDurationSeconds();
+  const activeKeyInfo = currentSelectedAudioKeyInfo();
+  const hasAudio = Boolean(activeKeyInfo?.key);
+  const range = currentActiveTrimRange();
+  const enabled = Boolean(hasAudio && duration && range);
+
+  if (trimBlockNode) {
+    trimBlockNode.classList.toggle("trim-block-disabled", !enabled);
+  }
+  if (trimResetBtn) {
+    trimResetBtn.disabled = !enabled || !currentTrimRangePayload();
+  }
+
+  if (!enabled) {
+    if (trimSelectionNode) {
+      trimSelectionNode.style.left = "0%";
+      trimSelectionNode.style.width = "100%";
+    }
+    if (trimPlayheadNode) {
+      trimPlayheadNode.style.left = "0%";
+    }
+    if (trimStartHandleNode) {
+      trimStartHandleNode.style.left = "0%";
+    }
+    if (trimEndHandleNode) {
+      trimEndHandleNode.style.left = "100%";
+    }
+    if (trimStartValueNode) trimStartValueNode.textContent = "0.0s";
+    if (trimEndValueNode) trimEndValueNode.textContent = "0.0s";
+    if (trimOutputLengthValueNode) trimOutputLengthValueNode.textContent = "0.0s";
+    setTrimStatus(hasAudio ? "Loading clip length..." : "Select audio to enable trimming.");
+    return;
+  }
+
+  const startPercent = trimPercentForSeconds(range.clip_start_seconds);
+  const endPercent = trimPercentForSeconds(range.clip_end_seconds);
+  const playheadPercent = trimPercentForSeconds(currentPreviewTimeSeconds());
+
+  if (trimSelectionNode) {
+    trimSelectionNode.style.left = `${startPercent}%`;
+    trimSelectionNode.style.width = `${Math.max(0, endPercent - startPercent)}%`;
+  }
+  if (trimPlayheadNode) {
+    trimPlayheadNode.style.left = `${playheadPercent}%`;
+  }
+  if (trimStartHandleNode) {
+    trimStartHandleNode.style.left = `${startPercent}%`;
+  }
+  if (trimEndHandleNode) {
+    trimEndHandleNode.style.left = `${endPercent}%`;
+  }
+  if (trimStartValueNode) {
+    trimStartValueNode.textContent = formatTrimSeconds(range.clip_start_seconds);
+  }
+  if (trimEndValueNode) {
+    trimEndValueNode.textContent = formatTrimSeconds(range.clip_end_seconds);
+  }
+  if (trimOutputLengthValueNode) {
+    trimOutputLengthValueNode.textContent = formatTrimSeconds(
+      Math.max(0, range.clip_end_seconds - range.clip_start_seconds)
+    );
+  }
+
+  if (currentTrimRangePayload()) {
+    setTrimStatus("Drag the ends to trim. Click the bar to audition.");
+  } else {
+    setTrimStatus("Click the bar to audition. Drag the ends to trim.");
+  }
+}
+
+function setSelectedAudioDuration(durationSeconds, { restoreStored = false } = {}) {
+  const duration = Number(durationSeconds || 0);
+  state.selectedAudioDurationSeconds = Number.isFinite(duration) && duration > 0 ? duration : null;
+  const currentKey = currentSelectedAudioKeyInfo()?.key || null;
+
+  if (!currentKey) {
+    state.activeTrimAudioKey = null;
+    state.activeTrimStartSeconds = 0;
+    state.activeTrimEndSeconds = state.selectedAudioDurationSeconds;
+    renderTrimRail();
+    return;
+  }
+
+  if (restoreStored || state.activeTrimAudioKey !== currentKey) {
+    const storedRange = getStoredTrimRangeForKey(currentSelectedAudioKeyInfo());
+    const range = buildClampedTrimRange(
+      storedRange?.clip_start_seconds ?? 0,
+      storedRange?.clip_end_seconds ?? state.selectedAudioDurationSeconds,
+      state.selectedAudioDurationSeconds
+    );
+    state.activeTrimAudioKey = currentKey;
+    state.activeTrimStartSeconds = range?.clip_start_seconds ?? 0;
+    state.activeTrimEndSeconds = range?.clip_end_seconds ?? state.selectedAudioDurationSeconds;
+    renderTrimRail();
+    return;
+  }
+
+  const nextRange = currentActiveTrimRange();
+  state.activeTrimStartSeconds = nextRange?.clip_start_seconds ?? 0;
+  state.activeTrimEndSeconds = nextRange?.clip_end_seconds ?? state.selectedAudioDurationSeconds;
+  renderTrimRail();
+}
+
+function persistTrimRangeForCurrentAudio({ queueSave = true } = {}) {
+  const keyInfo = currentSelectedAudioKeyInfo();
+  const duration = getSelectedAudioDurationSeconds();
+  if (!keyInfo?.key || !duration) {
+    renderTrimRail();
+    return;
+  }
+
+  const activeRange = currentTrimRangePayload();
+  if (keyInfo.kind === "saved") {
+    const nextSettings = normalizeProjectSettings({
+      ...(state.projectSettings || defaultProjectSettings()),
+      trim_ranges_by_audio_hash: normalizeTrimRangesMap(state.projectSettings?.trim_ranges_by_audio_hash),
+    });
+    if (activeRange) {
+      nextSettings.trim_ranges_by_audio_hash[keyInfo.key] = activeRange;
+    } else {
+      delete nextSettings.trim_ranges_by_audio_hash[keyInfo.key];
+    }
+    state.projectSettings = nextSettings;
+    if (queueSave) {
+      queueProjectSettingsSave();
+    }
+  } else if (activeRange) {
+    state.transientTrimRangesByAudioKey[keyInfo.key] = activeRange;
+  } else {
+    delete state.transientTrimRangesByAudioKey[keyInfo.key];
+  }
+
+  renderTrimRail();
+}
+
+function seekPreviewTo(seconds) {
+  const duration = getSelectedAudioDurationSeconds();
+  if (!duration || !sourceAudioPreviewNode) {
+    renderTrimRail();
+    return;
+  }
+  const nextSeconds = Math.max(0, Math.min(duration, Number(seconds || 0)));
+  try {
+    sourceAudioPreviewNode.currentTime = nextSeconds;
+  } catch {
+    // Ignore seek errors until metadata is ready.
+  }
+  renderTrimRail();
+}
+
+function trimSecondsFromClientX(clientX) {
+  const duration = getSelectedAudioDurationSeconds();
+  const rect = trimRailNode?.getBoundingClientRect();
+  if (!duration || !rect || rect.width <= 0) return 0;
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  return duration * ratio;
+}
+
+function applyTrimHandlePosition(mode, seconds) {
+  const duration = getSelectedAudioDurationSeconds();
+  const range = currentActiveTrimRange();
+  if (!duration || !range) return;
+
+  const minOutput = effectiveMinTrimOutputSeconds(duration);
+  if (mode === "start") {
+    const nextStart = Math.max(0, Math.min(range.clip_end_seconds - minOutput, seconds));
+    state.activeTrimStartSeconds = nextStart;
+    state.activeTrimEndSeconds = range.clip_end_seconds;
+    seekPreviewTo(nextStart);
+  } else if (mode === "end") {
+    const nextEnd = Math.min(duration, Math.max(range.clip_start_seconds + minOutput, seconds));
+    state.activeTrimStartSeconds = range.clip_start_seconds;
+    state.activeTrimEndSeconds = nextEnd;
+    seekPreviewTo(nextEnd);
+  }
+  persistTrimRangeForCurrentAudio();
+}
+
+function resetTrimRange() {
+  const duration = getSelectedAudioDurationSeconds();
+  if (!duration) return;
+  state.activeTrimStartSeconds = 0;
+  state.activeTrimEndSeconds = duration;
+  seekPreviewTo(0);
+  persistTrimRangeForCurrentAudio();
+}
+
+function enforcePreviewTrimBounds() {
+  const range = currentActiveTrimRange();
+  if (!range || !sourceAudioPreviewNode) {
+    renderTrimRail();
+    return;
+  }
+  if (sourceAudioPreviewNode.currentTime > range.clip_end_seconds + 0.01) {
+    sourceAudioPreviewNode.pause();
+    sourceAudioPreviewNode.currentTime = range.clip_end_seconds;
+  } else if (sourceAudioPreviewNode.currentTime < range.clip_start_seconds) {
+    sourceAudioPreviewNode.currentTime = range.clip_start_seconds;
+  }
+  renderTrimRail();
 }
 
 function currentProjectSettingsPayload() {
   return normalizeProjectSettings({
     selected_audio_hash: state.selectedAudioHash,
+    trim_ranges_by_audio_hash: buildTrimRangesPayload(),
     output_format: cleanOptional(outputFormatNode?.value) || "mp3",
     caption_format: selectedCaptionFormat(),
     caption_quality_mode: selectedCaptionQualityMode(),
@@ -857,6 +1248,8 @@ function clearSourcePreview() {
     sourceAudioPreviewNode.load();
   }
   if (sourcePreviewLabelNode) sourcePreviewLabelNode.hidden = true;
+  state.selectedAudioDurationSeconds = null;
+  renderTrimRail();
 }
 
 function setSourcePreviewUrl(url) {
@@ -880,6 +1273,10 @@ function setSourcePreviewFile(file) {
 function resetAudioSelection() {
   state.selectedAudioFile = null;
   state.selectedAudioHash = null;
+  state.selectedAudioTempKey = null;
+  state.activeTrimAudioKey = null;
+  state.activeTrimStartSeconds = 0;
+  state.activeTrimEndSeconds = null;
   clearSourcePreview();
   if (audioFileInputNode) audioFileInputNode.value = "";
   if (savedSourceAudioSelectNode) savedSourceAudioSelectNode.value = "";
@@ -1041,11 +1438,16 @@ async function fileToBase64(file) {
 function updateAudioSelection(file) {
   state.selectedAudioFile = file || null;
   state.selectedAudioHash = null;
+  state.selectedAudioTempKey = makeTemporaryAudioKey(file);
   if (savedSourceAudioSelectNode) {
     savedSourceAudioSelectNode.value = "";
   }
   updateSourceAudioDeleteButtonState();
   setSourcePreviewFile(file || null);
+  state.activeTrimAudioKey = null;
+  state.activeTrimStartSeconds = 0;
+  state.activeTrimEndSeconds = null;
+  setSelectedAudioDuration(null, { restoreStored: true });
   if (!file) {
     if (audioDropzoneTitleNode) audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
     if (audioFileNameNode) audioFileNameNode.textContent = "No file selected.";
@@ -1103,6 +1505,7 @@ function applySavedSourceAudioSelection(audioHash) {
 
   state.selectedAudioFile = null;
   state.selectedAudioHash = sample.audio_hash;
+  state.selectedAudioTempKey = null;
   if (audioFileInputNode) {
     audioFileInputNode.value = "";
   }
@@ -1117,6 +1520,7 @@ function applySavedSourceAudioSelection(audioHash) {
     audioFileNameNode.textContent = `${sample.source_filename || "saved-audio"} (${stamped}${durationHint})`;
   }
   setSavedSourceAudioStatus(`Using saved project audio: ${sample.source_filename || sample.audio_hash.slice(0, 8)}.`);
+  setSelectedAudioDuration(sample.duration_seconds, { restoreStored: true });
   updateSourceAudioDeleteButtonState();
 }
 
@@ -1200,8 +1604,19 @@ async function handleDeleteSavedSourceAudio() {
       { audio_hash: sample.audio_hash }
     );
 
+    const nextSettings = normalizeProjectSettings({
+      ...(state.projectSettings || defaultProjectSettings()),
+      trim_ranges_by_audio_hash: normalizeTrimRangesMap(state.projectSettings?.trim_ranges_by_audio_hash),
+    });
+    delete nextSettings.trim_ranges_by_audio_hash[sample.audio_hash];
+    state.projectSettings = nextSettings;
+
     if (state.selectedAudioHash === sample.audio_hash) {
       state.selectedAudioHash = null;
+      state.selectedAudioTempKey = null;
+      state.activeTrimAudioKey = null;
+      state.activeTrimStartSeconds = 0;
+      state.activeTrimEndSeconds = null;
       if (!state.selectedAudioFile) {
         if (savedSourceAudioSelectNode) {
           savedSourceAudioSelectNode.value = "";
@@ -1214,6 +1629,8 @@ async function handleDeleteSavedSourceAudio() {
         }
         setSourcePreviewFile(null);
       }
+      queueProjectSettingsSave();
+    } else {
       queueProjectSettingsSave();
     }
 
@@ -1238,8 +1655,20 @@ async function saveSelectedAudioFile(file) {
   };
   const data = await requestJSON(`/projects/${encodeURIComponent(projectId)}/source-audio`, "POST", payload);
   const audioHash = String(data.audio_hash || "");
+  const tempKey = state.selectedAudioTempKey;
+  const tempTrimRange = tempKey ? normalizeTrimRangeEntry(state.transientTrimRangesByAudioKey[tempKey]) : null;
   state.selectedAudioFile = null;
+  state.selectedAudioTempKey = null;
   state.selectedAudioHash = audioHash || null;
+  if (audioHash && tempTrimRange) {
+    const nextSettings = normalizeProjectSettings({
+      ...(state.projectSettings || defaultProjectSettings()),
+      trim_ranges_by_audio_hash: normalizeTrimRangesMap(state.projectSettings?.trim_ranges_by_audio_hash),
+    });
+    nextSettings.trim_ranges_by_audio_hash[audioHash] = tempTrimRange;
+    state.projectSettings = nextSettings;
+    delete state.transientTrimRangesByAudioKey[tempKey];
+  }
   await loadSourceAudioSamples(audioHash);
   queueProjectSettingsSave();
   return audioHash || null;
@@ -1747,6 +2176,8 @@ async function handleGenerate() {
       caption_format: selectedCaptionFormat(),
       caption_quality_mode: selectedCaptionQualityMode(),
       enhancement_model: selectedEnhancementModelId(),
+      clip_start_seconds: currentTrimRangePayload()?.clip_start_seconds ?? null,
+      clip_end_seconds: currentTrimRangePayload()?.clip_end_seconds ?? null,
       max_silence_seconds: selectedMaxSilenceSeconds(),
       remove_filler_words: Boolean(removeFillerWordsNode?.checked && state.speechCleanupAvailable),
       filler_removal_mode: selectedFillerRemovalMode(),
@@ -1999,6 +2430,81 @@ function wireDragAndDrop() {
   });
 }
 
+function wireTrimRail() {
+  if (!trimRailNode) return;
+
+  const beginDrag = (mode, event) => {
+    if (!getSelectedAudioDurationSeconds()) return;
+    event.preventDefault();
+    state.trimDragMode = mode;
+    state.trimPointerId = event.pointerId;
+  };
+
+  if (trimStartHandleNode) {
+    trimStartHandleNode.addEventListener("pointerdown", (event) => beginDrag("start", event));
+  }
+  if (trimEndHandleNode) {
+    trimEndHandleNode.addEventListener("pointerdown", (event) => beginDrag("end", event));
+  }
+
+  trimRailNode.addEventListener("pointerdown", (event) => {
+    if (!(event.target instanceof Element)) return;
+    if (event.target.closest(".trim-handle")) return;
+    if (!getSelectedAudioDurationSeconds()) return;
+    seekPreviewTo(trimSecondsFromClientX(event.clientX));
+  });
+
+  document.addEventListener("pointermove", (event) => {
+    if (!state.trimDragMode) return;
+    applyTrimHandlePosition(state.trimDragMode, trimSecondsFromClientX(event.clientX));
+  });
+
+  document.addEventListener("pointerup", (event) => {
+    if (state.trimPointerId !== null && event.pointerId !== state.trimPointerId) return;
+    state.trimDragMode = null;
+    state.trimPointerId = null;
+  });
+
+  if (trimResetBtn) {
+    trimResetBtn.addEventListener("click", () => {
+      resetTrimRange();
+    });
+  }
+
+  if (sourceAudioPreviewNode) {
+    sourceAudioPreviewNode.addEventListener("loadedmetadata", () => {
+      setSelectedAudioDuration(sourceAudioPreviewNode.duration, {
+        restoreStored: state.activeTrimAudioKey !== (currentSelectedAudioKeyInfo()?.key || null),
+      });
+    });
+    sourceAudioPreviewNode.addEventListener("durationchange", () => {
+      if (!Number.isFinite(sourceAudioPreviewNode.duration)) return;
+      setSelectedAudioDuration(sourceAudioPreviewNode.duration, {
+        restoreStored: state.activeTrimAudioKey !== (currentSelectedAudioKeyInfo()?.key || null),
+      });
+    });
+    sourceAudioPreviewNode.addEventListener("timeupdate", () => {
+      enforcePreviewTrimBounds();
+    });
+    sourceAudioPreviewNode.addEventListener("seeking", () => {
+      renderTrimRail();
+    });
+    sourceAudioPreviewNode.addEventListener("play", () => {
+      const range = currentActiveTrimRange();
+      if (!range) return;
+      if (sourceAudioPreviewNode.currentTime < range.clip_start_seconds) {
+        sourceAudioPreviewNode.currentTime = range.clip_start_seconds;
+      } else if (sourceAudioPreviewNode.currentTime >= range.clip_end_seconds) {
+        sourceAudioPreviewNode.currentTime = Math.max(
+          range.clip_start_seconds,
+          range.clip_end_seconds - Math.min(1, range.clip_end_seconds - range.clip_start_seconds)
+        );
+      }
+      renderTrimRail();
+    });
+  }
+}
+
 async function init() {
   setupThemeToggle();
   showProjectGateway();
@@ -2122,6 +2628,10 @@ async function init() {
       const audioHash = cleanOptional(savedSourceAudioSelectNode.value);
       if (!audioHash) {
         state.selectedAudioHash = null;
+        state.selectedAudioTempKey = null;
+        state.activeTrimAudioKey = null;
+        state.activeTrimStartSeconds = 0;
+        state.activeTrimEndSeconds = null;
         if (!state.selectedAudioFile) {
           clearSourcePreview();
           if (audioDropzoneTitleNode) audioDropzoneTitleNode.textContent = "Drop audio here or click to choose";
@@ -2189,6 +2699,7 @@ async function init() {
   void loadEnhancementModels();
   startWorkerStatusPolling();
   wireDragAndDrop();
+  wireTrimRail();
 }
 
 void init();

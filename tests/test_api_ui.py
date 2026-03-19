@@ -43,6 +43,10 @@ def test_ui_homepage_renders():
     assert "Reduce silence longer than" in response.text
     assert "Remove umms and ahhs" in response.text
     assert "Closed captions" in response.text
+    assert "Trim clip" in response.text
+    assert "Start" in response.text
+    assert "End" in response.text
+    assert "Output length" in response.text
     assert "Caption quality" not in response.text
 
 
