@@ -282,6 +282,8 @@ class WorkerClient:
                     input_audio_path=input_path,
                     output_format=req.output_format,
                     output_base_path=output_base,
+                    clip_start_seconds=req.clip_start_seconds,
+                    clip_end_seconds=req.clip_end_seconds,
                     on_stage=on_stage,
                     cancel_check=lambda: cancel_requested.is_set(),
                 )

@@ -821,6 +821,8 @@ def _run_enhancement_job(
     output_name: str,
     output_format: OutputFormat,
     enhancement_model: EnhancementModel,
+    clip_start_seconds: float | None = None,
+    clip_end_seconds: float | None = None,
     caption_format: CaptionFormat | None = None,
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED,
     caption_glossary: str | None = None,
@@ -883,6 +885,8 @@ def _run_enhancement_job(
             input_audio_path=input_audio_path,
             output_format=output_format,
             output_base_path=output_base,
+            clip_start_seconds=clip_start_seconds,
+            clip_end_seconds=clip_end_seconds,
             on_stage=on_stage,
             cancel_check=lambda: _cancel_requested(job_id),
         )
@@ -976,6 +980,8 @@ def _run_enhancement_job(
             ),
             enhancement_model=enhancement_model,
             audio_tuning_label=enhance_service.output_tuning_label_for_model(enhancement_model),
+            clip_start_seconds=clip_start_seconds,
+            clip_end_seconds=clip_end_seconds,
             max_silence_seconds=max_silence_seconds,
             remove_filler_words=remove_filler_words,
             filler_removal_mode=filler_removal_mode,
@@ -1083,6 +1089,8 @@ def _run_local_enhancement_from_worker_payload(
         input_audio_filename=source_filename,
         output_name=str(worker_payload.output_name or _build_output_name(source_filename, None)),
         output_format=worker_payload.output_format,
+        clip_start_seconds=worker_payload.clip_start_seconds,
+        clip_end_seconds=worker_payload.clip_end_seconds,
         caption_format=worker_payload.caption_format,
         caption_quality_mode=worker_payload.caption_quality_mode,
         caption_glossary=worker_payload.caption_glossary,
@@ -1537,6 +1545,17 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
             source_filename=input_audio_filename,
         )
 
+    resolved_clip_start_seconds = req.clip_start_seconds
+    resolved_clip_end_seconds = req.clip_end_seconds
+    if req.input_audio_hash:
+        settings = _load_project_settings(scoped_project_id)
+        saved_trim = settings.trim_ranges_by_audio_hash.get(req.input_audio_hash)
+        if saved_trim is not None:
+            if resolved_clip_start_seconds is None:
+                resolved_clip_start_seconds = saved_trim.clip_start_seconds
+            if resolved_clip_end_seconds is None:
+                resolved_clip_end_seconds = saved_trim.clip_end_seconds
+
     output_name = _build_output_name(input_audio_filename, req.output_name)
     worker_manager.cancel_project_jobs(scoped_project_id, reason="superseded by a newer request")
     worker_req = WorkerEnhanceEnqueueRequest(
@@ -1549,6 +1568,8 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         caption_quality_mode=req.caption_quality_mode,
         caption_glossary=(str(req.caption_glossary or "").strip() or None),
         enhancement_model=selected_model,
+        clip_start_seconds=resolved_clip_start_seconds,
+        clip_end_seconds=resolved_clip_end_seconds,
         max_silence_seconds=req.max_silence_seconds,
         remove_filler_words=req.remove_filler_words,
         filler_removal_mode=req.filler_removal_mode,

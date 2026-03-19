@@ -808,6 +808,53 @@ def test_worker_client_applies_speech_cleanup_locally_when_available(monkeypatch
     assert any(stage == "cleanup" and detail and "local helper device" in detail.lower() for _, stage, detail, _ in progress_updates)
 
 
+def test_worker_client_forwards_trim_values_into_enhancement(monkeypatch, tmp_path: Path):
+    client = WorkerClient(
+        server_url="http://example.invalid",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=1,
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeEnhanceService:
+        def enhance(self, **kwargs):
+            captured.update(kwargs)
+            output_path = kwargs["output_base_path"].with_suffix(".mp3")
+            output_path.write_bytes(b"fake-mp3-output" * 4)
+            return output_path
+
+        def cancel(self, job_id: str) -> None:
+            raise AssertionError(f"cancel should not be called for {job_id}")
+
+    class FakeSpeechCleanupService:
+        def capability_status(self):
+            return False, "not available"
+
+    monkeypatch.setattr("radcast.worker_client.probe_duration_seconds", lambda _path: 4.0)
+    monkeypatch.setattr(client, "_post_progress_update", lambda *args, **kwargs: "running")
+    client.enhance_service = FakeEnhanceService()
+    client.speech_cleanup_service = FakeSpeechCleanupService()
+
+    payload = {
+        "project_id": "proj1",
+        "input_audio_b64": base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8"),
+        "input_audio_filename": "lecture.wav",
+        "output_name": "enhanced-audio",
+        "output_format": "mp3",
+        "enhancement_model": "none",
+        "clip_start_seconds": 1.25,
+        "clip_end_seconds": 3.75,
+    }
+
+    client._process_enhance_job("job_test", payload)
+
+    assert captured["clip_start_seconds"] == 1.25
+    assert captured["clip_end_seconds"] == 3.75
+
+
 def test_worker_client_reserves_caption_band_after_local_cleanup(monkeypatch, tmp_path: Path):
     client = WorkerClient(
         server_url="http://example.invalid",

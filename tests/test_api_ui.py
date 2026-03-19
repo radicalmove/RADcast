@@ -245,6 +245,58 @@ def test_source_audio_upload_list_and_enhance_by_hash(monkeypatch):
             shutil.rmtree(project_root)
 
 
+def test_enhance_simple_forwards_trim_values_into_worker_payload(monkeypatch):
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    sample_b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw"
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(radcast_api.worker_manager, "list_workers", lambda: [])
+    monkeypatch.setattr(radcast_api.worker_manager, "cancel_project_jobs", lambda *args, **kwargs: [])
+    monkeypatch.setattr("radcast.api.enhance_service.is_model_available", lambda _model: True)
+
+    def fake_enqueue(req):
+        captured["req"] = req
+        return "job_trim"
+
+    monkeypatch.setattr(radcast_api.worker_manager, "enqueue_enhance_job", fake_enqueue)
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        uploaded = client.post(
+            f"/projects/{project_id}/source-audio",
+            json={"filename": "lecture.wav", "audio_b64": sample_b64},
+        )
+        assert uploaded.status_code == 200
+        audio_hash = uploaded.json()["audio_hash"]
+
+        response = client.post(
+            "/enhance/simple",
+            json={
+                "project_id": project_id,
+                "input_audio_hash": audio_hash,
+                "output_format": "mp3",
+                "enhancement_model": "none",
+                "clip_start_seconds": 1.5,
+                "clip_end_seconds": 3.5,
+            },
+        )
+
+        assert response.status_code == 200
+        worker_req = captured["req"]
+        assert worker_req.clip_start_seconds == 1.5
+        assert worker_req.clip_end_seconds == 3.5
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        project_root = Path("projects") / project_id
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_source_audio_delete_removes_saved_file(monkeypatch):
     client = TestClient(app)
     project_id = f"radcast-{uuid.uuid4().hex[:8]}"
