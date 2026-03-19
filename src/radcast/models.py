@@ -68,6 +68,17 @@ class ProjectAccessRevokeRequest(BaseModel):
     email: str = Field(min_length=3)
 
 
+class ClipRange(BaseModel):
+    clip_start_seconds: float = Field(ge=0.0)
+    clip_end_seconds: float = Field(gt=0.0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "ClipRange":
+        if self.clip_end_seconds <= self.clip_start_seconds:
+            raise ValueError("clip_end_seconds must be greater than clip_start_seconds")
+        return self
+
+
 class SimpleEnhanceRequest(BaseModel):
     project_id: str = Field(min_length=2)
     input_audio_b64: str | None = Field(default=None, min_length=32)
@@ -79,6 +90,8 @@ class SimpleEnhanceRequest(BaseModel):
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED
     caption_glossary: str | None = Field(default=None, max_length=4000)
     enhancement_model: EnhancementModel = EnhancementModel.STUDIO_V18
+    clip_start_seconds: float | None = Field(default=None, ge=0.0)
+    clip_end_seconds: float | None = Field(default=None, ge=0.0)
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
     remove_filler_words: bool = False
     filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE
@@ -91,6 +104,16 @@ class SimpleEnhanceRequest(BaseModel):
             raise ValueError("Provide either input_audio_b64+input_audio_filename or input_audio_hash")
         if self.input_audio_b64 and not self.input_audio_filename:
             raise ValueError("input_audio_filename is required when input_audio_b64 is provided")
+        return self
+
+    @model_validator(mode="after")
+    def validate_clip_range(self) -> "SimpleEnhanceRequest":
+        if (
+            self.clip_start_seconds is not None
+            and self.clip_end_seconds is not None
+            and self.clip_end_seconds <= self.clip_start_seconds
+        ):
+            raise ValueError("clip_end_seconds must be greater than clip_start_seconds")
         return self
 
     def speech_cleanup_requested(self) -> bool:
@@ -111,6 +134,7 @@ class ProjectSourceAudioDeleteRequest(BaseModel):
 
 class ProjectUiSettings(BaseModel):
     selected_audio_hash: str | None = None
+    trim_ranges_by_audio_hash: dict[str, ClipRange] = Field(default_factory=dict)
     output_format: OutputFormat = OutputFormat.MP3
     caption_format: CaptionFormat | None = None
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED
@@ -138,6 +162,8 @@ class OutputMetadata(BaseModel):
     caption_total_segments: int = 0
     enhancement_model: EnhancementModel | None = None
     audio_tuning_label: str | None = None
+    clip_start_seconds: float | None = None
+    clip_end_seconds: float | None = None
     max_silence_seconds: float | None = None
     remove_filler_words: bool = False
     filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE
@@ -219,9 +245,21 @@ class WorkerEnhanceEnqueueRequest(BaseModel):
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED
     caption_glossary: str | None = Field(default=None, max_length=4000)
     enhancement_model: EnhancementModel = EnhancementModel.STUDIO_V18
+    clip_start_seconds: float | None = Field(default=None, ge=0.0)
+    clip_end_seconds: float | None = Field(default=None, ge=0.0)
     max_silence_seconds: float | None = Field(default=None, ge=0.0, le=4.0)
     remove_filler_words: bool = False
     filler_removal_mode: FillerRemovalMode = FillerRemovalMode.AGGRESSIVE
+
+    @model_validator(mode="after")
+    def validate_clip_range(self) -> "WorkerEnhanceEnqueueRequest":
+        if (
+            self.clip_start_seconds is not None
+            and self.clip_end_seconds is not None
+            and self.clip_end_seconds <= self.clip_start_seconds
+        ):
+            raise ValueError("clip_end_seconds must be greater than clip_start_seconds")
+        return self
 
     def speech_cleanup_requested(self) -> bool:
         return self.max_silence_seconds is not None or bool(self.remove_filler_words)

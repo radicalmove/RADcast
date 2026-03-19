@@ -24,6 +24,7 @@ from radcast.manifests import ManifestStore
 from radcast.models import (
     CaptionFormat,
     CaptionQualityMode,
+    ClipRange,
     EnhancementModel,
     FillerRemovalMode,
     JobRecord,
@@ -297,8 +298,23 @@ def _coerce_project_settings(payload: object) -> ProjectUiSettings:
     except ValueError:
         filler_removal_mode = FillerRemovalMode.AGGRESSIVE
 
+    trim_ranges_raw = data.get("trim_ranges_by_audio_hash")
+    trim_ranges_by_audio_hash: dict[str, ClipRange] = {}
+    if isinstance(trim_ranges_raw, dict):
+        for audio_hash, range_payload in trim_ranges_raw.items():
+            key = str(audio_hash or "").strip()
+            if len(key) < 16:
+                continue
+            if not isinstance(range_payload, dict):
+                continue
+            try:
+                trim_ranges_by_audio_hash[key] = ClipRange(**range_payload)
+            except Exception:
+                continue
+
     return ProjectUiSettings(
         selected_audio_hash=selected_audio_hash,
+        trim_ranges_by_audio_hash=trim_ranges_by_audio_hash,
         output_format=output_format,
         caption_format=caption_format,
         caption_quality_mode=caption_quality_mode,

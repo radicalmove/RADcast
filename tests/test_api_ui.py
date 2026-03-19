@@ -302,6 +302,7 @@ def test_project_settings_roundtrip_persists_last_used_options():
         assert default_settings.status_code == 200
         assert default_settings.json()["settings"] == {
             "selected_audio_hash": None,
+            "trim_ranges_by_audio_hash": {},
             "output_format": "mp3",
             "caption_format": None,
             "caption_quality_mode": "reviewed",
@@ -324,6 +325,12 @@ def test_project_settings_roundtrip_persists_last_used_options():
             f"/projects/{project_id}/settings",
             json={
                 "selected_audio_hash": audio_hash,
+                "trim_ranges_by_audio_hash": {
+                    audio_hash: {
+                        "clip_start_seconds": 1.2,
+                        "clip_end_seconds": 3.8,
+                    }
+                },
                 "output_format": "wav",
                 "caption_format": "vtt",
                 "caption_quality_mode": "reviewed",
@@ -338,6 +345,12 @@ def test_project_settings_roundtrip_persists_last_used_options():
         assert updated.status_code == 200
         assert updated.json()["settings"] == {
             "selected_audio_hash": audio_hash,
+            "trim_ranges_by_audio_hash": {
+                audio_hash: {
+                    "clip_start_seconds": 1.2,
+                    "clip_end_seconds": 3.8,
+                }
+            },
             "output_format": "wav",
             "caption_format": "vtt",
             "caption_quality_mode": "reviewed",

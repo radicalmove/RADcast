@@ -40,6 +40,30 @@ def test_simple_enhance_request_accepts_valid_payload():
     assert req.filler_removal_mode == FillerRemovalMode.AGGRESSIVE
 
 
+def test_simple_enhance_request_accepts_valid_trim_range():
+    req = SimpleEnhanceRequest(
+        project_id="proj1",
+        input_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        input_audio_filename="lecture.wav",
+        clip_start_seconds=1.2,
+        clip_end_seconds=8.6,
+    )
+
+    assert req.clip_start_seconds == 1.2
+    assert req.clip_end_seconds == 8.6
+
+
+def test_simple_enhance_request_rejects_invalid_trim_range():
+    with pytest.raises(ValidationError):
+        SimpleEnhanceRequest(
+            project_id="proj1",
+            input_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+            input_audio_filename="lecture.wav",
+            clip_start_seconds=5.0,
+            clip_end_seconds=5.0,
+        )
+
+
 def test_simple_enhance_request_rejects_missing_audio_payload():
     with pytest.raises(ValidationError):
         SimpleEnhanceRequest(
