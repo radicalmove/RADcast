@@ -177,8 +177,10 @@
               <section id="trim-block" class="trim-block settings-control-trim trim-block-disabled" aria-labelledby="trim-block-heading">
                 <div class="trim-header">
                   <div class="trim-header-copy">
-                    <span id="trim-block-heading" class="trim-title">Trim clip</span>
-                    <small id="trim-status" class="field-note trim-status">Select audio to enable trimming.</small>
+                    <div class="trim-title-row">
+                      <span id="trim-block-heading" class="trim-title">Trim clip</span>
+                      <small id="trim-status" class="field-note trim-status">Select audio to enable trimming.</small>
+                    </div>
                   </div>
                   <button id="trim-reset-btn" type="button" class="worker-mini-btn">Reset</button>
                 </div>
@@ -191,15 +193,15 @@
                 </div>
                 <div class="trim-metrics" aria-live="polite">
                   <div class="trim-metric">
-                    <span>Start</span>
+                    <span class="trim-metric-label">Start</span>
                     <strong id="trim-start-value">0.0s</strong>
                   </div>
                   <div class="trim-metric">
-                    <span>End</span>
+                    <span class="trim-metric-label">End</span>
                     <strong id="trim-end-value">0.0s</strong>
                   </div>
                   <div class="trim-metric">
-                    <span>Output length</span>
+                    <span class="trim-metric-label">Output length</span>
                     <strong id="trim-output-length-value">0.0s</strong>
                   </div>
                 </div>

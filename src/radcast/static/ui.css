@@ -916,10 +916,10 @@ body.modal-open {
 
 .trim-block {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   border: 1px solid var(--uc-grey-200);
   border-radius: var(--uc-radius-md);
-  padding: 12px;
+  padding: 11px 12px;
   background: #fafafa;
 }
 
@@ -929,7 +929,7 @@ body.modal-open {
 
 .trim-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
@@ -938,14 +938,22 @@ body.modal-open {
   min-width: 0;
 }
 
+.trim-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
 .trim-title {
-  display: block;
   font-size: 0.92rem;
   font-weight: 700;
+  line-height: 1.2;
 }
 
 .trim-status {
-  margin-top: 3px;
+  margin: 0;
+  line-height: 1.2;
 }
 
 .trim-rail {
@@ -1008,30 +1016,30 @@ body.modal-open {
 }
 
 .trim-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 18px;
 }
 
 .trim-metric {
-  display: grid;
-  gap: 2px;
-  padding: 8px 10px;
-  border: 1px solid var(--uc-grey-200);
-  border-radius: var(--uc-radius-sm);
-  background: var(--bg-surface);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
 }
 
-.trim-metric span {
-  font-size: 0.74rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+.trim-metric-label {
+  font-size: 0.86rem;
+  font-weight: 600;
   color: var(--text-secondary);
 }
 
 .trim-metric strong {
-  font-size: 0.92rem;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .slider-block {
