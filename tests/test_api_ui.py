@@ -53,14 +53,19 @@ def test_ui_homepage_renders_help_modal_shell():
     response = client.get("/")
 
     assert response.status_code == 200
-    assert 'id="help-btn"' in response.text
-    assert 'id="help-modal"' in response.text
-    assert 'id="help-modal-tabs"' in response.text
-    assert 'aria-controls="help-panel-overview"' in response.text
-    assert 'tabindex="0"' in response.text
-    assert "Overview" in response.text
-    assert "Process audio" in response.text
-    assert "Troubleshooting" in response.text
+    text = response.text
+    assert 'id="help-btn"' in text
+    assert 'id="help-modal"' in text
+    assert 'id="help-modal-tabs"' in text
+    assert 'aria-controls="help-panel-overview"' in text
+    assert 'tabindex="0"' in text
+    assert "Overview" in text
+    assert "Process audio" in text
+    assert "Troubleshooting" in text
+    assert "RADcast helps you clean up spoken-word audio" in text
+    assert "Select SRT or VTT before you process the audio." in text
+    assert "Trim only changes the section used for the next run." in text
+    assert "Placeholder guidance" not in text
 
 
 def _ui_js_source() -> str:

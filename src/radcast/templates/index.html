@@ -298,61 +298,75 @@
           <button id="help-tab-troubleshooting" type="button" class="help-tab" data-help-tab="troubleshooting" role="tab" aria-selected="false" aria-controls="help-panel-troubleshooting" tabindex="-1">Troubleshooting</button>
         </div>
         <section id="help-panel-overview" class="help-panel" data-help-panel="overview" role="tabpanel" aria-labelledby="help-tab-overview">
-          <p class="help-lead">Start here for the basic RADcast flow.</p>
+          <p class="help-lead">RADcast helps you clean up spoken-word audio, tighten pacing, and export a polished file with optional captions.</p>
           <ol class="help-steps">
-            <li>Choose or create a project.</li>
-            <li>Upload audio and set the output options.</li>
-            <li>Run processing and download the finished version.</li>
+            <li>Create or open a project so the source audio and finished versions stay together.</li>
+            <li>Upload a new recording or choose a saved project audio file.</li>
+            <li>Set the format, cleanup, trim, and caption options you want for this run.</li>
+            <li>Start processing and watch the progress panel until the finished version appears in Completed versions.</li>
+            <li>Play the result, review any captions, and download the files you want to keep.</li>
           </ol>
-          <p class="help-note">Use the other tabs for task-specific guidance.</p>
+          <p class="help-note">Your original uploaded audio stays in the project so you can run a different version later.</p>
         </section>
         <section id="help-panel-process-audio" class="help-panel" data-help-panel="process-audio" role="tabpanel" aria-labelledby="help-tab-process-audio" hidden>
-          <p class="help-lead">Basic audio processing lives in the main workspace.</p>
+          <p class="help-lead">Use this when you want a cleaner listening version of a recording without changing the source file.</p>
           <ol class="help-steps">
-            <li>Upload the source file.</li>
-            <li>Pick the output format you want.</li>
-            <li>Click the main process button.</li>
+            <li>Choose audio by dropping a file onto the upload area or by selecting a saved project audio file.</li>
+            <li>If you only want part of the recording, set the trim clip before you process.</li>
+            <li>Pick the output format and any cleanup or caption options you need.</li>
+            <li>Click <strong>Enhance audio</strong> and wait for the job to move from queued to complete.</li>
+            <li>Open the finished version in Completed versions, listen back, and download the audio if it is ready to share.</li>
           </ol>
-          <p class="help-note">Later tasks will add the full workflow details here.</p>
+          <p class="help-note">If nothing is selected, the job cannot start, so confirm the file name or saved audio preview first.</p>
         </section>
         <section id="help-panel-cleanup-pauses" class="help-panel" data-help-panel="cleanup-pauses" role="tabpanel" aria-labelledby="help-tab-cleanup-pauses" hidden>
-          <p class="help-lead">This tab will cover pause reduction and filler-word cleanup.</p>
+          <p class="help-lead">Use the cleanup toggles when the speaker sounds hesitant, padded with long pauses, or full of filler words.</p>
           <ol class="help-steps">
-            <li>Turn on the cleanup options you want.</li>
-            <li>Adjust the pause threshold if needed.</li>
-            <li>Review the processed audio before sharing it.</li>
+            <li>Turn on <strong>Reduce silence</strong> when the recording has pauses that feel too long between phrases.</li>
+            <li>Move the silence slider to set the longest pause you want to keep after processing.</li>
+            <li>Turn on <strong>Remove umms and ahhs</strong> when you want hesitation sounds and short filler runs cleaned up.</li>
+            <li>Process the audio and compare the finished version with the original pacing.</li>
           </ol>
+          <p class="help-note">These tools change timing and wording, so listen through the finished version before publishing it.</p>
         </section>
         <section id="help-panel-generate-captions" class="help-panel" data-help-panel="generate-captions" role="tabpanel" aria-labelledby="help-tab-generate-captions" hidden>
-          <p class="help-lead">Caption export is available from the output settings.</p>
+          <p class="help-lead">RADcast can create captions from the processed audio as part of the same run.</p>
           <ol class="help-steps">
-            <li>Select the caption format.</li>
-            <li>Choose the level of review you want.</li>
-            <li>Generate captions with the audio output.</li>
+            <li>Select SRT or VTT before you process the audio.</li>
+            <li>Run the job normally and wait for the audio version to finish.</li>
+            <li>Open the completed version and download the caption file that matches your chosen format.</li>
+            <li>Review the captions against the final audio before you publish or upload them anywhere else.</li>
           </ol>
+          <p class="help-note">Captions are generated from the reviewed final audio, but they still need a human check for names, timing, and wording.</p>
         </section>
         <section id="help-panel-trim-clip" class="help-panel" data-help-panel="trim-clip" role="tabpanel" aria-labelledby="help-tab-trim-clip" hidden>
-          <p class="help-lead">Trim clip support will be documented here.</p>
+          <p class="help-lead">Use trim clip when you only need a section of a longer recording for the next processing run.</p>
           <ol class="help-steps">
-            <li>Choose the clip boundaries.</li>
-            <li>Confirm the trimmed segment.</li>
-            <li>Process the shortened clip.</li>
+            <li>Load or preview the source audio so the trim rail is available.</li>
+            <li>Drag the trim handles to the start and end points you want to keep.</li>
+            <li>Check the selected section, then run processing as usual.</li>
+            <li>Adjust the trim again later if you want a different section from the same source file.</li>
           </ol>
+          <p class="help-note">Trim only changes the section used for the next run. It does not cut or overwrite the original uploaded audio.</p>
         </section>
         <section id="help-panel-helper-processing" class="help-panel" data-help-panel="helper-processing" role="tabpanel" aria-labelledby="help-tab-helper-processing" hidden>
-          <p class="help-lead">Helper processing uses a connected RADcast helper device.</p>
+          <p class="help-lead">Helper processing lets another machine pick up enhancement jobs when a helper app is online.</p>
           <ol class="help-steps">
-            <li>Open the helper setup modal.</li>
-            <li>Install the helper app on another machine.</li>
-            <li>Leave it running so it can pick up jobs.</li>
+            <li>Check the helper status pill before starting a longer job.</li>
+            <li>Use <strong>Set up helper app</strong> if you need install links or setup commands for another machine.</li>
+            <li>Start processing and watch the progress details to see whether the job is running on a helper or on the RADcast server.</li>
+            <li>If no helper is available, RADcast falls back to the server path instead of asking you to restart the job.</li>
           </ol>
+          <p class="help-note">A helper needs to stay online and idle enough to claim work. If it drops out mid-job, RADcast may switch the job back to the server.</p>
         </section>
         <section id="help-panel-troubleshooting" class="help-panel" data-help-panel="troubleshooting" role="tabpanel" aria-labelledby="help-tab-troubleshooting" hidden>
-          <p class="help-lead">Use this space for common issues and recovery steps.</p>
+          <p class="help-lead">Use these checks when processing is slow, a helper is unavailable, or the result is not what you expected.</p>
           <ol class="help-steps">
-            <li>Refresh the page if the UI looks stale.</li>
-            <li>Check helper status if jobs are queued longer than expected.</li>
-            <li>Reopen the project if you need a clean state.</li>
+            <li>If a job seems slow, keep the page open and watch the stage and ETA before assuming it is stuck.</li>
+            <li>If the helper shows offline or unknown, refresh helper status and expect the server fallback path to handle the job instead.</li>
+            <li>If captions look wrong, review the final audio and correct the caption file before publishing it.</li>
+            <li>If you cannot start a job, recheck that a source file or saved project audio is selected and that the project is open.</li>
+            <li>If the wrong part of the recording was used, reset the trim clip and run the job again from the original source.</li>
           </ol>
         </section>
       </section>
