@@ -506,6 +506,64 @@ function handleHelpTabKeydown(event) {
   setHelpTab(nextTab, { focus: true });
 }
 
+function helpModalElementHidden(node) {
+  let currentNode = node;
+  while (currentNode instanceof HTMLElement && currentNode !== helpModalNode) {
+    if (currentNode.hidden) return true;
+    if (typeof currentNode.getAttribute === "function" && currentNode.getAttribute("aria-hidden") === "true") return true;
+    currentNode = currentNode.parentNode;
+  }
+  return false;
+}
+
+function isHelpModalFocusable(node) {
+  if (!(node instanceof HTMLElement)) return false;
+  if (helpModalElementHidden(node)) return false;
+  if ("disabled" in node && node.disabled) return false;
+  if (node.tabIndex < 0) return false;
+  const tagName = String(node.tagName || "").toLowerCase();
+  if (tagName === "button" || tagName === "input" || tagName === "select" || tagName === "textarea" || tagName === "summary") {
+    return true;
+  }
+  if (tagName === "a") {
+    return typeof node.getAttribute === "function" && node.getAttribute("href") !== null;
+  }
+  return typeof node.getAttribute === "function" && node.getAttribute("tabindex") !== null;
+}
+
+function getHelpModalFocusableNodes() {
+  if (!(helpModalNode instanceof HTMLElement)) return [];
+  const focusableNodes = [];
+  const stack = Array.from(helpModalNode.children || []);
+  while (stack.length) {
+    const node = stack.shift();
+    if (!(node instanceof HTMLElement)) continue;
+    if (isHelpModalFocusable(node)) {
+      focusableNodes.push(node);
+    }
+    stack.unshift(...Array.from(node.children || []));
+  }
+  return focusableNodes;
+}
+
+function handleHelpModalKeydown(event) {
+  if (event.key !== "Tab" || !helpModalNode || helpModalNode.hidden) return;
+  const focusableNodes = getHelpModalFocusableNodes();
+  if (focusableNodes.length < 2) return;
+  const firstNode = focusableNodes[0];
+  const lastNode = focusableNodes[focusableNodes.length - 1];
+  const activeNode = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (event.shiftKey) {
+    if (activeNode !== firstNode) return;
+    event.preventDefault();
+    lastNode.focus();
+    return;
+  }
+  if (activeNode !== lastNode) return;
+  event.preventDefault();
+  firstNode.focus();
+}
+
 function openHelpModal() {
   if (!helpModalNode) return;
   const storedTab = readStoredHelpTab();
@@ -776,6 +834,7 @@ function bindHelpModal() {
         closeHelpModal();
       }
     });
+    helpModalNode.addEventListener("keydown", handleHelpModalKeydown);
   }
 
   if (helpTabListNode) {
@@ -799,6 +858,7 @@ if (typeof window !== "undefined") {
   window.__radcastHelp = {
     bindHelpModal,
     focusHelpTabButton,
+    handleHelpModalKeydown,
     handleHelpTabKeydown,
     helpTabNavigationTarget,
     normalizeHelpTab,

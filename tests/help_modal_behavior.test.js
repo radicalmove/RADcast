@@ -9,9 +9,20 @@ const source = fs.readFileSync(uiPath, "utf8");
 class FakeHTMLElement {}
 class FakeHTMLButtonElement extends FakeHTMLElement {}
 
+function attachChild(parent, child) {
+  if (!parent.children) parent.children = [];
+  child.parentNode = parent;
+  parent.children.push(child);
+  return child;
+}
+
 function makeButton(tab) {
   return Object.assign(new FakeHTMLButtonElement(), {
+    tagName: "BUTTON",
     dataset: { helpTab: tab },
+    children: [],
+    parentNode: null,
+    attributes: new Map(),
     classList: {
       toggle() {},
       add() {},
@@ -24,9 +35,16 @@ function makeButton(tab) {
     disabled: false,
     focused: false,
     addEventListener() {},
-    setAttribute() {},
+    setAttribute(name, value) {
+      this.attributes.set(name, String(value));
+      if (name === "tabindex") this.tabIndex = Number(value);
+    },
+    getAttribute(name) {
+      return this.attributes.get(name) ?? null;
+    },
     focus() {
       this.focused = true;
+      document.activeElement = this;
     },
     closest(selector) {
       return selector === "[data-help-tab]" ? this : null;
@@ -36,8 +54,19 @@ function makeButton(tab) {
 
 function makePanel(tab) {
   return Object.assign(new FakeHTMLElement(), {
+    tagName: "SECTION",
     dataset: { helpPanel: tab },
+    children: [],
+    parentNode: null,
+    attributes: new Map(),
     hidden: false,
+    addEventListener() {},
+    setAttribute(name, value) {
+      this.attributes.set(name, String(value));
+    },
+    getAttribute(name) {
+      return this.attributes.get(name) ?? null;
+    },
   });
 }
 
@@ -56,37 +85,58 @@ const nodes = new Map();
 function makeNode(id) {
   if (id === "help-modal-tabs") return { addEventListener() {} };
   if (!nodes.has(id)) {
-    nodes.set(
+    const node = Object.assign(new FakeHTMLElement(), {
       id,
-      Object.assign(new FakeHTMLElement(), {
-        id,
-        hidden: false,
-        classList: {
-          toggle() {},
-          add() {},
-          remove() {},
-        },
-        style: {},
-        textContent: "",
-        value: "",
-        disabled: false,
-        checked: false,
-        dataset: {},
-        addEventListener() {},
-        setAttribute() {},
-        removeAttribute() {},
-        appendChild() {},
-        pause() {},
-        load() {},
-        focus() {},
-        closest() {
-          return null;
-        },
-        querySelector() {
-          return null;
-        },
-      })
-    );
+      tagName: id.endsWith("-btn") ? "BUTTON" : "DIV",
+      hidden: false,
+      classList: {
+        toggle() {},
+        add() {},
+        remove() {},
+      },
+      style: {},
+      textContent: "",
+      value: "",
+      disabled: false,
+      checked: false,
+      dataset: {},
+      children: [],
+      parentNode: null,
+      attributes: new Map(),
+      tabIndex: id.endsWith("-btn") ? 0 : -1,
+      addEventListener() {},
+      setAttribute(name, value) {
+        this.attributes.set(name, String(value));
+        if (name === "tabindex") this.tabIndex = Number(value);
+      },
+      getAttribute(name) {
+        return this.attributes.get(name) ?? null;
+      },
+      removeAttribute(name) {
+        this.attributes.delete(name);
+      },
+      appendChild(child) {
+        return attachChild(this, child);
+      },
+      pause() {},
+      load() {},
+      focus() {
+        document.activeElement = this;
+      },
+      closest() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+    if (id === "help-modal") {
+      const closeBtn = makeNode("help-close-btn");
+      attachChild(node, closeBtn);
+      for (const button of helpTabs) attachChild(node, button);
+      for (const panel of helpPanels) attachChild(node, panel);
+    }
+    nodes.set(id, node);
   }
   return nodes.get(id);
 }
@@ -202,3 +252,31 @@ assert.equal(helpTabs[6].focused, true);
 assert.equal(helpTabs[0].tabIndex, -1);
 assert.equal(helpPanels[6].hidden, false);
 assert.equal(helpPanels[0].hidden, true);
+
+const helpCloseBtn = document.getElementById("help-close-btn");
+let prevented = false;
+
+helpCloseBtn.focus();
+helper.handleHelpModalKeydown({
+  key: "Tab",
+  shiftKey: true,
+  preventDefault() {
+    prevented = true;
+  },
+});
+
+assert.equal(prevented, true);
+assert.equal(document.activeElement, helpTabs[6]);
+
+prevented = false;
+helpTabs[6].focus();
+helper.handleHelpModalKeydown({
+  key: "Tab",
+  shiftKey: false,
+  preventDefault() {
+    prevented = true;
+  },
+});
+
+assert.equal(prevented, true);
+assert.equal(document.activeElement, helpCloseBtn);

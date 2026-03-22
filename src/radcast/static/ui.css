@@ -590,7 +590,7 @@ body.modal-open {
   padding: 0;
   display: grid;
   gap: 8px;
-  color: #3b3b3b;
+  color: var(--text-primary);
   font-size: 0.92rem;
   line-height: 1.4;
 }
