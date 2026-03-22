@@ -835,6 +835,7 @@ def _run_enhancement_job(
     cleanup_requested = speech_cleanup_service.cleanup_requested(max_silence_seconds, remove_filler_words)
     caption_requested = caption_format is not None
     postprocess_requested = cleanup_requested or caption_requested
+    enhancement_requested = enhancement_model != EnhancementModel.NONE
     cleanup_eta_seconds = None
     if cleanup_requested:
         try:
@@ -861,7 +862,12 @@ def _run_enhancement_job(
             job_id=job_id,
             status=JobStatus.RUNNING,
             stage=stage,
-            progress=map_local_stage_progress(stage, progress, reserve_cleanup_band=postprocess_requested),
+            progress=map_local_stage_progress(
+                stage,
+                progress,
+                reserve_cleanup_band=postprocess_requested,
+                enhancement_requested=enhancement_requested,
+            ),
             eta_seconds=extend_eta_with_postprocess(
                 eta_seconds,
                 cleanup_eta_seconds,
@@ -911,6 +917,7 @@ def _run_enhancement_job(
                     stage="cleanup",
                     cleanup_requested=cleanup_requested,
                     caption_requested=caption_requested,
+                    enhancement_requested=enhancement_requested,
                 ),
                 eta_seconds=extend_eta_with_postprocess(
                     eta_seconds,
@@ -940,6 +947,7 @@ def _run_enhancement_job(
                         stage="captions",
                         cleanup_requested=cleanup_requested,
                         caption_requested=caption_requested,
+                        enhancement_requested=enhancement_requested,
                     ),
                     eta_seconds=eta_seconds,
                     log=detail,

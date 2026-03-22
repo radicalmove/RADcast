@@ -40,6 +40,17 @@ def test_worker_progress_reserves_band_when_cleanup_enabled():
     assert with_cleanup <= 0.58
 
 
+def test_worker_progress_stays_low_when_enhancement_is_skipped():
+    skipped_enhance = map_worker_stage_progress(
+        "enhance",
+        0.82,
+        reserve_cleanup_band=True,
+        enhancement_requested=False,
+    )
+
+    assert skipped_enhance <= 0.23
+
+
 def test_cleanup_stage_progress_maps_into_reserved_tail():
     start = map_cleanup_stage_progress(0.0)
     end = map_cleanup_stage_progress(1.0)
@@ -53,11 +64,63 @@ def test_eta_extension_adds_cleanup_reserve():
 
 
 def test_caption_progress_uses_tail_after_cleanup():
-    cleanup_end = map_postprocess_stage_progress(1.0, stage="cleanup", cleanup_requested=True, caption_requested=True)
-    caption_start = map_postprocess_stage_progress(0.0, stage="captions", cleanup_requested=True, caption_requested=True)
+    cleanup_end = map_postprocess_stage_progress(
+        1.0,
+        stage="cleanup",
+        cleanup_requested=True,
+        caption_requested=True,
+        enhancement_requested=True,
+    )
+    caption_start = map_postprocess_stage_progress(
+        0.0,
+        stage="captions",
+        cleanup_requested=True,
+        caption_requested=True,
+        enhancement_requested=True,
+    )
 
     assert cleanup_end <= caption_start
     assert caption_start >= 0.72
+
+
+def test_caption_progress_starts_earlier_when_enhancement_is_skipped():
+    without_enhancement = map_postprocess_stage_progress(
+        0.0,
+        stage="captions",
+        cleanup_requested=False,
+        caption_requested=True,
+        enhancement_requested=False,
+    )
+    with_enhancement = map_postprocess_stage_progress(
+        0.0,
+        stage="captions",
+        cleanup_requested=False,
+        caption_requested=True,
+        enhancement_requested=True,
+    )
+
+    assert without_enhancement < with_enhancement
+    assert without_enhancement <= 0.3
+
+
+def test_cleanup_and_captions_use_lower_band_without_enhancement():
+    cleanup_end = map_postprocess_stage_progress(
+        1.0,
+        stage="cleanup",
+        cleanup_requested=True,
+        caption_requested=True,
+        enhancement_requested=False,
+    )
+    caption_start = map_postprocess_stage_progress(
+        0.0,
+        stage="captions",
+        cleanup_requested=True,
+        caption_requested=True,
+        enhancement_requested=False,
+    )
+
+    assert cleanup_end <= caption_start
+    assert caption_start < 0.72
 
 
 def test_postprocess_eta_extension_adds_cleanup_and_caption_time():

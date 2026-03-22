@@ -17,6 +17,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from radcast.manifests import ManifestStore
 from radcast.models import (
+    EnhancementModel,
     JobRecord,
     JobStatus,
     OutputFormat,
@@ -392,6 +393,7 @@ class WorkerManager:
             cleanup_requested = payload.speech_cleanup_requested() and not req.cleanup_applied
             caption_requested = payload.caption_requested() and helper_caption_path is None
             cleanup_band_reserved = payload.speech_cleanup_requested()
+            enhancement_requested = payload.enhancement_model != EnhancementModel.NONE
             if cleanup_requested or caption_requested:
                 cleanup_eta_seconds = (
                     estimate_speech_cleanup_seconds(
@@ -422,6 +424,7 @@ class WorkerManager:
                             stage="cleanup",
                             cleanup_requested=cleanup_band_reserved,
                             caption_requested=caption_requested,
+                            enhancement_requested=enhancement_requested,
                         )
                         if cleanup_requested
                         else map_postprocess_stage_progress(
@@ -429,6 +432,7 @@ class WorkerManager:
                             stage="captions",
                             cleanup_requested=cleanup_band_reserved,
                             caption_requested=caption_requested,
+                            enhancement_requested=enhancement_requested,
                         )
                     ),
                     eta_seconds=max(1, int((cleanup_eta_seconds or 0) + (caption_eta_seconds or 0))),
@@ -523,6 +527,7 @@ class WorkerManager:
             cleanup_requested = payload.speech_cleanup_requested() and not cleanup_already_applied
             caption_requested = payload.caption_requested() and helper_caption_path is None
             cleanup_band_reserved = payload.speech_cleanup_requested()
+            enhancement_requested = payload.enhancement_model != EnhancementModel.NONE
             caption_eta_seconds = (
                 speech_cleanup_service.estimate_caption_runtime_seconds(
                     duration_seconds,
@@ -549,6 +554,7 @@ class WorkerManager:
                             stage="cleanup",
                             cleanup_requested=cleanup_band_reserved,
                             caption_requested=caption_requested,
+                            enhancement_requested=enhancement_requested,
                         ),
                         eta_seconds=extend_eta_with_postprocess(
                             eta_seconds,
@@ -586,6 +592,7 @@ class WorkerManager:
                             stage="captions",
                             cleanup_requested=cleanup_band_reserved,
                             caption_requested=caption_requested,
+                            enhancement_requested=enhancement_requested,
                         ),
                         eta_seconds=eta_seconds if eta_seconds is not None else _UNSET,
                         log=detail,
