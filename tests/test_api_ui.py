@@ -64,8 +64,10 @@ def test_ui_homepage_renders_help_modal_shell():
     assert "Troubleshooting" in text
     assert "RADcast helps you clean up spoken-word audio" in text
     assert "Select SRT or VTT before you process the audio." in text
+    assert "Click the main process button and wait for the job to move from queued to complete." in text
     assert "Trim only changes the section used for the next run." in text
     assert "If an upload fails or a file does not appear, choose the audio again and confirm the file name shows in the upload area before processing." in text
+    assert "Click <strong>Enhance audio</strong>" not in text
     assert "Placeholder guidance" not in text
 
 
