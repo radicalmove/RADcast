@@ -493,6 +493,10 @@ body.modal-open {
   font-size: 0.92rem;
 }
 
+.help-modal-card .modal-copy {
+  color: var(--text-secondary);
+}
+
 .modal-status {
   margin: 8px 0 0;
   min-height: 20px;
