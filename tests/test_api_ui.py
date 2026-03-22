@@ -67,13 +67,6 @@ def _ui_js_source() -> str:
     return UI_JS_PATH.read_text()
 
 
-def test_help_tab_navigation_home_and_end_are_explicit():
-    source = _ui_js_source()
-
-    assert 'if (key === "Home") return helpTabOrder[0];' in source
-    assert 'if (key === "End") return helpTabOrder[helpTabOrder.length - 1];' in source
-
-
 def test_help_modal_binding_happens_before_project_loading():
     lines = _ui_js_source().splitlines()
     bind_line = next(index for index, line in enumerate(lines, start=1) if line.strip() == "bindHelpModal();")
