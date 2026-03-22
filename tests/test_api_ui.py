@@ -14,6 +14,9 @@ from radcast.manifests import ManifestStore
 from radcast.models import CaptionFormat, EnhancementModel, OutputFormat, OutputMetadata
 
 app = radcast_api.app
+REPO_ROOT = Path(__file__).resolve().parents[1]
+UI_JS_PATH = REPO_ROOT / "src" / "radcast" / "static" / "ui.js"
+UI_CSS_PATH = REPO_ROOT / "src" / "radcast" / "static" / "ui.css"
 
 
 def _bridge_user(client: TestClient, *, sub: int, email: str, display_name: str) -> None:
@@ -48,6 +51,63 @@ def test_ui_homepage_renders():
     assert "End" in response.text
     assert "Output length" in response.text
     assert "Caption quality" not in response.text
+
+
+def test_ui_homepage_renders_help_modal_shell():
+    client = TestClient(app)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    text = response.text
+    assert 'id="help-btn"' in text
+    assert 'class="topbar-btn topbar-btn-help"' in text
+    assert text.index('id="help-btn"') < text.index('id="switch-project-btn"')
+    assert 'id="help-modal"' in text
+    assert 'id="help-modal-tabs"' in text
+    assert 'aria-controls="help-panel-overview"' in text
+    assert 'tabindex="0"' in text
+    assert 'class="help-tab-rail"' in text
+    assert 'class="help-modal-body"' in text
+    assert 'class="help-callout help-callout-tip"' in text
+    assert 'class="help-callout help-callout-note"' in text
+    assert 'class="help-callout help-callout-troubleshooting"' in text
+    assert "Overview" in text
+    assert "Process audio" in text
+    assert "Troubleshooting" in text
+    assert "RADcast helps you turn spoken-word recordings into cleaner deliverables without overwriting the source audio saved in your project." in text
+    assert "Use the main process button as a status-aware control:" in text
+    assert "Tip: Turn on Don't enhance audio when you only want cleanup or captions without the RADcast Optimized pass." in text
+    assert "If trim controls are not visible in your current rollout, process the full file and rerun from the original project audio when trim becomes available." in text
+    assert "If an upload appears to finish but no audio name shows in the workspace, choose the file again and wait for the filename or preview before processing." in text
+    assert "Click <strong>Enhance audio</strong>" not in text
+    assert "Placeholder guidance" not in text
+
+
+def _ui_js_source() -> str:
+    return UI_JS_PATH.read_text()
+
+
+def _ui_css_source() -> str:
+    return UI_CSS_PATH.read_text()
+
+
+def test_help_modal_redesign_styles_exist():
+    css = _ui_css_source()
+
+    assert ".topbar-btn.topbar-btn-help" in css
+    assert ".help-tab-rail" in css
+    assert ".help-modal-body" in css
+    assert ".help-callout" in css
+    assert ".help-callout-tip" in css
+    assert ".help-callout-troubleshooting" in css
+
+
+def test_help_modal_binding_happens_before_project_loading():
+    lines = _ui_js_source().splitlines()
+    bind_line = next(index for index, line in enumerate(lines, start=1) if line.strip() == "bindHelpModal();")
+    load_line = next(index for index, line in enumerate(lines, start=1) if line.strip() == "await loadProjects();")
+
+    assert bind_line < load_line
 
 
 def test_worker_invite_and_status_endpoints_render(monkeypatch):

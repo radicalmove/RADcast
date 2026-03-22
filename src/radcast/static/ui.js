@@ -2,6 +2,7 @@ const projectGatewayNode = document.getElementById("project-gateway");
 const workspaceNode = document.getElementById("workspace");
 const switchProjectBtn = document.getElementById("switch-project-btn");
 const shareProjectBtn = document.getElementById("share-project-btn");
+const helpBtn = document.getElementById("help-btn");
 const activeProjectChip = document.getElementById("active-project-chip");
 const activeProjectLabelNode = document.getElementById("active-project-label");
 
@@ -64,6 +65,14 @@ const shareProjectGrantBtn = document.getElementById("share-project-grant-btn");
 const shareProjectStatusNode = document.getElementById("share-project-status");
 const shareProjectOwnerNode = document.getElementById("share-project-owner");
 const shareProjectMembersNode = document.getElementById("share-project-members");
+const helpModalNode = document.getElementById("help-modal");
+const helpTabListNode = document.getElementById("help-modal-tabs");
+const helpModalBodyNode = document.getElementById("help-modal-body");
+const helpCloseBtn = document.getElementById("help-close-btn");
+const helpTabButtons = Array.from(document.querySelectorAll("[data-help-tab]"));
+const helpPanels = Array.from(document.querySelectorAll("[data-help-panel]"));
+const helpStorageKey = "radcast-help-last-tab";
+const helpTabOrder = ["overview", "process-audio", "cleanup-pauses", "generate-captions", "trim-clip", "helper-processing", "troubleshooting"];
 
 const generateBtn = document.getElementById("generate-btn");
 const cancelBtn = document.getElementById("cancel-btn");
@@ -148,7 +157,9 @@ const state = {
   shareProjectUsers: [],
   shareProjectCollaborators: [],
   shareProjectOwner: null,
+  helpActiveTab: "overview",
 };
+let helpModalReturnFocusNode = null;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -803,8 +814,173 @@ function workerAvailabilitySummary() {
 }
 
 function syncModalOpenState() {
-  const anyModalOpen = [workerSetupModalNode, shareProjectModalNode].some((node) => node && !node.hidden);
+  const anyModalOpen = [workerSetupModalNode, shareProjectModalNode, helpModalNode].some((node) => node && !node.hidden);
   document.body.classList.toggle("modal-open", anyModalOpen);
+}
+
+function normalizeHelpTab(tab) {
+  const value = String(tab || "").trim();
+  return helpTabOrder.includes(value) ? value : "overview";
+}
+
+function readStoredHelpTab() {
+  try {
+    return localStorage.getItem(helpStorageKey);
+  } catch (err) {
+    return null;
+  }
+}
+
+function helpTabButtonFor(tab) {
+  const normalizedTab = normalizeHelpTab(tab);
+  return helpTabButtons.find((button) => normalizeHelpTab(button.dataset.helpTab) === normalizedTab) || null;
+}
+
+function focusHelpTabButton(tab) {
+  const button = helpTabButtonFor(tab);
+  if (button) {
+    button.focus();
+  }
+}
+
+function helpTabNavigationTarget(currentTab, key) {
+  const currentIndex = helpTabOrder.indexOf(normalizeHelpTab(currentTab));
+  if (!helpTabOrder.length) return "overview";
+  if (key === "Home") return helpTabOrder[0];
+  if (key === "End") return helpTabOrder[helpTabOrder.length - 1];
+  if (key === "ArrowRight" || key === "ArrowDown") {
+    const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % helpTabOrder.length;
+    return helpTabOrder[nextIndex];
+  }
+  if (key === "ArrowLeft" || key === "ArrowUp") {
+    const previousIndex = currentIndex < 0 ? 0 : (currentIndex - 1 + helpTabOrder.length) % helpTabOrder.length;
+    return helpTabOrder[previousIndex];
+  }
+  return null;
+}
+
+function setHelpTab(tab, { persist = true, focus = false } = {}) {
+  const activeTab = normalizeHelpTab(tab);
+  state.helpActiveTab = activeTab;
+
+  for (const button of helpTabButtons) {
+    const buttonTab = normalizeHelpTab(button.dataset.helpTab);
+    const isActive = buttonTab === activeTab;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+    button.tabIndex = isActive ? 0 : -1;
+  }
+
+  for (const panel of helpPanels) {
+    const panelTab = normalizeHelpTab(panel.dataset.helpPanel);
+    panel.hidden = panelTab !== activeTab;
+  }
+
+  if (helpModalBodyNode && !helpModalNode?.hidden) {
+    helpModalBodyNode.scrollTop = 0;
+  }
+
+  if (persist) {
+    try {
+      localStorage.setItem(helpStorageKey, activeTab);
+    } catch (err) {
+      // Ignore storage failures.
+    }
+  }
+
+  if (focus) {
+    focusHelpTabButton(activeTab);
+  }
+}
+
+function handleHelpTabKeydown(event) {
+  const currentButton = event.target instanceof HTMLElement ? event.target.closest("[data-help-tab]") : null;
+  if (!(currentButton instanceof HTMLButtonElement)) return;
+  const nextTab = helpTabNavigationTarget(currentButton.dataset.helpTab, event.key);
+  if (!nextTab) return;
+  event.preventDefault();
+  setHelpTab(nextTab, { focus: true });
+}
+
+function helpModalElementHidden(node) {
+  let currentNode = node;
+  while (currentNode instanceof HTMLElement && currentNode !== helpModalNode) {
+    if (currentNode.hidden) return true;
+    if (typeof currentNode.getAttribute === "function" && currentNode.getAttribute("aria-hidden") === "true") return true;
+    currentNode = currentNode.parentNode;
+  }
+  return false;
+}
+
+function isHelpModalFocusable(node) {
+  if (!(node instanceof HTMLElement)) return false;
+  if (helpModalElementHidden(node)) return false;
+  if ("disabled" in node && node.disabled) return false;
+  if (node.tabIndex < 0) return false;
+  const tagName = String(node.tagName || "").toLowerCase();
+  if (tagName === "button" || tagName === "input" || tagName === "select" || tagName === "textarea" || tagName === "summary") {
+    return true;
+  }
+  if (tagName === "a") {
+    return typeof node.getAttribute === "function" && node.getAttribute("href") !== null;
+  }
+  return typeof node.getAttribute === "function" && node.getAttribute("tabindex") !== null;
+}
+
+function getHelpModalFocusableNodes() {
+  if (!(helpModalNode instanceof HTMLElement)) return [];
+  const focusableNodes = [];
+  const stack = Array.from(helpModalNode.children || []);
+  while (stack.length) {
+    const node = stack.shift();
+    if (!(node instanceof HTMLElement)) continue;
+    if (isHelpModalFocusable(node)) {
+      focusableNodes.push(node);
+    }
+    stack.unshift(...Array.from(node.children || []));
+  }
+  return focusableNodes;
+}
+
+function handleHelpModalKeydown(event) {
+  if (event.key !== "Tab" || !helpModalNode || helpModalNode.hidden) return;
+  const focusableNodes = getHelpModalFocusableNodes();
+  if (focusableNodes.length < 2) return;
+  const firstNode = focusableNodes[0];
+  const lastNode = focusableNodes[focusableNodes.length - 1];
+  const activeNode = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (event.shiftKey) {
+    if (activeNode !== firstNode) return;
+    event.preventDefault();
+    lastNode.focus();
+    return;
+  }
+  if (activeNode !== lastNode) return;
+  event.preventDefault();
+  firstNode.focus();
+}
+
+function openHelpModal() {
+  if (!helpModalNode) return;
+  const storedTab = readStoredHelpTab();
+  const activeTab = normalizeHelpTab(storedTab);
+  helpModalReturnFocusNode = document.activeElement instanceof HTMLElement ? document.activeElement : helpBtn;
+  helpModalNode.hidden = false;
+  setHelpTab(activeTab, { persist: storedTab !== activeTab, focus: true });
+  syncModalOpenState();
+}
+
+function closeHelpModal() {
+  if (!helpModalNode) return;
+  helpModalNode.hidden = true;
+  syncModalOpenState();
+  const returnFocusNode = helpModalReturnFocusNode;
+  helpModalReturnFocusNode = null;
+  if (returnFocusNode instanceof HTMLElement && typeof returnFocusNode.focus === "function") {
+    returnFocusNode.focus();
+  } else if (helpBtn) {
+    helpBtn.focus();
+  }
 }
 
 function openWorkerSetupModal() {
@@ -1033,6 +1209,57 @@ function bindProjectSharing() {
       void handleShareProjectRemove(email);
     });
   }
+}
+
+function bindHelpModal() {
+  if (helpBtn) {
+    helpBtn.addEventListener("click", () => {
+      openHelpModal();
+    });
+  }
+
+  if (helpCloseBtn) {
+    helpCloseBtn.addEventListener("click", () => {
+      closeHelpModal();
+    });
+  }
+
+  if (helpModalNode) {
+    helpModalNode.addEventListener("click", (event) => {
+      if (event.target === helpModalNode) {
+        closeHelpModal();
+      }
+    });
+    helpModalNode.addEventListener("keydown", handleHelpModalKeydown);
+  }
+
+  if (helpTabListNode) {
+    helpTabListNode.addEventListener("keydown", handleHelpTabKeydown);
+  }
+
+  for (const button of helpTabButtons) {
+    button.addEventListener("click", () => {
+      setHelpTab(button.dataset.helpTab || "overview", { focus: true });
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && helpModalNode && !helpModalNode.hidden) {
+      closeHelpModal();
+    }
+  });
+}
+
+if (typeof window !== "undefined") {
+  window.__radcastHelp = {
+    bindHelpModal,
+    focusHelpTabButton,
+    handleHelpModalKeydown,
+    handleHelpTabKeydown,
+    helpTabNavigationTarget,
+    normalizeHelpTab,
+    setHelpTab,
+  };
 }
 
 function formatDurationSeconds(seconds) {
@@ -2507,6 +2734,8 @@ function wireTrimRail() {
 
 async function init() {
   setupThemeToggle();
+  setHelpTab(normalizeHelpTab(readStoredHelpTab()), { persist: false });
+  bindHelpModal();
   showProjectGateway();
   await loadProjects();
 
@@ -2702,4 +2931,6 @@ async function init() {
   wireTrimRail();
 }
 
-void init();
+if (!(typeof window !== "undefined" && window.__RADCAST_DISABLE_AUTOINIT__)) {
+  void init();
+}
