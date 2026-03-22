@@ -451,6 +451,22 @@ function focusHelpTabButton(tab) {
   }
 }
 
+function helpTabNavigationTarget(currentTab, key) {
+  const currentIndex = helpTabOrder.indexOf(normalizeHelpTab(currentTab));
+  if (!helpTabOrder.length) return "overview";
+  if (key === "Home") return helpTabOrder[0];
+  if (key === "End") return helpTabOrder[helpTabOrder.length - 1];
+  if (key === "ArrowRight" || key === "ArrowDown") {
+    const nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % helpTabOrder.length;
+    return helpTabOrder[nextIndex];
+  }
+  if (key === "ArrowLeft" || key === "ArrowUp") {
+    const previousIndex = currentIndex < 0 ? 0 : (currentIndex - 1 + helpTabOrder.length) % helpTabOrder.length;
+    return helpTabOrder[previousIndex];
+  }
+  return null;
+}
+
 function setHelpTab(tab, { persist = true, focus = false } = {}) {
   const activeTab = normalizeHelpTab(tab);
   state.helpActiveTab = activeTab;
@@ -484,21 +500,10 @@ function setHelpTab(tab, { persist = true, focus = false } = {}) {
 function handleHelpTabKeydown(event) {
   const currentButton = event.target instanceof HTMLElement ? event.target.closest("[data-help-tab]") : null;
   if (!(currentButton instanceof HTMLButtonElement)) return;
-
-  let offset = 0;
-  if (event.key === "ArrowRight" || event.key === "ArrowDown") offset = 1;
-  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") offset = -1;
-  else if (event.key === "Home") offset = -helpTabButtons.length;
-  else if (event.key === "End") offset = helpTabButtons.length;
-  else return;
-
+  const nextTab = helpTabNavigationTarget(currentButton.dataset.helpTab, event.key);
+  if (!nextTab) return;
   event.preventDefault();
-  const currentIndex = helpTabButtons.indexOf(currentButton);
-  if (currentIndex < 0 || !helpTabButtons.length) return;
-  const nextIndex = (currentIndex + offset + helpTabButtons.length) % helpTabButtons.length;
-  const nextButton = helpTabButtons[nextIndex];
-  if (!nextButton) return;
-  setHelpTab(nextButton.dataset.helpTab || "overview", { focus: true });
+  setHelpTab(nextTab, { focus: true });
 }
 
 function openHelpModal() {
@@ -788,6 +793,17 @@ function bindHelpModal() {
       closeHelpModal();
     }
   });
+}
+
+if (typeof window !== "undefined") {
+  window.__radcastHelp = {
+    bindHelpModal,
+    focusHelpTabButton,
+    handleHelpTabKeydown,
+    helpTabNavigationTarget,
+    normalizeHelpTab,
+    setHelpTab,
+  };
 }
 
 function formatDurationSeconds(seconds) {
@@ -2339,4 +2355,6 @@ async function init() {
   wireDragAndDrop();
 }
 
-void init();
+if (!(typeof window !== "undefined" && window.__RADCAST_DISABLE_AUTOINIT__)) {
+  void init();
+}

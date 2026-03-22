@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import shutil
 import uuid
 from pathlib import Path
@@ -59,6 +60,154 @@ def test_ui_homepage_renders_help_modal_shell():
     assert "Overview" in response.text
     assert "Process audio" in response.text
     assert "Troubleshooting" in response.text
+
+
+def test_help_tab_navigation_helper_handles_home_and_end():
+    ui_path = Path("/Users/rcd58/RADcast/.worktrees/codex-help-modal-radcast/src/radcast/static/ui.js")
+    script = f"""
+const fs = require("fs");
+const vm = require("vm");
+
+const source = fs.readFileSync({json.dumps(str(ui_path))}, "utf8");
+
+class FakeHTMLElement {{}}
+class FakeHTMLButtonElement extends FakeHTMLElement {{}}
+
+function makeButton(tab) {{
+  return Object.assign(new FakeHTMLButtonElement(), {{
+    dataset: {{ helpTab: tab }},
+    classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
+    style: {{}},
+    hidden: false,
+    tabIndex: -1,
+    textContent: "",
+    disabled: false,
+    focused: false,
+    addEventListener() {{}},
+    setAttribute() {{}},
+    focus() {{ this.focused = true; }},
+    closest(selector) {{ return selector === "[data-help-tab]" ? this : null; }},
+  }});
+}}
+
+function makePanel(tab) {{
+  return Object.assign(new FakeHTMLElement(), {{
+    dataset: {{ helpPanel: tab }},
+    hidden: false,
+  }});
+}}
+
+const helpTabs = ["overview", "process-audio", "cleanup-pauses", "generate-captions", "trim-clip", "helper-processing", "troubleshooting"].map(makeButton);
+const helpPanels = helpTabs.map((button) => makePanel(button.dataset.helpTab));
+const nodes = new Map();
+
+function makeNode(id) {{
+  if (id === "help-modal-tabs") return {{ addEventListener() {{}} }};
+  if (!nodes.has(id)) {{
+    nodes.set(id, Object.assign(new FakeHTMLElement(), {{
+      id,
+      hidden: false,
+      classList: {{ toggle() {{}}, add() {{}}, remove() {{}} }},
+      style: {{}},
+      textContent: "",
+      value: "",
+      disabled: false,
+      checked: false,
+      dataset: {{}},
+      addEventListener() {{}},
+      setAttribute() {{}},
+      removeAttribute() {{}},
+      appendChild() {{}},
+      pause() {{}},
+      load() {{}},
+      focus() {{}},
+      closest() {{ return null; }},
+      querySelector() {{ return null; }},
+    }}));
+  }}
+  return nodes.get(id);
+}}
+
+const document = {{
+  getElementById(id) {{ return makeNode(id); }},
+  querySelectorAll(selector) {{
+    if (selector === "[data-help-tab]") return helpTabs;
+    if (selector === "[data-help-panel]") return helpPanels;
+    return [];
+  }},
+  addEventListener() {{}},
+  body: {{ classList: {{ toggle() {{}} }} }},
+  activeElement: helpTabs[2],
+}};
+
+const context = {{
+  window: null,
+  document,
+  localStorage: {{ getItem() {{ return null; }}, setItem() {{}} }},
+  fetch() {{ throw new Error("fetch should not be called"); }},
+  navigator: {{ clipboard: {{ writeText() {{}} }} }},
+  URL: {{ revokeObjectURL() {{}}, createObjectURL() {{ return "blob:"; }} }},
+  setTimeout,
+  clearTimeout,
+  console,
+  HTMLElement: FakeHTMLElement,
+  HTMLButtonElement: FakeHTMLButtonElement,
+  Element: FakeHTMLElement,
+  AbortController: class {{}},
+  FormData: class {{}},
+  Blob: class {{}},
+  Headers: class {{}},
+  Response: class {{}},
+  Request: class {{}},
+  Intl,
+  Math,
+  Date,
+  JSON,
+  Number,
+  String,
+  Boolean,
+  Array,
+  Set,
+  Object,
+  RegExp,
+  Error,
+  URLSearchParams,
+  encodeURIComponent,
+  decodeURIComponent,
+  performance: {{ now() {{ return 0; }} }},
+}};
+context.window = context;
+context.window.__RADCAST_DISABLE_AUTOINIT__ = true;
+
+vm.createContext(context);
+vm.runInContext(source, context, {{ filename: "ui.js" }});
+
+const helper = context.window.__radcastHelp;
+const checks = [
+  helper.helpTabNavigationTarget("cleanup-pauses", "Home"),
+  helper.helpTabNavigationTarget("cleanup-pauses", "End"),
+  helper.helpTabNavigationTarget("overview", "ArrowRight"),
+  helper.helpTabNavigationTarget("overview", "ArrowLeft"),
+];
+process.stdout.write(JSON.stringify(checks));
+"""
+
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    assert json.loads(result.stdout) == [
+        "overview",
+        "troubleshooting",
+        "process-audio",
+        "troubleshooting",
+    ]
+
+
+def test_help_modal_binding_happens_before_project_loading():
+    ui_path = Path("/Users/rcd58/RADcast/.worktrees/codex-help-modal-radcast/src/radcast/static/ui.js")
+    lines = ui_path.read_text().splitlines()
+    bind_line = next(index for index, line in enumerate(lines, start=1) if line.strip() == "bindHelpModal();")
+    load_line = next(index for index, line in enumerate(lines, start=1) if line.strip() == "await loadProjects();")
+
+    assert bind_line < load_line
 
 
 def test_worker_invite_and_status_endpoints_render(monkeypatch):
