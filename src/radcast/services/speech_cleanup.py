@@ -311,6 +311,17 @@ class SpeechCleanupService:
         normalized_quality = _normalize_caption_quality_mode(quality_mode)
         base_seconds = estimate_caption_seconds(duration_seconds, quality_mode=normalized_quality)
         profile = self._caption_profile_for_mode(normalized_quality, caption_prompt=None)
+        if normalized_quality == CaptionQualityMode.REVIEWED:
+            first_pass_ready = self._model_cache_ready(profile.model_size)
+            review_ready = self._model_cache_ready(self.caption_reviewed_model_size)
+            if first_pass_ready and review_ready:
+                return base_seconds
+            cold_start_seconds = 0
+            if not first_pass_ready:
+                cold_start_seconds += 95
+            if not review_ready:
+                cold_start_seconds += 80
+            return min(base_seconds + cold_start_seconds, 24 * 60)
         if self._model_cache_ready(profile.model_size):
             return base_seconds
         if normalized_quality == CaptionQualityMode.FAST:
@@ -848,8 +859,8 @@ class SpeechCleanupService:
             )
         if caption_quality_mode == CaptionQualityMode.REVIEWED:
             return CaptionTranscriptionProfile(
-                model_size=self.caption_reviewed_model_size,
-                beam_size=self.caption_reviewed_beam_size,
+                model_size=self.caption_accurate_model_size,
+                beam_size=self.caption_accurate_beam_size,
                 window_seconds=_CAPTION_REVIEWED_WINDOW_SECONDS,
                 overlap_seconds=_CAPTION_REVIEWED_OVERLAP_SECONDS,
                 condition_on_previous_text=True,

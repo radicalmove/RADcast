@@ -808,6 +808,134 @@ def test_worker_client_applies_speech_cleanup_locally_when_available(monkeypatch
     assert any(stage == "cleanup" and detail and "local helper device" in detail.lower() for _, stage, detail, _ in progress_updates)
 
 
+def test_worker_client_forwards_trim_values_into_enhancement(monkeypatch, tmp_path: Path):
+    client = WorkerClient(
+        server_url="http://example.invalid",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=1,
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeEnhanceService:
+        def enhance(self, **kwargs):
+            captured.update(kwargs)
+            output_path = kwargs["output_base_path"].with_suffix(".mp3")
+            output_path.write_bytes(b"fake-mp3-output" * 4)
+            return output_path
+
+        def cancel(self, job_id: str) -> None:
+            raise AssertionError(f"cancel should not be called for {job_id}")
+
+    class FakeSpeechCleanupService:
+        def capability_status(self):
+            return False, "not available"
+
+    monkeypatch.setattr("radcast.worker_client.probe_duration_seconds", lambda _path: 4.0)
+    monkeypatch.setattr(client, "_post_progress_update", lambda *args, **kwargs: "running")
+    client.enhance_service = FakeEnhanceService()
+    client.speech_cleanup_service = FakeSpeechCleanupService()
+
+    payload = {
+        "project_id": "proj1",
+        "input_audio_b64": base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8"),
+        "input_audio_filename": "lecture.wav",
+        "output_name": "enhanced-audio",
+        "output_format": "mp3",
+        "enhancement_model": "none",
+        "clip_start_seconds": 1.25,
+        "clip_end_seconds": 3.75,
+    }
+
+    client._process_enhance_job("job_test", payload)
+
+    assert captured["clip_start_seconds"] == 1.25
+    assert captured["clip_end_seconds"] == 3.75
+
+
+def test_worker_client_postprocesses_trimmed_output_duration(monkeypatch, tmp_path: Path):
+    client = WorkerClient(
+        server_url="http://example.invalid",
+        config_path=tmp_path / "worker.json",
+        worker_name="test-worker",
+        invite_token=None,
+        poll_seconds=1,
+    )
+
+    output_path_holder: dict[str, Path] = {}
+    cleanup_calls: list[dict[str, object]] = []
+    caption_calls: list[dict[str, object]] = []
+    captured_trim: dict[str, float | None] = {}
+
+    class FakeEnhanceService:
+        def enhance(self, **kwargs):
+            captured_trim["clip_start_seconds"] = kwargs.get("clip_start_seconds")
+            captured_trim["clip_end_seconds"] = kwargs.get("clip_end_seconds")
+            output_path = kwargs["output_base_path"].with_suffix(".mp3")
+            output_path.write_bytes(b"fake-mp3-output" * 8)
+            output_path_holder["path"] = output_path
+            return output_path
+
+        def cancel(self, job_id: str) -> None:
+            raise AssertionError(f"cancel should not be called for {job_id}")
+
+    class FakeSpeechCleanupService:
+        def capability_status(self):
+            return True, "ready"
+
+        def cleanup_audio_file(self, **kwargs):
+            cleanup_calls.append(kwargs)
+            return SpeechCleanupResult(applied=True, removed_pause_count=1, removed_filler_count=0, duration_seconds=2.4)
+
+        def generate_caption_file(self, **kwargs):
+            caption_calls.append(kwargs)
+            caption_path = Path(kwargs["audio_path"]).with_suffix(".vtt")
+            caption_path.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n", encoding="utf-8")
+            return SimpleNamespace(caption_path=caption_path, caption_format=CaptionFormat.VTT, segment_count=1)
+
+        def estimate_caption_runtime_seconds(self, _duration_seconds, *, quality_mode=None):
+            return 14
+
+    def fake_probe_duration(path: Path) -> float:
+        resolved = Path(path)
+        if resolved == output_path_holder.get("path"):
+            return 2.4
+        return 6.0
+
+    monkeypatch.setattr("radcast.worker_client.probe_duration_seconds", fake_probe_duration)
+    monkeypatch.setattr(client, "_post_progress_update", lambda *args, **kwargs: "running")
+    client.enhance_service = FakeEnhanceService()
+    client.speech_cleanup_service = FakeSpeechCleanupService()
+
+    payload = {
+        "project_id": "proj1",
+        "input_audio_b64": base64.b64encode(b"fake-wav-audio" * 8).decode("utf-8"),
+        "input_audio_filename": "lecture.wav",
+        "output_name": "enhanced-audio",
+        "output_format": "mp3",
+        "enhancement_model": "none",
+        "clip_start_seconds": 1.1,
+        "clip_end_seconds": 3.5,
+        "max_silence_seconds": 1.0,
+        "caption_format": "vtt",
+    }
+
+    result = client._process_enhance_job("job_test", payload)
+
+    assert captured_trim == {
+        "clip_start_seconds": 1.1,
+        "clip_end_seconds": 3.5,
+    }
+    assert cleanup_calls
+    assert cleanup_calls[0]["audio_path"] == output_path_holder["path"]
+    assert caption_calls
+    assert caption_calls[0]["audio_path"] == output_path_holder["path"]
+    assert result["duration_seconds"] == 2.4
+    assert result["caption_b64"]
+
+
 def test_worker_client_reserves_caption_band_after_local_cleanup(monkeypatch, tmp_path: Path):
     client = WorkerClient(
         server_url="http://example.invalid",

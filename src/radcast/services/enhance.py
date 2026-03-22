@@ -51,7 +51,7 @@ from radcast.constants import (
 )
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
 from radcast.models import EnhancementModel, OutputFormat
-from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
+from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert, run_ffmpeg_trim
 
 MODEL_LABELS = {
     EnhancementModel.NONE: "Do not enhance",
@@ -184,6 +184,8 @@ class EnhanceService:
         input_audio_path: Path,
         output_format: OutputFormat,
         output_base_path: Path,
+        clip_start_seconds: float | None = None,
+        clip_end_seconds: float | None = None,
         on_stage: Callable[[str, float, str, int | None], None],
         cancel_check: Callable[[], bool],
     ) -> Path:
@@ -195,16 +197,9 @@ class EnhanceService:
         if cancel_check():
             raise JobCancelledError("job cancelled")
 
-        if model == EnhancementModel.NONE:
-            on_stage("prepare", 0.12, "Preparing source audio without enhancement.", 4)
-            on_stage("enhance", 0.82, "Skipping enhancement and keeping the original audio quality.", 2)
-            final_path = self._write_passthrough_output(
-                input_audio_path=input_audio_path,
-                output_format=output_format,
-                output_base_path=output_base_path,
-            )
-            on_stage("finalize", 0.96, "Saving audio without enhancement.", 2)
-            return final_path
+        trim_requested = (
+            clip_start_seconds is not None and clip_start_seconds > 0
+        ) or clip_end_seconds is not None
 
         with tempfile.TemporaryDirectory(prefix=f"radcast_{job_id}_") as tmp:
             tmp_path = Path(tmp)
@@ -213,13 +208,40 @@ class EnhanceService:
             in_dir.mkdir(parents=True, exist_ok=True)
             out_dir.mkdir(parents=True, exist_ok=True)
 
+            prepared_input_path = input_audio_path
+            if trim_requested:
+                trimmed_input_path = tmp_path / "trimmed" / f"trimmed{input_audio_path.suffix.lower() or '.wav'}"
+                on_stage("prepare", 0.08, "Preparing trimmed source audio.", 6)
+                try:
+                    run_ffmpeg_trim(
+                        input_audio_path,
+                        trimmed_input_path,
+                        clip_start_seconds=clip_start_seconds,
+                        clip_end_seconds=clip_end_seconds,
+                    )
+                except Exception as exc:
+                    raise EnhancementRuntimeError(f"Could not prepare trimmed audio. {exc}") from exc
+                prepared_input_path = trimmed_input_path
+
+            if model == EnhancementModel.NONE:
+                if not trim_requested:
+                    on_stage("prepare", 0.12, "Preparing source audio without enhancement.", 4)
+                on_stage("enhance", 0.82, "Skipping enhancement and keeping the original audio quality.", 2)
+                final_path = self._write_passthrough_output(
+                    input_audio_path=prepared_input_path,
+                    output_format=output_format,
+                    output_base_path=output_base_path,
+                )
+                on_stage("finalize", 0.96, "Saving audio without enhancement.", 2)
+                return final_path
+
             on_stage("prepare", 0.12, f"Preparing source audio for {MODEL_LABELS[model]}")
             in_wav = in_dir / "input.wav"
             input_filter = self._input_filter_for_model(model)
-            if input_audio_path.suffix.lower() == ".wav" and not input_filter:
-                in_wav.write_bytes(input_audio_path.read_bytes())
+            if prepared_input_path.suffix.lower() == ".wav" and not input_filter:
+                in_wav.write_bytes(prepared_input_path.read_bytes())
             else:
-                run_ffmpeg_convert(input_audio_path, in_wav, audio_filters=input_filter)
+                run_ffmpeg_convert(prepared_input_path, in_wav, audio_filters=input_filter)
             input_duration_seconds = probe_duration_seconds(in_wav)
 
             if cancel_check():

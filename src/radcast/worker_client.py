@@ -16,7 +16,7 @@ from typing import Any
 import requests
 
 from radcast.exceptions import JobCancelledError
-from radcast.models import OutputFormat, WorkerEnhanceEnqueueRequest
+from radcast.models import EnhancementModel, OutputFormat, WorkerEnhanceEnqueueRequest
 from radcast.progress import (
     estimate_speech_cleanup_seconds,
     extend_eta_with_postprocess,
@@ -186,6 +186,7 @@ class WorkerClient:
             cleanup_requested = req.speech_cleanup_requested()
             caption_requested = req.caption_requested()
             postprocess_requested = cleanup_requested or caption_requested
+            enhancement_requested = req.enhancement_model != EnhancementModel.NONE
             postprocess_available = False
             caption_generation_available = False
             cleanup_eta_seconds = None
@@ -264,7 +265,12 @@ class WorkerClient:
 
                 def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
                     emit_progress(
-                        map_worker_stage_progress(stage, progress, reserve_cleanup_band=postprocess_requested),
+                        map_worker_stage_progress(
+                            stage,
+                            progress,
+                            reserve_cleanup_band=postprocess_requested,
+                            enhancement_requested=enhancement_requested,
+                        ),
                         stage=stage,
                         detail=detail,
                         eta_seconds=extend_eta_with_postprocess(
@@ -282,6 +288,8 @@ class WorkerClient:
                     input_audio_path=input_path,
                     output_format=req.output_format,
                     output_base_path=output_base,
+                    clip_start_seconds=req.clip_start_seconds,
+                    clip_end_seconds=req.clip_end_seconds,
                     on_stage=on_stage,
                     cancel_check=lambda: cancel_requested.is_set(),
                 )
@@ -295,6 +303,7 @@ class WorkerClient:
                             stage="cleanup",
                             cleanup_requested=True,
                             caption_requested=caption_requested,
+                            enhancement_requested=enhancement_requested,
                         ),
                         stage="cleanup",
                         detail="Applying speech cleanup on your local helper device.",
@@ -315,6 +324,7 @@ class WorkerClient:
                                 stage="cleanup",
                                 cleanup_requested=True,
                                 caption_requested=caption_requested,
+                                enhancement_requested=enhancement_requested,
                             ),
                             stage="cleanup",
                             detail=f"{detail} On your local helper device.",
@@ -336,6 +346,7 @@ class WorkerClient:
                             stage="cleanup",
                             cleanup_requested=True,
                             caption_requested=caption_requested,
+                            enhancement_requested=enhancement_requested,
                         ),
                         stage="cleanup",
                         detail="Saving cleaned audio on your local helper device.",
@@ -343,14 +354,24 @@ class WorkerClient:
                     )
                 elif cleanup_requested:
                     emit_progress(
-                        map_worker_stage_progress("finalize", 0.96, reserve_cleanup_band=postprocess_requested),
+                        map_worker_stage_progress(
+                            "finalize",
+                            0.96,
+                            reserve_cleanup_band=postprocess_requested,
+                            enhancement_requested=enhancement_requested,
+                        ),
                         stage="finalize",
                         detail="Uploading audio for server-side post-processing",
                         eta_seconds=max(8, int((cleanup_eta_seconds or 0) + (caption_eta_seconds or 0) or 8)),
                     )
                 elif not caption_requested:
                     emit_progress(
-                        map_worker_stage_progress("finalize", 0.96, reserve_cleanup_band=False),
+                        map_worker_stage_progress(
+                            "finalize",
+                            0.96,
+                            reserve_cleanup_band=False,
+                            enhancement_requested=enhancement_requested,
+                        ),
                         stage="finalize",
                         detail="Saving enhanced audio",
                         eta_seconds=8,
@@ -367,6 +388,7 @@ class WorkerClient:
                             stage="captions",
                             cleanup_requested=cleanup_requested,
                             caption_requested=True,
+                            enhancement_requested=enhancement_requested,
                         ),
                         stage="captions",
                         detail="Generating captions on your local helper device.",
@@ -383,6 +405,7 @@ class WorkerClient:
                                 stage="captions",
                                 cleanup_requested=cleanup_requested,
                                 caption_requested=True,
+                                enhancement_requested=enhancement_requested,
                             ),
                             stage="captions",
                             detail=f"{detail} On your local helper device.",
@@ -407,6 +430,7 @@ class WorkerClient:
                             stage="captions",
                             cleanup_requested=cleanup_requested,
                             caption_requested=True,
+                            enhancement_requested=enhancement_requested,
                         ),
                         stage="captions",
                         detail="Uploading audio and captions from your local helper device.",
@@ -414,7 +438,12 @@ class WorkerClient:
                     )
                 elif caption_requested:
                     emit_progress(
-                        map_worker_stage_progress("finalize", 0.96, reserve_cleanup_band=postprocess_requested),
+                        map_worker_stage_progress(
+                            "finalize",
+                            0.96,
+                            reserve_cleanup_band=postprocess_requested,
+                            enhancement_requested=enhancement_requested,
+                        ),
                         stage="finalize",
                         detail="Uploading audio for server-side caption generation",
                         eta_seconds=max(8, int((caption_eta_seconds or 0) or 8)),

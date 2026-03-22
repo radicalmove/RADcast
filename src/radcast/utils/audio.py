@@ -26,6 +26,37 @@ def run_ffmpeg_convert(src: Path, dst: Path, *, audio_filters: str | None = None
         raise RuntimeError(message)
 
 
+def run_ffmpeg_trim(
+    src: Path,
+    dst: Path,
+    *,
+    clip_start_seconds: float | None = None,
+    clip_end_seconds: float | None = None,
+    audio_filters: str | None = None,
+) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(src),
+    ]
+    if clip_start_seconds is not None:
+        cmd.extend(["-ss", f"{max(0.0, float(clip_start_seconds)):.3f}"])
+    if clip_end_seconds is not None:
+        cmd.extend(["-to", f"{max(0.0, float(clip_end_seconds)):.3f}"])
+    if audio_filters and audio_filters.strip():
+        cmd.extend(["-af", audio_filters.strip()])
+    cmd.append(str(dst))
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "ffmpeg failed").strip()
+        raise RuntimeError(message)
+
+
 def probe_duration_seconds(path: Path) -> float:
     cmd = [
         "ffprobe",

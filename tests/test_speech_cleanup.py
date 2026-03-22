@@ -581,8 +581,8 @@ def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossa
     )
 
     assert result.quality_report is not None
-    assert captured["model_size"] == service.caption_reviewed_model_size
-    assert captured["beam_size"] == service.caption_reviewed_beam_size
+    assert captured["model_size"] == service.caption_accurate_model_size
+    assert captured["beam_size"] == service.caption_accurate_beam_size
     assert captured["condition_on_previous_text"] is True
     assert captured["window_seconds"] == 16.0
     assert captured["overlap_seconds"] == 3.0
@@ -633,6 +633,22 @@ def test_estimate_caption_runtime_seconds_adds_cold_start_for_uncached_accurate_
 
     monkeypatch.setattr(service, "_model_cache_ready", lambda model_size: True)
     warm_seconds = service.estimate_caption_runtime_seconds(120, quality_mode=CaptionQualityMode.ACCURATE)
+
+    assert cold_seconds > warm_seconds
+
+
+def test_estimate_caption_runtime_seconds_for_reviewed_mode_accounts_for_review_model_cache(monkeypatch):
+    service = SpeechCleanupService()
+    monkeypatch.setattr(
+        service,
+        "_model_cache_ready",
+        lambda model_size: model_size != service.caption_reviewed_model_size,
+    )
+
+    cold_seconds = service.estimate_caption_runtime_seconds(120, quality_mode=CaptionQualityMode.REVIEWED)
+
+    monkeypatch.setattr(service, "_model_cache_ready", lambda model_size: True)
+    warm_seconds = service.estimate_caption_runtime_seconds(120, quality_mode=CaptionQualityMode.REVIEWED)
 
     assert cold_seconds > warm_seconds
 

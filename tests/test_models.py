@@ -40,6 +40,30 @@ def test_simple_enhance_request_accepts_valid_payload():
     assert req.filler_removal_mode == FillerRemovalMode.AGGRESSIVE
 
 
+def test_simple_enhance_request_accepts_valid_trim_range():
+    req = SimpleEnhanceRequest(
+        project_id="proj1",
+        input_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+        input_audio_filename="lecture.wav",
+        clip_start_seconds=1.2,
+        clip_end_seconds=8.6,
+    )
+
+    assert req.clip_start_seconds == 1.2
+    assert req.clip_end_seconds == 8.6
+
+
+def test_simple_enhance_request_rejects_invalid_trim_range():
+    with pytest.raises(ValidationError):
+        SimpleEnhanceRequest(
+            project_id="proj1",
+            input_audio_b64="QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw",
+            input_audio_filename="lecture.wav",
+            clip_start_seconds=5.0,
+            clip_end_seconds=5.0,
+        )
+
+
 def test_simple_enhance_request_rejects_missing_audio_payload():
     with pytest.raises(ValidationError):
         SimpleEnhanceRequest(
@@ -439,6 +463,62 @@ def test_no_enhance_model_skips_backend_and_copies_matching_format(
     assert backend_called is False
     assert final_path.suffix == ".mp3"
     assert final_path.read_bytes() == source_bytes
+
+
+def test_no_enhance_model_prepares_trimmed_input_before_passthrough(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    service = EnhanceService()
+    source = tmp_path / "input.mp3"
+    source.write_bytes(b"fake-mp3")
+    trim_calls: list[dict[str, object]] = []
+
+    def fake_trim(
+        src: Path,
+        dst: Path,
+        *,
+        clip_start_seconds: float | None = None,
+        clip_end_seconds: float | None = None,
+        audio_filters: str | None = None,
+    ) -> None:
+        trim_calls.append(
+            {
+                "src": src,
+                "dst": dst,
+                "clip_start_seconds": clip_start_seconds,
+                "clip_end_seconds": clip_end_seconds,
+                "audio_filters": audio_filters,
+            }
+        )
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"trimmed-mp3")
+
+    monkeypatch.setattr("radcast.services.enhance.run_ffmpeg_trim", fake_trim)
+
+    final_path = service.enhance(
+        job_id="job1",
+        enhancement_model=EnhancementModel.NONE,
+        input_audio_path=source,
+        output_format=OutputFormat.MP3,
+        output_base_path=tmp_path / "out" / "result",
+        clip_start_seconds=1.0,
+        clip_end_seconds=4.0,
+        on_stage=lambda *args: None,
+        cancel_check=lambda: False,
+    )
+
+    assert trim_calls == [
+        {
+            "src": source,
+            "dst": trim_calls[0]["dst"],
+            "clip_start_seconds": 1.0,
+            "clip_end_seconds": 4.0,
+            "audio_filters": None,
+        }
+    ]
+    assert final_path.suffix == ".mp3"
+    assert final_path.read_bytes() == b"trimmed-mp3"
 
 
 def test_studio_model_uses_studio_postfilter(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
