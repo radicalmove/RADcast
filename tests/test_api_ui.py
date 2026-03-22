@@ -62,7 +62,7 @@ def test_ui_homepage_renders_help_modal_shell():
     assert 'id="help-modal-tabs"' in text
     assert 'aria-controls="help-panel-overview"' in text
     assert 'tabindex="0"' in text
-    assert 'class="help-modal-intro"' in text
+    assert 'class="help-tab-rail"' in text
     assert 'class="help-modal-body"' in text
     assert 'class="help-callout help-callout-tip"' in text
     assert 'class="help-callout help-callout-note"' in text
@@ -91,7 +91,7 @@ def test_help_modal_redesign_styles_exist():
     css = _ui_css_source()
 
     assert ".topbar-btn.topbar-btn-help" in css
-    assert ".help-modal-intro" in css
+    assert ".help-tab-rail" in css
     assert ".help-modal-body" in css
     assert ".help-callout" in css
     assert ".help-callout-tip" in css
