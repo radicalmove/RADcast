@@ -192,17 +192,30 @@ body {
 
 .topbar-btn.topbar-btn-help {
   order: -1;
-  background: linear-gradient(180deg, #ffd76c 0%, #efba35 100%);
-  border-color: #c48d18;
-  color: #1a1608;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  gap: 5px;
+  background: #2f8c4b;
+  border-color: #2f8c4b;
+  color: var(--uc-white);
+  box-shadow: none;
 }
 
 .topbar-btn.topbar-btn-help:hover,
-.topbar-btn.topbar-btn-help:active {
-  background: linear-gradient(180deg, #ffdf86 0%, #e3a71b 100%);
-  border-color: #9f700f;
-  color: #1a1608;
+.topbar-btn.topbar-btn-help:active,
+.topbar-btn.topbar-btn-help[aria-expanded="true"] {
+  background: #257640;
+  border-color: #257640;
+  color: var(--uc-white);
+}
+
+.topbar-btn.topbar-btn-help svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+  flex: 0 0 auto;
+}
+
+#help-btn:not([hidden]) + #switch-project-btn {
+  margin-left: 50px;
 }
 
 .topbar-btn.topbar-btn-danger {
@@ -559,7 +572,7 @@ body.modal-open {
   overflow: hidden;
   background:
     radial-gradient(circle at top left, rgba(206, 62, 46, 0.08), transparent 28%),
-    linear-gradient(180deg, rgba(255, 244, 216, 0.85), rgba(255, 255, 255, 0) 180px),
+    linear-gradient(180deg, rgba(252, 242, 240, 0.92), rgba(255, 255, 255, 0) 180px),
     var(--bg-surface);
 }
 
@@ -586,7 +599,7 @@ body.modal-open {
 .help-intro-card {
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.92);
   padding: 14px 16px;
   box-shadow: var(--uc-shadow-sm);
 }
@@ -606,7 +619,7 @@ body.modal-open {
 
 .help-tab-rail {
   padding: 14px 24px 0;
-  background: linear-gradient(180deg, rgba(255, 244, 216, 0.55), rgba(255, 244, 216, 0));
+  background: linear-gradient(180deg, rgba(251, 240, 238, 0.92), rgba(251, 240, 238, 0));
 }
 
 .help-modal-tabs {
@@ -620,36 +633,38 @@ body.modal-open {
   position: relative;
   flex: 1 1 180px;
   max-width: 250px;
-  min-height: 56px;
+  min-height: 58px;
+  height: 58px;
   display: inline-flex;
-  align-items: flex-end;
-  justify-content: center;
-  border: 1px solid #d7b774;
+  align-items: center;
+  justify-content: flex-start;
+  border: 1px solid rgba(156, 53, 39, 0.18);
   border-bottom: none;
   border-radius: 16px 16px 0 0;
-  background: linear-gradient(180deg, #fff3c8 0%, #eec35b 100%);
-  color: #3f2d06;
+  background: linear-gradient(180deg, #fffdfd 0%, #f7e9e7 100%);
+  color: #71423d;
   padding: 10px 14px 12px;
   font-size: 0.82rem;
   font-weight: 600;
   line-height: 1.2;
-  text-align: center;
+  text-align: left;
   cursor: pointer;
-  box-shadow: 0 8px 14px rgba(120, 86, 12, 0.12);
+  box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.85) inset, 0 1px 2px rgba(0, 0, 0, 0.04);
   transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 .help-tab:hover {
   transform: translateY(-2px);
-  border-color: #8a6211;
-  box-shadow: 0 12px 18px rgba(120, 86, 12, 0.18);
+  border-color: rgba(156, 53, 39, 0.38);
+  color: #592f2a;
+  box-shadow: 0 10px 16px rgba(105, 40, 32, 0.1);
 }
 
 .help-tab.is-active,
 .help-tab[aria-selected="true"] {
-  background: var(--bg-surface);
-  border-color: rgba(0, 0, 0, 0.12);
-  color: var(--text-primary);
+  background: linear-gradient(180deg, #ffffff 0%, #fbf3f2 100%);
+  border-color: rgba(156, 53, 39, 0.28);
+  color: var(--uc-red);
   transform: translateY(1px);
   box-shadow: 0 14px 18px rgba(0, 0, 0, 0.08);
   z-index: 2;
@@ -658,7 +673,7 @@ body.modal-open {
 .help-modal-body {
   overflow: auto;
   padding: 22px 24px 24px;
-  background: linear-gradient(180deg, rgba(255, 249, 236, 0.65), rgba(255, 249, 236, 0) 140px);
+  background: linear-gradient(180deg, rgba(251, 243, 241, 0.9), rgba(251, 243, 241, 0) 160px);
 }
 
 .help-panel {
@@ -766,15 +781,15 @@ body.modal-open {
 }
 
 .help-callout-tip {
-  background: linear-gradient(135deg, rgba(245, 255, 231, 0.95), rgba(255, 255, 255, 0.95));
+  background: linear-gradient(135deg, rgba(255, 245, 243, 0.98), rgba(255, 255, 255, 0.95));
 }
 
 .help-callout-tip::before {
-  background: #3f8f39;
+  background: var(--uc-red);
 }
 
 .help-callout-tip .help-callout-label {
-  color: #2d6b29;
+  color: #8d2d21;
 }
 
 .help-callout-troubleshooting {
@@ -790,13 +805,13 @@ body.modal-open {
 }
 
 [data-theme="dark"] .topbar-btn.topbar-btn-help {
-  color: #241900;
+  color: var(--uc-white);
 }
 
 [data-theme="dark"] .help-modal-card {
   background:
     radial-gradient(circle at top left, rgba(206, 62, 46, 0.16), transparent 30%),
-    linear-gradient(180deg, rgba(82, 62, 18, 0.28), rgba(21, 21, 23, 0) 180px),
+    linear-gradient(180deg, rgba(74, 33, 27, 0.34), rgba(21, 21, 23, 0) 180px),
     var(--bg-surface);
 }
 
@@ -810,29 +825,29 @@ body.modal-open {
 }
 
 [data-theme="dark"] .help-tab-rail {
-  background: linear-gradient(180deg, rgba(93, 67, 18, 0.38), rgba(93, 67, 18, 0));
+  background: linear-gradient(180deg, rgba(80, 34, 29, 0.42), rgba(80, 34, 29, 0));
 }
 
 [data-theme="dark"] .help-tab {
-  border-color: #926b17;
-  background: linear-gradient(180deg, #5d4515 0%, #8d6516 100%);
-  color: #fff0c6;
+  border-color: rgba(206, 62, 46, 0.34);
+  background: linear-gradient(180deg, #4f2520 0%, #7b3429 100%);
+  color: #ffd9d4;
   box-shadow: 0 10px 18px rgba(0, 0, 0, 0.32);
 }
 
 [data-theme="dark"] .help-tab:hover {
-  border-color: #d7b774;
+  border-color: rgba(236, 106, 93, 0.56);
 }
 
 [data-theme="dark"] .help-tab.is-active,
 [data-theme="dark"] .help-tab[aria-selected="true"] {
   background: var(--bg-surface);
-  border-color: rgba(255, 255, 255, 0.12);
-  color: var(--text-primary);
+  border-color: rgba(206, 62, 46, 0.34);
+  color: #ff9f93;
 }
 
 [data-theme="dark"] .help-modal-body {
-  background: linear-gradient(180deg, rgba(54, 42, 20, 0.34), rgba(54, 42, 20, 0) 140px);
+  background: linear-gradient(180deg, rgba(64, 28, 24, 0.42), rgba(64, 28, 24, 0) 160px);
 }
 
 [data-theme="dark"] .help-callout,
@@ -845,7 +860,7 @@ body.modal-open {
 }
 
 [data-theme="dark"] .help-callout-tip {
-  background: linear-gradient(135deg, rgba(28, 58, 28, 0.92), rgba(23, 24, 28, 0.94));
+  background: linear-gradient(135deg, rgba(82, 31, 24, 0.95), rgba(23, 24, 28, 0.94));
 }
 
 [data-theme="dark"] .help-callout-troubleshooting {
@@ -1706,7 +1721,8 @@ button.worker-mini-btn {
   .help-tab {
     flex: 1 1 calc(50% - 8px);
     max-width: none;
-    min-height: 48px;
+    min-height: 52px;
+    height: 52px;
     padding: 9px 10px 10px;
     font-size: 0.76rem;
   }

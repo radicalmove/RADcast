@@ -56,7 +56,14 @@
         {% endif %}
       </div>
       <div class="topbar-actions">
-        <button id="help-btn" class="topbar-btn topbar-btn-help" type="button">Help</button>
+        <button id="help-btn" class="topbar-btn topbar-btn-help" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M9.1 9a3 3 0 1 1 4.9 2.2c-.8.5-1.5 1.2-1.5 2.3"></path>
+            <line x1="12" y1="17" x2="12" y2="17"></line>
+          </svg>
+          <span>Help</span>
+        </button>
         <button id="switch-project-btn" class="topbar-btn" type="button" hidden>Projects</button>
         <button id="share-project-btn" class="topbar-btn" type="button" hidden>Share</button>
         {% if current_user %}
