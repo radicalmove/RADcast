@@ -56,6 +56,7 @@ const shareProjectOwnerNode = document.getElementById("share-project-owner");
 const shareProjectMembersNode = document.getElementById("share-project-members");
 const helpModalNode = document.getElementById("help-modal");
 const helpTabListNode = document.getElementById("help-modal-tabs");
+const helpModalBodyNode = document.getElementById("help-modal-body");
 const helpCloseBtn = document.getElementById("help-close-btn");
 const helpTabButtons = Array.from(document.querySelectorAll("[data-help-tab]"));
 const helpPanels = Array.from(document.querySelectorAll("[data-help-panel]"));
@@ -482,6 +483,10 @@ function setHelpTab(tab, { persist = true, focus = false } = {}) {
   for (const panel of helpPanels) {
     const panelTab = normalizeHelpTab(panel.dataset.helpPanel);
     panel.hidden = panelTab !== activeTab;
+  }
+
+  if (helpModalBodyNode && !helpModalNode?.hidden) {
+    helpModalBodyNode.scrollTop = 0;
   }
 
   if (persist) {

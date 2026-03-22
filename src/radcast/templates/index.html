@@ -56,9 +56,9 @@
         {% endif %}
       </div>
       <div class="topbar-actions">
+        <button id="help-btn" class="topbar-btn topbar-btn-help" type="button">Help</button>
         <button id="switch-project-btn" class="topbar-btn" type="button" hidden>Projects</button>
         <button id="share-project-btn" class="topbar-btn" type="button" hidden>Share</button>
-        <button id="help-btn" class="topbar-btn" type="button">Help</button>
         {% if current_user %}
         {% if current_user.is_admin and psychek_admin_url %}
         <a class="topbar-btn" href="{{ psychek_admin_url }}">Admin</a>
@@ -283,93 +283,225 @@
 
     <div id="help-modal" class="modal-overlay" hidden>
       <section class="modal-card help-modal-card" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
-        <header class="modal-header">
+        <header class="modal-header help-modal-header">
           <h2 id="help-modal-title">RADcast help</h2>
           <button id="help-close-btn" type="button" class="worker-mini-btn">Close</button>
         </header>
-        <p class="modal-copy">Quick reference for the main RADcast workflow and common problems.</p>
-        <div id="help-modal-tabs" class="help-modal-tabs" role="tablist" aria-label="RADcast help topics">
-          <button id="help-tab-overview" type="button" class="help-tab" data-help-tab="overview" role="tab" aria-selected="true" aria-controls="help-panel-overview" tabindex="0">Overview</button>
-          <button id="help-tab-process-audio" type="button" class="help-tab" data-help-tab="process-audio" role="tab" aria-selected="false" aria-controls="help-panel-process-audio" tabindex="-1">Process audio</button>
-          <button id="help-tab-cleanup-pauses" type="button" class="help-tab" data-help-tab="cleanup-pauses" role="tab" aria-selected="false" aria-controls="help-panel-cleanup-pauses" tabindex="-1">Clean up pauses and filler words</button>
-          <button id="help-tab-generate-captions" type="button" class="help-tab" data-help-tab="generate-captions" role="tab" aria-selected="false" aria-controls="help-panel-generate-captions" tabindex="-1">Generate captions</button>
-          <button id="help-tab-trim-clip" type="button" class="help-tab" data-help-tab="trim-clip" role="tab" aria-selected="false" aria-controls="help-panel-trim-clip" tabindex="-1">Use trim clip</button>
-          <button id="help-tab-helper-processing" type="button" class="help-tab" data-help-tab="helper-processing" role="tab" aria-selected="false" aria-controls="help-panel-helper-processing" tabindex="-1">Use helper processing</button>
-          <button id="help-tab-troubleshooting" type="button" class="help-tab" data-help-tab="troubleshooting" role="tab" aria-selected="false" aria-controls="help-panel-troubleshooting" tabindex="-1">Troubleshooting</button>
+        <div class="help-modal-intro">
+          <p class="modal-copy">Detailed guidance for getting from source audio to a finished version, with extra context for cleanup, captions, helper routing, and recovery steps.</p>
+          <div class="help-intro-grid">
+            <section class="help-intro-card">
+              <p class="help-intro-label">Workflow</p>
+              <p>Follow the same project-based path every time so the source file, completed versions, and helper status stay easy to audit.</p>
+            </section>
+            <section class="help-intro-card">
+              <p class="help-intro-label">Controls</p>
+              <p>The tabs below explain what each control changes, when to leave it alone, and what to check before you start another run.</p>
+            </section>
+            <section class="help-intro-card">
+              <p class="help-intro-label">Recovery</p>
+              <p>Use the troubleshooting guide when uploads, helpers, captions, or output quality do not behave the way you expected.</p>
+            </section>
+          </div>
         </div>
-        <section id="help-panel-overview" class="help-panel" data-help-panel="overview" role="tabpanel" aria-labelledby="help-tab-overview">
-          <p class="help-lead">RADcast helps you clean up spoken-word audio, tighten pacing, and export a polished file with optional captions.</p>
-          <ol class="help-steps">
-            <li>Create or open a project so the source audio and finished versions stay together.</li>
-            <li>Upload a new recording or choose a saved project audio file.</li>
-            <li>Set the format, cleanup, trim, and caption options you want for this run.</li>
-            <li>Start processing and watch the progress panel until the finished version appears in Completed versions.</li>
-            <li>Play the result, review any captions, and download the files you want to keep.</li>
-          </ol>
-          <p class="help-note">Your original uploaded audio stays in the project so you can run a different version later.</p>
-        </section>
-        <section id="help-panel-process-audio" class="help-panel" data-help-panel="process-audio" role="tabpanel" aria-labelledby="help-tab-process-audio" hidden>
-          <p class="help-lead">Use this when you want a cleaner listening version of a recording without changing the source file.</p>
-          <ol class="help-steps">
-            <li>Choose audio by dropping a file onto the upload area or by selecting a saved project audio file.</li>
-            <li>If you only want part of the recording, set the trim clip before you process.</li>
-            <li>Pick the output format and any cleanup or caption options you need.</li>
-            <li>Click the main process button and wait for the job to move from queued to complete.</li>
-            <li>Open the finished version in Completed versions, listen back, and download the audio if it is ready to share.</li>
-          </ol>
-          <p class="help-note">If nothing is selected, the job cannot start, so confirm the file name or saved audio preview first.</p>
-        </section>
-        <section id="help-panel-cleanup-pauses" class="help-panel" data-help-panel="cleanup-pauses" role="tabpanel" aria-labelledby="help-tab-cleanup-pauses" hidden>
-          <p class="help-lead">Use the cleanup toggles when the speaker sounds hesitant, padded with long pauses, or full of filler words.</p>
-          <ol class="help-steps">
-            <li>Turn on <strong>Reduce silence</strong> when the recording has pauses that feel too long between phrases.</li>
-            <li>Move the silence slider to set the longest pause you want to keep after processing.</li>
-            <li>Turn on <strong>Remove umms and ahhs</strong> when you want hesitation sounds and short filler runs cleaned up.</li>
-            <li>Process the audio and compare the finished version with the original pacing.</li>
-          </ol>
-          <p class="help-note">These tools change timing and wording, so listen through the finished version before publishing it.</p>
-        </section>
-        <section id="help-panel-generate-captions" class="help-panel" data-help-panel="generate-captions" role="tabpanel" aria-labelledby="help-tab-generate-captions" hidden>
-          <p class="help-lead">RADcast can create captions from the processed audio as part of the same run.</p>
-          <ol class="help-steps">
-            <li>Select SRT or VTT before you process the audio.</li>
-            <li>Run the job normally and wait for the audio version to finish.</li>
-            <li>Open the completed version and download the caption file that matches your chosen format.</li>
-            <li>Review the captions against the final audio before you publish or upload them anywhere else.</li>
-          </ol>
-          <p class="help-note">Captions are generated from the reviewed final audio, but they still need a human check for names, timing, and wording.</p>
-        </section>
-        <section id="help-panel-trim-clip" class="help-panel" data-help-panel="trim-clip" role="tabpanel" aria-labelledby="help-tab-trim-clip" hidden>
-          <p class="help-lead">Use trim clip when you only need a section of a longer recording for the next processing run.</p>
-          <ol class="help-steps">
-            <li>Load or preview the source audio so the trim rail is available.</li>
-            <li>Drag the trim handles to the start and end points you want to keep.</li>
-            <li>Check the selected section, then run processing as usual.</li>
-            <li>Adjust the trim again later if you want a different section from the same source file.</li>
-          </ol>
-          <p class="help-note">Trim only changes the section used for the next run. It does not cut or overwrite the original uploaded audio.</p>
-        </section>
-        <section id="help-panel-helper-processing" class="help-panel" data-help-panel="helper-processing" role="tabpanel" aria-labelledby="help-tab-helper-processing" hidden>
-          <p class="help-lead">Helper processing lets another machine pick up enhancement jobs when a helper app is online.</p>
-          <ol class="help-steps">
-            <li>Check the helper status pill before starting a longer job.</li>
-            <li>Use <strong>Set up helper app</strong> if you need install links or setup commands for another machine.</li>
-            <li>Start processing and watch the progress details to see whether the job is running on a helper or on the RADcast server.</li>
-            <li>If no helper is available, RADcast falls back to the server path instead of asking you to restart the job.</li>
-          </ol>
-          <p class="help-note">A helper needs to stay online and idle enough to claim work. If it drops out mid-job, RADcast may switch the job back to the server.</p>
-        </section>
-        <section id="help-panel-troubleshooting" class="help-panel" data-help-panel="troubleshooting" role="tabpanel" aria-labelledby="help-tab-troubleshooting" hidden>
-          <p class="help-lead">Use these checks when processing is slow, a helper is unavailable, or the result is not what you expected.</p>
-          <ol class="help-steps">
-            <li>If a job seems slow, keep the page open and watch the stage and ETA before assuming it is stuck.</li>
-            <li>If the helper shows offline or unknown, refresh helper status and expect the server fallback path to handle the job instead.</li>
-            <li>If captions look wrong, review the final audio and correct the caption file before publishing it.</li>
-            <li>If you cannot start a job, recheck that a source file or saved project audio is selected and that the project is open.</li>
-            <li>If an upload fails or a file does not appear, choose the audio again and confirm the file name shows in the upload area before processing.</li>
-            <li>If the wrong part of the recording was used, reset the trim clip and run the job again from the original source.</li>
-          </ol>
-        </section>
+        <div class="help-tab-rail">
+          <div id="help-modal-tabs" class="help-modal-tabs" role="tablist" aria-label="RADcast help topics">
+            <button id="help-tab-overview" type="button" class="help-tab" data-help-tab="overview" role="tab" aria-selected="true" aria-controls="help-panel-overview" tabindex="0">Overview</button>
+            <button id="help-tab-process-audio" type="button" class="help-tab" data-help-tab="process-audio" role="tab" aria-selected="false" aria-controls="help-panel-process-audio" tabindex="-1">Process audio</button>
+            <button id="help-tab-cleanup-pauses" type="button" class="help-tab" data-help-tab="cleanup-pauses" role="tab" aria-selected="false" aria-controls="help-panel-cleanup-pauses" tabindex="-1">Clean up pauses and filler words</button>
+            <button id="help-tab-generate-captions" type="button" class="help-tab" data-help-tab="generate-captions" role="tab" aria-selected="false" aria-controls="help-panel-generate-captions" tabindex="-1">Generate captions</button>
+            <button id="help-tab-trim-clip" type="button" class="help-tab" data-help-tab="trim-clip" role="tab" aria-selected="false" aria-controls="help-panel-trim-clip" tabindex="-1">Use trim clip</button>
+            <button id="help-tab-helper-processing" type="button" class="help-tab" data-help-tab="helper-processing" role="tab" aria-selected="false" aria-controls="help-panel-helper-processing" tabindex="-1">Use helper processing</button>
+            <button id="help-tab-troubleshooting" type="button" class="help-tab" data-help-tab="troubleshooting" role="tab" aria-selected="false" aria-controls="help-panel-troubleshooting" tabindex="-1">Troubleshooting</button>
+          </div>
+        </div>
+        <div id="help-modal-body" class="help-modal-body">
+          <section id="help-panel-overview" class="help-panel" data-help-panel="overview" role="tabpanel" aria-labelledby="help-tab-overview">
+            <div class="help-section">
+              <p class="help-lead">RADcast helps you turn spoken-word recordings into cleaner deliverables without overwriting the source audio saved in your project.</p>
+              <h3 class="help-section-title">Typical project flow</h3>
+              <ol class="help-steps">
+                <li>Create or open the project that should own the source audio, the finished runs, and any captions.</li>
+                <li>Upload a new recording or choose a saved project audio file so the workspace has one clear source for the next run.</li>
+                <li>Decide whether this run needs enhancement, cleanup, captions, or all three together.</li>
+                <li>Start processing and keep the page open while the progress panel updates stage, ETA, and the machine doing the work.</li>
+                <li>Open Completed versions, play the result, and compare it with earlier runs before deciding what to keep or share.</li>
+                <li>Download the audio and caption files you need, then rerun with different settings if you want another version.</li>
+              </ol>
+            </div>
+            <aside class="help-callout help-callout-note">
+              <p class="help-callout-label">Note</p>
+              <h3>Projects keep the originals</h3>
+              <p>The uploaded source file stays in the project. Each processing run creates a new completed version instead of overwriting the original audio or earlier outputs.</p>
+            </aside>
+            <div class="help-section">
+              <h3 class="help-section-title">What the main controls affect</h3>
+              <ul class="help-detail-list">
+                <li><strong>Output format</strong> changes the downloaded audio file type for the next run.</li>
+                <li><strong>Don't enhance audio</strong> skips the RADcast Optimized enhancement pass and keeps the run focused on cleanup, captions, or format conversion.</li>
+                <li><strong>Reduce silence</strong> and <strong>Remove umms and ahhs</strong> change pacing and spoken detail, so they deserve a listen-back before you publish.</li>
+                <li><strong>Closed captions</strong> adds an SRT or VTT file to the finished version when caption output is selected.</li>
+              </ul>
+            </div>
+            <aside class="help-callout help-callout-tip">
+              <p class="help-callout-label">Tip</p>
+              <h3>Run small checks before the final export</h3>
+              <p>Tip: Turn on Don't enhance audio when you only want cleanup or captions without the RADcast Optimized pass.</p>
+            </aside>
+          </section>
+          <section id="help-panel-process-audio" class="help-panel" data-help-panel="process-audio" role="tabpanel" aria-labelledby="help-tab-process-audio" hidden>
+            <div class="help-section">
+              <p class="help-lead">Use this path when you want a new listening version of the selected recording while keeping the saved source audio available for later reruns.</p>
+              <h3 class="help-section-title">Before you start a run</h3>
+              <ol class="help-steps">
+                <li>Choose audio by dropping a file onto the upload area or by selecting a saved project audio file.</li>
+                <li>Wait for the filename or audio preview so you know RADcast is pointing at the right source before you press the main action button.</li>
+                <li>Pick the output format and any cleanup or caption options you need for this run.</li>
+                <li>Check whether you want full enhancement or only processing with <strong>Don't enhance audio</strong>.</li>
+                <li>Leave the page open once the run starts so queued, processing, and completion updates stay visible.</li>
+              </ol>
+            </div>
+            <div class="help-section">
+              <h3 class="help-section-title">Use the main process button as a status-aware control:</h3>
+              <ul class="help-detail-list">
+                <li>When <strong>Don't enhance audio</strong> is off, the button label stays <strong>Enhance audio</strong> because RADcast Optimized is part of the run.</li>
+                <li>When <strong>Don't enhance audio</strong> is on, the button label changes to <strong>Process audio</strong> to reflect the lighter path.</li>
+                <li>After you click it, the progress panel becomes the best source of truth for stage, helper routing, and ETA.</li>
+                <li>When the job finishes, open the newest entry in Completed versions to listen back and download what you need.</li>
+              </ul>
+            </div>
+            <aside class="help-callout help-callout-note">
+              <p class="help-callout-label">Note</p>
+              <h3>Most start failures are selection problems</h3>
+              <p>If nothing is selected, the run cannot start. Confirm the current file name or saved-audio preview first, especially after switching projects or changing sources.</p>
+            </aside>
+          </section>
+          <section id="help-panel-cleanup-pauses" class="help-panel" data-help-panel="cleanup-pauses" role="tabpanel" aria-labelledby="help-tab-cleanup-pauses" hidden>
+            <div class="help-section">
+              <p class="help-lead">Use the cleanup controls when the recording is understandable but too hesitant, too padded with pauses, or too full of filler sounds for the final audience.</p>
+              <h3 class="help-section-title">What each cleanup control does</h3>
+              <ul class="help-detail-list">
+                <li><strong>Reduce silence</strong> shortens longer gaps between phrases to the threshold shown on the slider.</li>
+                <li><strong>Remove umms and ahhs</strong> targets hesitation sounds and short filler runs that make the delivery feel less polished.</li>
+                <li>Running both together gives the strongest pacing change, so compare the finished version with the source before publishing.</li>
+              </ul>
+            </div>
+            <div class="help-section">
+              <h3 class="help-section-title">Suggested review routine</h3>
+              <ol class="help-steps">
+                <li>Start with one cleanup toggle when you are not sure how aggressive the edit should feel.</li>
+                <li>Use a shorter sample or an early test run to listen for clipped breaths, unnatural joins, or meaning changes.</li>
+                <li>Raise or lower the silence threshold based on whether the speaker still sounds too slow or suddenly sounds rushed.</li>
+                <li>Keep the original run in Completed versions so you can compare pacing decisions side by side.</li>
+              </ol>
+            </div>
+            <aside class="help-callout help-callout-tip">
+              <p class="help-callout-label">Tip</p>
+              <h3>Favor intelligibility over aggression</h3>
+              <p>Cleanup settings are most useful when they remove distraction without making speech sound edited. If in doubt, keep a little more pause and rerun later.</p>
+            </aside>
+          </section>
+          <section id="help-panel-generate-captions" class="help-panel" data-help-panel="generate-captions" role="tabpanel" aria-labelledby="help-tab-generate-captions" hidden>
+            <div class="help-section">
+              <p class="help-lead">RADcast can attach caption output to the same run so the processed audio and the caption file stay paired in the same completed version.</p>
+              <h3 class="help-section-title">Caption workflow</h3>
+              <ol class="help-steps">
+                <li>Select <strong>SRT</strong> or <strong>VTT</strong> before you start processing.</li>
+                <li>Run the job normally and wait for the finished version to appear in Completed versions.</li>
+                <li>Open that completed version and download the caption file that matches the format you selected.</li>
+                <li>Review names, jargon, punctuation, and timing against the final audio before you publish or upload captions elsewhere.</li>
+              </ol>
+            </div>
+            <div class="help-section">
+              <h3 class="help-section-title">When captions need extra attention</h3>
+              <ul class="help-detail-list">
+                <li>Fast speakers, overlapping voices, strong accents, and domain-specific terms increase the chance of wording corrections.</li>
+                <li>If you changed pacing with cleanup, read the caption file against the processed result rather than the original recording.</li>
+                <li>If you do not choose SRT or VTT before the run, RADcast will finish the audio without creating a caption file.</li>
+              </ul>
+            </div>
+            <aside class="help-callout help-callout-note">
+              <p class="help-callout-label">Note</p>
+              <h3>Caption files still need a human pass</h3>
+              <p>Captions are generated from the reviewed final audio path, but they are still draft deliverables until someone checks wording and timing.</p>
+            </aside>
+          </section>
+          <section id="help-panel-trim-clip" class="help-panel" data-help-panel="trim-clip" role="tabpanel" aria-labelledby="help-tab-trim-clip" hidden>
+            <div class="help-section">
+              <p class="help-lead">Trim clip is intended to narrow the working section before processing while leaving the saved project audio untouched.</p>
+              <h3 class="help-section-title">What trim is for</h3>
+              <ul class="help-detail-list">
+                <li>Use trim when you only need one section of a longer recording for the next processing run.</li>
+                <li>The goal is a non-destructive working range, not cutting or replacing the saved source file in the project.</li>
+                <li>Any captions, cleanup, or enhancement would then run against the trimmed working section rather than the full source.</li>
+              </ul>
+            </div>
+            <div class="help-section">
+              <h3 class="help-section-title">When trim controls are available</h3>
+              <ol class="help-steps">
+                <li>Load or preview the selected source audio first so the workspace has a clear file context.</li>
+                <li>Set the working start and end points for the section you want to keep for the next run.</li>
+                <li>Process normally, then compare the trimmed result with the full-source version if you need to confirm the cut points.</li>
+              </ol>
+            </div>
+            <aside class="help-callout help-callout-troubleshooting">
+              <p class="help-callout-label">Troubleshooting</p>
+              <h3>Rollout awareness</h3>
+              <p>If trim controls are not visible in your current rollout, process the full file and rerun from the original project audio when trim becomes available.</p>
+            </aside>
+          </section>
+          <section id="help-panel-helper-processing" class="help-panel" data-help-panel="helper-processing" role="tabpanel" aria-labelledby="help-tab-helper-processing" hidden>
+            <div class="help-section">
+              <p class="help-lead">Helper processing lets another machine claim enhancement work when a helper app is online, which is useful for longer jobs or shared processing setups.</p>
+              <h3 class="help-section-title">How to use helpers safely</h3>
+              <ol class="help-steps">
+                <li>Check the helper status pill before starting a long run so you know whether another machine is available.</li>
+                <li>Use <strong>Set up helper app</strong> when you need install links or setup commands for the helper machine.</li>
+                <li>Start processing and watch the progress details to see whether the job stays on the RADcast server or moves to a helper.</li>
+                <li>If no helper is available in time, RADcast falls back to the server path instead of forcing you to start over.</li>
+              </ol>
+            </div>
+            <div class="help-section">
+              <h3 class="help-section-title">What the helper status means in practice</h3>
+              <ul class="help-detail-list">
+                <li><strong>Connected</strong> means a helper recently checked in and can claim work if it stays online.</li>
+                <li><strong>Not connected</strong> means the helper path is unavailable right now, so the server path should handle the run instead.</li>
+                <li><strong>Checking</strong> usually means the page is refreshing helper state or has not yet received a fresh status response.</li>
+              </ul>
+            </div>
+            <aside class="help-callout help-callout-note">
+              <p class="help-callout-label">Note</p>
+              <h3>Helpers are only useful when they stay awake</h3>
+              <p>A helper must stay online and idle enough to claim work. If it disconnects mid-run, RADcast may switch the job back to the server.</p>
+            </aside>
+          </section>
+          <section id="help-panel-troubleshooting" class="help-panel" data-help-panel="troubleshooting" role="tabpanel" aria-labelledby="help-tab-troubleshooting" hidden>
+            <div class="help-section">
+              <p class="help-lead">Use these checks when a job will not start, progress looks strange, helper routing is confusing, or the finished result still needs another pass.</p>
+              <h3 class="help-section-title">If a run will not start</h3>
+              <ul class="help-detail-list">
+                <li>Confirm a project is open and the source file name or saved-audio preview is visible.</li>
+                <li>Recheck the selected options after changing projects, because the workspace may still be restoring saved project settings.</li>
+                <li>If an upload appears to finish but no audio name shows in the workspace, choose the file again and wait for the filename or preview before processing.</li>
+              </ul>
+            </div>
+            <div class="help-section">
+              <h3 class="help-section-title">If the job feels slow or the result feels wrong</h3>
+              <ol class="help-steps">
+                <li>Leave the page open and watch the stage and ETA before assuming the run is stuck.</li>
+                <li>If the helper shows offline or unknown, refresh helper status and expect the server fallback path to handle the run instead.</li>
+                <li>If captions look wrong, review the final audio first, then correct the caption file before you publish it.</li>
+                <li>If the pacing feels too aggressive, rerun with weaker cleanup settings or switch off the filler-word pass.</li>
+                <li>If you expected a shorter section but got the full recording, go back to the source selection and confirm whether trim controls are available in this rollout.</li>
+              </ol>
+            </div>
+            <aside class="help-callout help-callout-troubleshooting">
+              <p class="help-callout-label">Troubleshooting</p>
+              <h3>Fast triage checklist</h3>
+              <p>Start with three checks in order: project open, correct source visible, and expected helper status. Those three explain most failed starts and confusing reruns.</p>
+            </aside>
+          </section>
+        </div>
       </section>
     </div>
 
