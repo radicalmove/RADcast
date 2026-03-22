@@ -54,6 +54,8 @@ def test_ui_homepage_renders_help_modal_shell():
     assert 'id="help-btn"' in response.text
     assert 'id="help-modal"' in response.text
     assert 'id="help-modal-tabs"' in response.text
+    assert 'aria-controls="help-panel-overview"' in response.text
+    assert 'tabindex="0"' in response.text
     assert "Overview" in response.text
     assert "Process audio" in response.text
     assert "Troubleshooting" in response.text

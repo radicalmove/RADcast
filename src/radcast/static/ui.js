@@ -55,6 +55,7 @@ const shareProjectStatusNode = document.getElementById("share-project-status");
 const shareProjectOwnerNode = document.getElementById("share-project-owner");
 const shareProjectMembersNode = document.getElementById("share-project-members");
 const helpModalNode = document.getElementById("help-modal");
+const helpTabListNode = document.getElementById("help-modal-tabs");
 const helpCloseBtn = document.getElementById("help-close-btn");
 const helpTabButtons = Array.from(document.querySelectorAll("[data-help-tab]"));
 const helpPanels = Array.from(document.querySelectorAll("[data-help-panel]"));
@@ -137,6 +138,7 @@ const state = {
   shareProjectOwner: null,
   helpActiveTab: "overview",
 };
+let helpModalReturnFocusNode = null;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -437,7 +439,19 @@ function readStoredHelpTab() {
   }
 }
 
-function setHelpTab(tab, { persist = true } = {}) {
+function helpTabButtonFor(tab) {
+  const normalizedTab = normalizeHelpTab(tab);
+  return helpTabButtons.find((button) => normalizeHelpTab(button.dataset.helpTab) === normalizedTab) || null;
+}
+
+function focusHelpTabButton(tab) {
+  const button = helpTabButtonFor(tab);
+  if (button) {
+    button.focus();
+  }
+}
+
+function setHelpTab(tab, { persist = true, focus = false } = {}) {
   const activeTab = normalizeHelpTab(tab);
   state.helpActiveTab = activeTab;
 
@@ -446,6 +460,7 @@ function setHelpTab(tab, { persist = true } = {}) {
     const isActive = buttonTab === activeTab;
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-selected", isActive ? "true" : "false");
+    button.tabIndex = isActive ? 0 : -1;
   }
 
   for (const panel of helpPanels) {
@@ -460,14 +475,39 @@ function setHelpTab(tab, { persist = true } = {}) {
       // Ignore storage failures.
     }
   }
+
+  if (focus) {
+    focusHelpTabButton(activeTab);
+  }
+}
+
+function handleHelpTabKeydown(event) {
+  const currentButton = event.target instanceof HTMLElement ? event.target.closest("[data-help-tab]") : null;
+  if (!(currentButton instanceof HTMLButtonElement)) return;
+
+  let offset = 0;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") offset = 1;
+  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") offset = -1;
+  else if (event.key === "Home") offset = -helpTabButtons.length;
+  else if (event.key === "End") offset = helpTabButtons.length;
+  else return;
+
+  event.preventDefault();
+  const currentIndex = helpTabButtons.indexOf(currentButton);
+  if (currentIndex < 0 || !helpTabButtons.length) return;
+  const nextIndex = (currentIndex + offset + helpTabButtons.length) % helpTabButtons.length;
+  const nextButton = helpTabButtons[nextIndex];
+  if (!nextButton) return;
+  setHelpTab(nextButton.dataset.helpTab || "overview", { focus: true });
 }
 
 function openHelpModal() {
   if (!helpModalNode) return;
   const storedTab = readStoredHelpTab();
   const activeTab = normalizeHelpTab(storedTab);
+  helpModalReturnFocusNode = document.activeElement instanceof HTMLElement ? document.activeElement : helpBtn;
   helpModalNode.hidden = false;
-  setHelpTab(activeTab, { persist: storedTab !== activeTab });
+  setHelpTab(activeTab, { persist: storedTab !== activeTab, focus: true });
   syncModalOpenState();
 }
 
@@ -475,6 +515,13 @@ function closeHelpModal() {
   if (!helpModalNode) return;
   helpModalNode.hidden = true;
   syncModalOpenState();
+  const returnFocusNode = helpModalReturnFocusNode;
+  helpModalReturnFocusNode = null;
+  if (returnFocusNode instanceof HTMLElement && typeof returnFocusNode.focus === "function") {
+    returnFocusNode.focus();
+  } else if (helpBtn) {
+    helpBtn.focus();
+  }
 }
 
 function openWorkerSetupModal() {
@@ -726,9 +773,13 @@ function bindHelpModal() {
     });
   }
 
+  if (helpTabListNode) {
+    helpTabListNode.addEventListener("keydown", handleHelpTabKeydown);
+  }
+
   for (const button of helpTabButtons) {
     button.addEventListener("click", () => {
-      setHelpTab(button.dataset.helpTab || "overview");
+      setHelpTab(button.dataset.helpTab || "overview", { focus: true });
     });
   }
 
@@ -2097,6 +2148,7 @@ function wireDragAndDrop() {
 async function init() {
   setupThemeToggle();
   setHelpTab(normalizeHelpTab(readStoredHelpTab()), { persist: false });
+  bindHelpModal();
   showProjectGateway();
   await loadProjects();
 
@@ -2152,7 +2204,6 @@ async function init() {
   }
 
   bindProjectSharing();
-  bindHelpModal();
 
   if (refreshSourceAudioBtn) {
     refreshSourceAudioBtn.addEventListener("click", () => {
