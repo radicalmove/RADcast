@@ -46,6 +46,19 @@ def test_ui_homepage_renders():
     assert "Caption quality" not in response.text
 
 
+def test_ui_homepage_renders_help_modal_shell():
+    client = TestClient(app)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'id="help-btn"' in response.text
+    assert 'id="help-modal"' in response.text
+    assert 'id="help-modal-tabs"' in response.text
+    assert "Overview" in response.text
+    assert "Process audio" in response.text
+    assert "Troubleshooting" in response.text
+
+
 def test_worker_invite_and_status_endpoints_render(monkeypatch):
     client = TestClient(app)
     monkeypatch.setattr(radcast_api.worker_manager, "list_workers", lambda: [])

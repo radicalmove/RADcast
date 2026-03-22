@@ -58,6 +58,7 @@
       <div class="topbar-actions">
         <button id="switch-project-btn" class="topbar-btn" type="button" hidden>Projects</button>
         <button id="share-project-btn" class="topbar-btn" type="button" hidden>Share</button>
+        <button id="help-btn" class="topbar-btn" type="button">Help</button>
         {% if current_user %}
         {% if current_user.is_admin and psychek_admin_url %}
         <a class="topbar-btn" href="{{ psychek_admin_url }}">Admin</a>
@@ -277,6 +278,83 @@
             </div>
           </section>
         </div>
+      </section>
+    </div>
+
+    <div id="help-modal" class="modal-overlay" hidden>
+      <section class="modal-card help-modal-card" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
+        <header class="modal-header">
+          <h2 id="help-modal-title">RADcast help</h2>
+          <button id="help-close-btn" type="button" class="worker-mini-btn">Close</button>
+        </header>
+        <p class="modal-copy">Quick reference for the main RADcast workflow and common problems.</p>
+        <div id="help-modal-tabs" class="help-modal-tabs" role="tablist" aria-label="RADcast help topics">
+          <button id="help-tab-overview" type="button" class="help-tab" data-help-tab="overview" role="tab" aria-selected="true">Overview</button>
+          <button id="help-tab-process-audio" type="button" class="help-tab" data-help-tab="process-audio" role="tab" aria-selected="false">Process audio</button>
+          <button id="help-tab-cleanup-pauses" type="button" class="help-tab" data-help-tab="cleanup-pauses" role="tab" aria-selected="false">Clean up pauses and filler words</button>
+          <button id="help-tab-generate-captions" type="button" class="help-tab" data-help-tab="generate-captions" role="tab" aria-selected="false">Generate captions</button>
+          <button id="help-tab-trim-clip" type="button" class="help-tab" data-help-tab="trim-clip" role="tab" aria-selected="false">Use trim clip</button>
+          <button id="help-tab-helper-processing" type="button" class="help-tab" data-help-tab="helper-processing" role="tab" aria-selected="false">Use helper processing</button>
+          <button id="help-tab-troubleshooting" type="button" class="help-tab" data-help-tab="troubleshooting" role="tab" aria-selected="false">Troubleshooting</button>
+        </div>
+        <section id="help-panel-overview" class="help-panel" data-help-panel="overview" role="tabpanel" aria-labelledby="help-tab-overview">
+          <p class="help-lead">Start here for the basic RADcast flow.</p>
+          <ol class="help-steps">
+            <li>Choose or create a project.</li>
+            <li>Upload audio and set the output options.</li>
+            <li>Run processing and download the finished version.</li>
+          </ol>
+          <p class="help-note">Use the other tabs for task-specific guidance.</p>
+        </section>
+        <section id="help-panel-process-audio" class="help-panel" data-help-panel="process-audio" role="tabpanel" aria-labelledby="help-tab-process-audio" hidden>
+          <p class="help-lead">Basic audio processing lives in the main workspace.</p>
+          <ol class="help-steps">
+            <li>Upload the source file.</li>
+            <li>Pick the output format you want.</li>
+            <li>Click the main process button.</li>
+          </ol>
+          <p class="help-note">Later tasks will add the full workflow details here.</p>
+        </section>
+        <section id="help-panel-cleanup-pauses" class="help-panel" data-help-panel="cleanup-pauses" role="tabpanel" aria-labelledby="help-tab-cleanup-pauses" hidden>
+          <p class="help-lead">This tab will cover pause reduction and filler-word cleanup.</p>
+          <ol class="help-steps">
+            <li>Turn on the cleanup options you want.</li>
+            <li>Adjust the pause threshold if needed.</li>
+            <li>Review the processed audio before sharing it.</li>
+          </ol>
+        </section>
+        <section id="help-panel-generate-captions" class="help-panel" data-help-panel="generate-captions" role="tabpanel" aria-labelledby="help-tab-generate-captions" hidden>
+          <p class="help-lead">Caption export is available from the output settings.</p>
+          <ol class="help-steps">
+            <li>Select the caption format.</li>
+            <li>Choose the level of review you want.</li>
+            <li>Generate captions with the audio output.</li>
+          </ol>
+        </section>
+        <section id="help-panel-trim-clip" class="help-panel" data-help-panel="trim-clip" role="tabpanel" aria-labelledby="help-tab-trim-clip" hidden>
+          <p class="help-lead">Trim clip support will be documented here.</p>
+          <ol class="help-steps">
+            <li>Choose the clip boundaries.</li>
+            <li>Confirm the trimmed segment.</li>
+            <li>Process the shortened clip.</li>
+          </ol>
+        </section>
+        <section id="help-panel-helper-processing" class="help-panel" data-help-panel="helper-processing" role="tabpanel" aria-labelledby="help-tab-helper-processing" hidden>
+          <p class="help-lead">Helper processing uses a connected RADcast helper device.</p>
+          <ol class="help-steps">
+            <li>Open the helper setup modal.</li>
+            <li>Install the helper app on another machine.</li>
+            <li>Leave it running so it can pick up jobs.</li>
+          </ol>
+        </section>
+        <section id="help-panel-troubleshooting" class="help-panel" data-help-panel="troubleshooting" role="tabpanel" aria-labelledby="help-tab-troubleshooting" hidden>
+          <p class="help-lead">Use this space for common issues and recovery steps.</p>
+          <ol class="help-steps">
+            <li>Refresh the page if the UI looks stale.</li>
+            <li>Check helper status if jobs are queued longer than expected.</li>
+            <li>Reopen the project if you need a clean state.</li>
+          </ol>
+        </section>
       </section>
     </div>
 

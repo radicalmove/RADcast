@@ -2,6 +2,7 @@ const projectGatewayNode = document.getElementById("project-gateway");
 const workspaceNode = document.getElementById("workspace");
 const switchProjectBtn = document.getElementById("switch-project-btn");
 const shareProjectBtn = document.getElementById("share-project-btn");
+const helpBtn = document.getElementById("help-btn");
 const activeProjectChip = document.getElementById("active-project-chip");
 const activeProjectLabelNode = document.getElementById("active-project-label");
 
@@ -53,6 +54,12 @@ const shareProjectGrantBtn = document.getElementById("share-project-grant-btn");
 const shareProjectStatusNode = document.getElementById("share-project-status");
 const shareProjectOwnerNode = document.getElementById("share-project-owner");
 const shareProjectMembersNode = document.getElementById("share-project-members");
+const helpModalNode = document.getElementById("help-modal");
+const helpCloseBtn = document.getElementById("help-close-btn");
+const helpTabButtons = Array.from(document.querySelectorAll("[data-help-tab]"));
+const helpPanels = Array.from(document.querySelectorAll("[data-help-panel]"));
+const helpStorageKey = "radcast-help-last-tab";
+const helpTabOrder = ["overview", "process-audio", "cleanup-pauses", "generate-captions", "trim-clip", "helper-processing", "troubleshooting"];
 
 const generateBtn = document.getElementById("generate-btn");
 const cancelBtn = document.getElementById("cancel-btn");
@@ -128,6 +135,7 @@ const state = {
   shareProjectUsers: [],
   shareProjectCollaborators: [],
   shareProjectOwner: null,
+  helpActiveTab: "overview",
 };
 
 function escapeHtml(value) {
@@ -412,8 +420,61 @@ function workerAvailabilitySummary() {
 }
 
 function syncModalOpenState() {
-  const anyModalOpen = [workerSetupModalNode, shareProjectModalNode].some((node) => node && !node.hidden);
+  const anyModalOpen = [workerSetupModalNode, shareProjectModalNode, helpModalNode].some((node) => node && !node.hidden);
   document.body.classList.toggle("modal-open", anyModalOpen);
+}
+
+function normalizeHelpTab(tab) {
+  const value = String(tab || "").trim();
+  return helpTabOrder.includes(value) ? value : "overview";
+}
+
+function readStoredHelpTab() {
+  try {
+    return localStorage.getItem(helpStorageKey);
+  } catch (err) {
+    return null;
+  }
+}
+
+function setHelpTab(tab, { persist = true } = {}) {
+  const activeTab = normalizeHelpTab(tab);
+  state.helpActiveTab = activeTab;
+
+  for (const button of helpTabButtons) {
+    const buttonTab = normalizeHelpTab(button.dataset.helpTab);
+    const isActive = buttonTab === activeTab;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+  }
+
+  for (const panel of helpPanels) {
+    const panelTab = normalizeHelpTab(panel.dataset.helpPanel);
+    panel.hidden = panelTab !== activeTab;
+  }
+
+  if (persist) {
+    try {
+      localStorage.setItem(helpStorageKey, activeTab);
+    } catch (err) {
+      // Ignore storage failures.
+    }
+  }
+}
+
+function openHelpModal() {
+  if (!helpModalNode) return;
+  const storedTab = readStoredHelpTab();
+  const activeTab = normalizeHelpTab(storedTab);
+  helpModalNode.hidden = false;
+  setHelpTab(activeTab, { persist: storedTab !== activeTab });
+  syncModalOpenState();
+}
+
+function closeHelpModal() {
+  if (!helpModalNode) return;
+  helpModalNode.hidden = true;
+  syncModalOpenState();
 }
 
 function openWorkerSetupModal() {
@@ -642,6 +703,40 @@ function bindProjectSharing() {
       void handleShareProjectRemove(email);
     });
   }
+}
+
+function bindHelpModal() {
+  if (helpBtn) {
+    helpBtn.addEventListener("click", () => {
+      openHelpModal();
+    });
+  }
+
+  if (helpCloseBtn) {
+    helpCloseBtn.addEventListener("click", () => {
+      closeHelpModal();
+    });
+  }
+
+  if (helpModalNode) {
+    helpModalNode.addEventListener("click", (event) => {
+      if (event.target === helpModalNode) {
+        closeHelpModal();
+      }
+    });
+  }
+
+  for (const button of helpTabButtons) {
+    button.addEventListener("click", () => {
+      setHelpTab(button.dataset.helpTab || "overview");
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && helpModalNode && !helpModalNode.hidden) {
+      closeHelpModal();
+    }
+  });
 }
 
 function formatDurationSeconds(seconds) {
@@ -2001,6 +2096,7 @@ function wireDragAndDrop() {
 
 async function init() {
   setupThemeToggle();
+  setHelpTab(normalizeHelpTab(readStoredHelpTab()), { persist: false });
   showProjectGateway();
   await loadProjects();
 
@@ -2056,6 +2152,7 @@ async function init() {
   }
 
   bindProjectSharing();
+  bindHelpModal();
 
   if (refreshSourceAudioBtn) {
     refreshSourceAudioBtn.addEventListener("click", () => {
