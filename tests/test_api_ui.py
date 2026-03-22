@@ -15,6 +15,8 @@ from radcast.manifests import ManifestStore
 from radcast.models import CaptionFormat, EnhancementModel, OutputFormat, OutputMetadata
 
 app = radcast_api.app
+REPO_ROOT = Path(__file__).resolve().parents[1]
+UI_JS_PATH = REPO_ROOT / "src" / "radcast" / "static" / "ui.js"
 
 
 def _bridge_user(client: TestClient, *, sub: int, email: str, display_name: str) -> None:
@@ -63,12 +65,11 @@ def test_ui_homepage_renders_help_modal_shell():
 
 
 def test_help_tab_navigation_helper_handles_home_and_end():
-    ui_path = Path("/Users/rcd58/RADcast/.worktrees/codex-help-modal-radcast/src/radcast/static/ui.js")
     script = f"""
 const fs = require("fs");
 const vm = require("vm");
 
-const source = fs.readFileSync({json.dumps(str(ui_path))}, "utf8");
+const source = fs.readFileSync({json.dumps(str(UI_JS_PATH))}, "utf8");
 
 class FakeHTMLElement {{}}
 class FakeHTMLButtonElement extends FakeHTMLElement {{}}
@@ -202,8 +203,7 @@ process.stdout.write(JSON.stringify(checks));
 
 
 def test_help_modal_binding_happens_before_project_loading():
-    ui_path = Path("/Users/rcd58/RADcast/.worktrees/codex-help-modal-radcast/src/radcast/static/ui.js")
-    lines = ui_path.read_text().splitlines()
+    lines = UI_JS_PATH.read_text().splitlines()
     bind_line = next(index for index, line in enumerate(lines, start=1) if line.strip() == "bindHelpModal();")
     load_line = next(index for index, line in enumerate(lines, start=1) if line.strip() == "await loadProjects();")
 
