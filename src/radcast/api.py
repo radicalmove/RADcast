@@ -74,6 +74,7 @@ except ImportError as exc:  # pragma: no cover
 
 PROJECTS_ROOT = Path(os.environ.get("RADCAST_PROJECTS_ROOT", "projects"))
 MODULE_ROOT = Path(__file__).resolve().parent
+APP_ENV = (os.environ.get("APP_ENV", "production") or "production").strip().lower() or "production"
 AUTH_REQUIRED = str(os.environ.get("RADCAST_AUTH_REQUIRED", "false")).strip().lower() in {
     "1",
     "true",
@@ -1203,6 +1204,7 @@ def home(request: Request):
         request=request,
         name="index.html",
         context={
+            "app_env": APP_ENV,
             "auth_required": AUTH_REQUIRED,
             "current_user": _current_user(request),
             "psychek_app_url": PSYCHEK_APP_URL,

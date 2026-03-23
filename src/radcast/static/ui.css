@@ -19,6 +19,7 @@
   --text-secondary: #555555;
   --text-muted: #9ea3a8;
   --border-color: var(--uc-grey-300);
+  --app-header-bg: var(--uc-black);
 }
 
 [data-theme="dark"] {
@@ -30,8 +31,13 @@
   --text-secondary: #c2c6cc;
   --text-muted: #9ea3a8;
   --border-color: #2b2d30;
+  --app-header-bg: #0b0b0c;
   --uc-shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.45);
   --uc-shadow-md: 0 8px 22px rgba(0, 0, 0, 0.5);
+}
+
+html[data-app-env="development"] {
+  --app-header-bg: #5d2f8c;
 }
 
 * {
@@ -70,7 +76,7 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 14px 24px;
-  background: var(--uc-black);
+  background: var(--app-header-bg);
   border-bottom: 4px solid var(--uc-red);
   color: var(--uc-white);
 }

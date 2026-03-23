@@ -50,6 +50,15 @@ def test_ui_homepage_renders():
     assert "Caption quality" not in response.text
 
 
+def test_ui_homepage_includes_app_env_marker(monkeypatch):
+    monkeypatch.setattr(radcast_api, "APP_ENV", "development")
+    client = TestClient(app)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'data-app-env="development"' in response.text
+
+
 def test_worker_invite_and_status_endpoints_render(monkeypatch):
     client = TestClient(app)
     monkeypatch.setattr(radcast_api.worker_manager, "list_workers", lambda: [])

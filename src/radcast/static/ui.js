@@ -121,6 +121,8 @@ const state = {
   displayProgress: 0,
   latestDetail: "Preparing enhancement...",
   jobStartedAtMs: null,
+  stageEnteredAtMs: null,
+  lastProgressAdvanceAtMs: null,
   etaSeconds: null,
   etaUpdatedAtMs: null,
   etaStage: null,
@@ -1810,6 +1812,8 @@ function resetRunningState({ clearProgress = false } = {}) {
   state.displayProgress = 0;
   state.latestDetail = "Preparing enhancement...";
   state.jobStartedAtMs = null;
+  state.stageEnteredAtMs = null;
+  state.lastProgressAdvanceAtMs = null;
   state.etaSeconds = null;
   state.etaUpdatedAtMs = null;
   state.etaStage = null;
@@ -1872,12 +1876,25 @@ function syncEtaFromJob(nextStage, nextEtaSeconds) {
 
   const currentRemaining = currentEtaRemainingSeconds();
   const allowEtaIncrease = flexibleEtaStages.has(nextStage) || flexibleEtaStages.has(state.etaStage);
-  if (
-    currentRemaining === null ||
-    nextEtaSeconds <= currentRemaining - 3 ||
-    (allowEtaIncrease && nextEtaSeconds >= currentRemaining + 4)
-  ) {
+  if (currentRemaining === null) {
     state.etaSeconds = nextEtaSeconds;
+    state.etaUpdatedAtMs = Date.now();
+    return;
+  }
+
+  let smoothedEta = nextEtaSeconds;
+  if (nextEtaSeconds < currentRemaining) {
+    const difference = currentRemaining - nextEtaSeconds;
+    if (difference < 45) {
+      smoothedEta = Math.max(5, Math.round(currentRemaining - (difference * 0.45)));
+    }
+  } else if (allowEtaIncrease && nextEtaSeconds > currentRemaining) {
+    const maxIncrease = Math.max(8, Math.min(30, Math.round(Math.max(12, currentRemaining) * 0.25)));
+    smoothedEta = Math.round(Math.min(nextEtaSeconds, currentRemaining + maxIncrease));
+  }
+
+  if (Math.abs(smoothedEta - currentRemaining) >= 3 || state.etaStage !== nextStage) {
+    state.etaSeconds = smoothedEta;
     state.etaUpdatedAtMs = Date.now();
   }
 }
@@ -1995,15 +2012,32 @@ function updateProgressVisuals() {
 }
 
 function progressAnimationTick() {
-  if (state.displayProgress < state.actualProgress) {
-    const delta = state.actualProgress - state.displayProgress;
+  let targetProgress = state.actualProgress;
+  if (
+    state.activeJobId &&
+    flexibleEtaStages.has(state.currentStage) &&
+    Number.isFinite(state.actualProgress) &&
+    state.currentStage !== "completed"
+  ) {
+    const anchor = state.lastProgressAdvanceAtMs || state.stageEnteredAtMs || Date.now();
+    const idleMs = Math.max(0, Date.now() - anchor);
+    const creepLimit = state.currentStage === "enhance" ? 6 : state.currentStage === "cleanup" ? 4 : 3;
+    const creepFraction = Math.max(0, Math.min(1, idleMs / 45000));
+    targetProgress = Math.max(
+      targetProgress,
+      Math.min(99, state.actualProgress + (creepLimit * creepFraction))
+    );
+  }
+
+  if (state.displayProgress < targetProgress) {
+    const delta = targetProgress - state.displayProgress;
     const flexibleStage = flexibleEtaStages.has(state.currentStage);
     const increment = flexibleStage
       ? Math.max(0.04, Math.min(0.18, delta * 0.012))
       : Math.max(0.2, Math.min(0.9, delta * 0.12));
-    state.displayProgress = Math.min(state.actualProgress, state.displayProgress + increment);
-  } else if (state.displayProgress > state.actualProgress) {
-    state.displayProgress = Math.max(state.actualProgress, state.displayProgress - 0.4);
+    state.displayProgress = Math.min(targetProgress, state.displayProgress + increment);
+  } else if (state.displayProgress > targetProgress) {
+    state.displayProgress = Math.max(targetProgress, state.displayProgress - 0.4);
   }
 
   updateProgressVisuals();
@@ -2016,7 +2050,15 @@ function startProgressAnimation() {
 
 function updateFromJob(job) {
   const nextStage = String(job.stage || state.currentStage || "queued");
+  const now = Date.now();
+  const reportedProgress = Number.isFinite(Number(job.progress)) ? (Number(job.progress) * 100) : null;
   state.jobPollErrorCount = 0;
+  if (state.currentStage !== nextStage) {
+    state.stageEnteredAtMs = now;
+    state.lastProgressAdvanceAtMs = now;
+  } else if (reportedProgress !== null && reportedProgress > state.actualProgress + 0.1) {
+    state.lastProgressAdvanceAtMs = now;
+  }
   state.currentStage = nextStage;
   state.computeMode = inferComputeMode(nextStage, job.logs);
   state.latestDetail = latestLogMessage(job.logs) || stageLabels[state.currentStage] || "Processing";
@@ -2028,8 +2070,8 @@ function updateFromJob(job) {
   } else if (state.currentStage === "enhance" && state.computeMode === "worker" && !state.latestDetail) {
     state.latestDetail = "Enhancing audio on helper device";
   }
-  if (Number.isFinite(Number(job.progress))) {
-    state.actualProgress = Math.max(state.actualProgress, Number(job.progress) * 100);
+  if (reportedProgress !== null) {
+    state.actualProgress = Math.max(state.actualProgress, reportedProgress);
   }
   syncEtaFromJob(nextStage, Number(job.eta_seconds));
   const statusText = runningStatusText();
@@ -2109,6 +2151,8 @@ function startJobTracking(payload) {
   resetRunningState({ clearProgress: false });
   state.activeJobId = String(payload.job_id || "");
   state.jobStartedAtMs = Date.now();
+  state.stageEnteredAtMs = state.jobStartedAtMs;
+  state.lastProgressAdvanceAtMs = state.jobStartedAtMs;
   state.currentStage = String(payload.stage || "queued");
   state.actualProgress = 0;
   state.displayProgress = 0;
