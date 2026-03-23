@@ -34,6 +34,10 @@
   --uc-shadow-md: 0 8px 22px rgba(0, 0, 0, 0.5);
 }
 
+html[data-app-env="development"] .topbar {
+  background: #5d2f8c;
+}
+
 * {
   box-sizing: border-box;
 }
