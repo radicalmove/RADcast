@@ -1891,25 +1891,30 @@ def _choose_caption_chunk_size(words: list[str], start_index: int) -> int:
         word = words[index]
         char_count += len(word) + (1 if index > start_index else 0)
         chunk_size = index - start_index + 1
-        if char_count > _CAPTION_MAX_BLOCK_CHARS + 10 and chunk_size > 1:
+        if char_count > _CAPTION_MAX_BLOCK_CHARS and chunk_size > 1:
             break
         score = 0.0
         if char_count <= _CAPTION_MAX_BLOCK_CHARS:
             score += 10.0
         score -= abs(char_count - (_CAPTION_TARGET_LINE_CHARS * _CAPTION_MAX_LINES * 0.8)) / 12.0
+        if index < len(words) - 1 and not word.endswith((".", "!", "?", ",", ";", ":")):
+            if char_count < _CAPTION_TARGET_LINE_CHARS:
+                score -= 6.0 + ((_CAPTION_TARGET_LINE_CHARS - char_count) / 2.0)
         if word.endswith((".", "!", "?")):
             score += 7.0
         elif word.endswith((",", ";", ":")):
             score += 4.0
         elif len(word) <= 3 and word.lower() in _SHORT_ORPHAN_TOKENS:
             score -= 3.0
+        wrapped_preview = _wrap_caption_block_lines(" ".join(words[start_index : index + 1]))
+        score += _caption_fragment_layout_score(wrapped_preview.splitlines())
         current_word = _normalize_token(word)
-        if current_word in _LEADING_FRAGMENT_TOKENS:
-            score += 2.5
+        if current_word in _TRAILING_FRAGMENT_TOKENS and index < len(words) - 1:
+            score -= 10.0
         if index + 1 < len(words):
             next_word = _normalize_token(words[index + 1])
             if next_word in _LEADING_FRAGMENT_TOKENS:
-                score -= 5.0
+                score -= 8.0
         if score > best_score:
             best_score = score
             best_index = index + 1
@@ -1937,6 +1942,12 @@ def _wrap_caption_block_lines(text: str) -> str:
             score += 5.0
         elif words[index - 1].endswith((",", ";", ":")):
             score += 3.0
+        left_last_word = _normalize_token(words[index - 1])
+        right_first_word = _normalize_token(words[index])
+        if left_last_word in _TRAILING_FRAGMENT_TOKENS:
+            score -= 8.0
+        if right_first_word in _LEADING_FRAGMENT_TOKENS and len(right.split()) <= 3:
+            score -= 3.0
         if len(right.split()) == 1:
             score -= 6.0
         if words[index].lower() in _SHORT_ORPHAN_TOKENS:
@@ -1954,6 +1965,21 @@ def _wrap_caption_block_lines(text: str) -> str:
     left = " ".join(words[:best_break])
     right = " ".join(words[best_break:])
     return f"{left}\n{right}"
+
+
+def _caption_fragment_layout_score(lines: list[str]) -> float:
+    score = 0.0
+    for line_index, line in enumerate(lines):
+        words = line.split()
+        if not words:
+            continue
+        last_word = _normalize_token(words[-1])
+        first_word = _normalize_token(words[0])
+        if last_word in _TRAILING_FRAGMENT_TOKENS:
+            score -= 8.0
+        if line_index > 0 and first_word in _LEADING_FRAGMENT_TOKENS and len(words) <= 3:
+            score -= 3.0
+    return score
 
 
 def _dedupe_adjacent_caption_blocks(
@@ -2065,10 +2091,17 @@ def _should_attach_fragment_to_next(
         return False
     duration = max(0.0, current.end - current.start)
     last_word = _normalize_token(words[-1])
+    following_text = _clean_caption_text(following.text)
     looks_incomplete = (
         last_word in _TRAILING_FRAGMENT_TOKENS
         or text.endswith(("…", "..."))
         or (duration < _CAPTION_FRAGMENT_MIN_DURATION_SECONDS and last_word in _TRAILING_FRAGMENT_TOKENS)
+        or (
+            duration < 2.5
+            and len(words) <= 4
+            and not text.endswith((".", "!", "?", ",", ";", ":"))
+            and following_text[:1].islower()
+        )
     )
     return looks_incomplete and _can_merge_caption_pair(current, following)
 
@@ -2077,6 +2110,9 @@ def _should_attach_fragment_to_previous(
     previous: TranscriptSegmentTiming,
     current: TranscriptSegmentTiming,
 ) -> bool:
+    previous_text = _clean_caption_text(previous.text)
+    if previous_text.endswith((".", "!", "?")):
+        return False
     text = _clean_caption_text(current.text)
     if not text:
         return False

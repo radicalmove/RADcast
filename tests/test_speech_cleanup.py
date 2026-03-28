@@ -644,6 +644,78 @@ def test_compose_accessible_caption_blocks_merges_short_leadin_with_following_cl
     assert all(segment.text != "that was done." for segment in composed)
 
 
+def test_compose_accessible_caption_blocks_avoids_dangling_trailing_line_fragments():
+    segments = [
+        TranscriptSegmentTiming(
+            text=(
+                "In a tikanga Māori space, the victim has a very important role in the process of utu, "
+                "or the process of rebalancing."
+            ),
+            start=0.88,
+            end=10.02,
+            average_probability=0.91,
+        ),
+        TranscriptSegmentTiming(
+            text=(
+                "there is a… collective involvement of the victim and the community with both the perpetrator "
+                "and the perpetrator's community in rebalancing and restoring balance."
+            ),
+            start=13.94,
+            end=26.32,
+            average_probability=0.92,
+        ),
+        TranscriptSegmentTiming(
+            text=(
+                "So coming to an agreement as to how it is best to rehabilitate and rebalance "
+                "the harm that was done."
+            ),
+            start=26.32,
+            end=38.78,
+            average_probability=0.93,
+        ),
+    ]
+
+    composed = _compose_accessible_caption_blocks(segments)
+
+    lines = [
+        line.strip()
+        for segment in composed
+        for line in segment.text.splitlines()
+        if line.strip()
+    ]
+    trailing_words = {line.split()[-1].lower() for line in lines}
+
+    assert "the" not in trailing_words
+    assert "with" not in trailing_words
+    assert "that" not in trailing_words
+    assert "in" not in trailing_words
+    assert all(segment.text != "was done." for segment in composed)
+    assert all(segment.text != "both the perpetrator" for segment in composed)
+    assert all(segment.text != "there is a… collective" for segment in composed)
+
+
+def test_compose_accessible_caption_blocks_does_not_merge_new_sentence_into_previous_period():
+    segments = [
+        TranscriptSegmentTiming(
+            text="the perpetrator's community in rebalancing and restoring balance.",
+            start=21.68,
+            end=26.26,
+            average_probability=0.92,
+        ),
+        TranscriptSegmentTiming(
+            text="So coming to an agreement as to how it is best to rehabilitate and rebalance the harm that was done.",
+            start=26.32,
+            end=38.78,
+            average_probability=0.93,
+        ),
+    ]
+
+    composed = _compose_accessible_caption_blocks(segments)
+
+    assert all("balance.\nSo coming" not in segment.text for segment in composed)
+    assert any(segment.text.startswith("So coming") for segment in composed)
+
+
 def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossary(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
