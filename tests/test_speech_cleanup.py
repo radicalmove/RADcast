@@ -713,7 +713,49 @@ def test_compose_accessible_caption_blocks_does_not_merge_new_sentence_into_prev
     composed = _compose_accessible_caption_blocks(segments)
 
     assert all("balance.\nSo coming" not in segment.text for segment in composed)
-    assert any(segment.text.startswith("So coming") for segment in composed)
+    rendered_text = " ".join(segment.text.replace("\n", " ") for segment in composed)
+    assert "balance. So coming" in rendered_text
+
+
+def test_compose_accessible_caption_blocks_rebalances_continuation_starts():
+    segments = [
+        TranscriptSegmentTiming(
+            text="there is a… collective involvement of the victim and the community",
+            start=13.949,
+            end=20.381,
+            average_probability=0.92,
+        ),
+        TranscriptSegmentTiming(
+            text="with both the perpetrator",
+            start=20.381,
+            end=22.720,
+            average_probability=0.92,
+        ),
+        TranscriptSegmentTiming(
+            text="and the perpetrator's community in rebalancing and restoring balance.",
+            start=22.720,
+            end=26.320,
+            average_probability=0.92,
+        ),
+        TranscriptSegmentTiming(
+            text="So coming to an agreement as to how it is best to rehabilitate",
+            start=26.320,
+            end=34.419,
+            average_probability=0.93,
+        ),
+        TranscriptSegmentTiming(
+            text="and rebalance the harm that was done.",
+            start=34.419,
+            end=38.780,
+            average_probability=0.93,
+        ),
+    ]
+
+    composed = _compose_accessible_caption_blocks(segments)
+    texts = [segment.text.replace("\n", " ") for segment in composed]
+
+    assert all(not text.startswith("with ") for text in texts)
+    assert all(not text.startswith("and ") for text in texts)
 
 
 def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossary(monkeypatch, tmp_path: Path):

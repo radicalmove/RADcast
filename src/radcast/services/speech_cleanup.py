@@ -2043,7 +2043,25 @@ def _refine_accessible_caption_blocks(
                 average_probability=segment.average_probability,
             )
         )
-    return _dedupe_adjacent_caption_blocks(refined)
+    return _dedupe_adjacent_caption_blocks(_rebalance_adjacent_caption_blocks(refined))
+
+
+def _rebalance_adjacent_caption_blocks(
+    segments: list[TranscriptSegmentTiming],
+) -> list[TranscriptSegmentTiming]:
+    if len(segments) < 2:
+        return segments
+    rebalanced = list(segments)
+    for index in range(len(rebalanced) - 1):
+        current = rebalanced[index]
+        following = rebalanced[index + 1]
+        if not _should_rebalance_caption_pair(current, following):
+            continue
+        replacement = _best_rebalanced_caption_pair(current, following)
+        if replacement is None:
+            continue
+        rebalanced[index], rebalanced[index + 1] = replacement
+    return rebalanced
 
 
 def _merge_caption_fragments(
@@ -2158,6 +2176,119 @@ def _merge_caption_pair(
         end=right.end,
         average_probability=average_probability,
     )
+
+
+def _should_rebalance_caption_pair(
+    current: TranscriptSegmentTiming,
+    following: TranscriptSegmentTiming,
+) -> bool:
+    current_text = _clean_caption_text(current.text)
+    following_text = _clean_caption_text(following.text)
+    if not current_text or not following_text:
+        return False
+    if current_text.endswith((".", "!", "?")):
+        return False
+    current_words = current_text.split()
+    following_words = following_text.split()
+    if not current_words or not following_words:
+        return False
+    current_last = _normalize_token(current_words[-1])
+    following_first = _normalize_token(following_words[0])
+    return (
+        current_last in _TRAILING_FRAGMENT_TOKENS
+        or following_first in _LEADING_FRAGMENT_TOKENS
+        or (len(current_words) <= 4 and not current_text.endswith((".", "!", "?")))
+        or (len(following_words) <= 4 and following_first in _LEADING_FRAGMENT_TOKENS)
+    )
+
+
+def _best_rebalanced_caption_pair(
+    current: TranscriptSegmentTiming,
+    following: TranscriptSegmentTiming,
+) -> tuple[TranscriptSegmentTiming, TranscriptSegmentTiming] | None:
+    combined_text = f"{_clean_caption_text(current.text)} {_clean_caption_text(following.text)}".strip()
+    words = combined_text.split()
+    if len(words) < 2:
+        return None
+
+    current_word_count = len(_clean_caption_text(current.text).split())
+    best_pair = None
+    best_score = _caption_pair_score(current.text, following.text)
+
+    for split_index in range(1, len(words)):
+        left_text = " ".join(words[:split_index])
+        right_text = " ".join(words[split_index:])
+        if not left_text or not right_text:
+            continue
+        if len(_clean_caption_text(left_text)) > _CAPTION_MAX_BLOCK_CHARS:
+            continue
+        if len(_clean_caption_text(right_text)) > _CAPTION_MAX_BLOCK_CHARS:
+            continue
+        score = _caption_pair_score(left_text, right_text)
+        score -= abs(split_index - current_word_count) / 6.0
+        if score <= best_score:
+            continue
+        best_score = score
+        best_pair = (left_text, right_text)
+
+    if best_pair is None:
+        return None
+
+    left_text, right_text = best_pair
+    left_ratio = len(left_text.split()) / max(1, len(words))
+    split_time = current.start + ((following.end - current.start) * left_ratio)
+    split_time = min(max(split_time, current.start + 0.2), following.end - 0.2)
+    probabilities = [
+        probability
+        for probability in (current.average_probability, following.average_probability)
+        if probability is not None
+    ]
+    average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
+    return (
+        TranscriptSegmentTiming(
+            text=_wrap_caption_block_lines(left_text),
+            start=current.start,
+            end=split_time,
+            average_probability=average_probability,
+        ),
+        TranscriptSegmentTiming(
+            text=_wrap_caption_block_lines(right_text),
+            start=split_time,
+            end=following.end,
+            average_probability=average_probability,
+        ),
+    )
+
+
+def _caption_pair_score(left_text: str, right_text: str) -> float:
+    return _caption_text_score(left_text) + _caption_text_score(right_text)
+
+
+def _caption_text_score(text: str) -> float:
+    cleaned = _clean_caption_text(text)
+    wrapped = _wrap_caption_block_lines(cleaned)
+    lines = [line.strip() for line in wrapped.splitlines() if line.strip()]
+    if not lines:
+        return float("-inf")
+    if len(lines) > _CAPTION_MAX_LINES:
+        return float("-inf")
+    score = 0.0
+    for line in lines:
+        if len(line) > _CAPTION_MAX_LINE_CHARS:
+            return float("-inf")
+        score -= abs(len(line) - _CAPTION_TARGET_LINE_CHARS) / 10.0
+    score += _caption_fragment_layout_score(lines)
+    words = cleaned.split()
+    if words:
+        first_word = _normalize_token(words[0])
+        last_word = _normalize_token(words[-1])
+        if first_word in _LEADING_FRAGMENT_TOKENS:
+            score -= 8.0
+        if last_word in _TRAILING_FRAGMENT_TOKENS:
+            score -= 8.0
+    if len(words) <= 3 and not cleaned.endswith((".", "!", "?")):
+        score -= 4.0
+    return score
 
 
 def _boundary_overlap_tokens(previous_text: str, next_text: str) -> int:
