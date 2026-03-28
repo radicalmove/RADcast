@@ -159,6 +159,7 @@ PSYCHEK_SHAREABLE_USERS_URL = (
 )
 PSYCHEK_INTEGRATION_API_KEY = os.environ.get("PSYCHEK_INTEGRATION_API_KEY", "").strip() or BRIDGE_SECRET
 RADTTS_APP_URL = os.environ.get("RADTTS_APP_URL", "").strip()
+APP_ENV = (os.environ.get("APP_ENV", "production").strip().lower() or "production")
 
 
 def _bridge_serializer() -> URLSafeTimedSerializer:
@@ -1204,6 +1205,7 @@ def home(request: Request):
         name="index.html",
         context={
             "auth_required": AUTH_REQUIRED,
+            "app_env": APP_ENV,
             "current_user": _current_user(request),
             "psychek_app_url": PSYCHEK_APP_URL,
             "psychek_admin_url": PSYCHEK_ADMIN_URL,
