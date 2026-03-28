@@ -14,6 +14,8 @@ from radcast.services.speech_cleanup import (
     SpeechCleanupService,
     TranscriptSegmentTiming,
     TranscriptWordTiming,
+    _dedupe_adjacent_caption_blocks,
+    _format_caption_document,
     _collect_timing_rows,
     _transcription_eta_seconds,
     _windowed_transcription_eta_seconds,
@@ -505,6 +507,34 @@ def test_generate_caption_file_uses_accurate_profile_and_maori_glossary(monkeypa
     assert "organisation" in str(captured["initial_prompt"])
 
 
+def test_caption_transcribe_file_does_not_force_english_when_caption_language_is_auto(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 0.8), dtype=np.float32)
+    audio_path = tmp_path / "caption.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    service.transcribe_language = "en"
+
+    captured: dict[str, object] = {}
+
+    class FakeModel:
+        def transcribe(self, path: str, **kwargs):
+            captured.update(kwargs)
+            return iter([]), SimpleNamespace()
+
+    list(
+        service._transcribe_file(
+            FakeModel(),
+            audio_path,
+            preserve_fillers=False,
+            language_override="auto",
+        )
+    )
+
+    assert "language" not in captured
+
+
 def test_generate_caption_file_dedupes_overlapping_duplicate_lines(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     audio = np.zeros(int(sample_rate * 3.5), dtype=np.float32)
@@ -533,6 +563,33 @@ def test_generate_caption_file_dedupes_overlapping_duplicate_lines(monkeypatch, 
     text = result.caption_path.read_text(encoding="utf-8")
     assert text.count("Kia ora and welcome everyone") == 1
     assert "We will start with tikanga." in text
+
+
+def test_format_caption_document_wraps_long_line_into_two_readable_lines():
+    segments = [
+        TranscriptSegmentTiming(
+            text="This sentence should wrap near a comma, rather than becoming one long caption line.",
+            start=0.0,
+            end=4.2,
+            average_probability=0.91,
+        )
+    ]
+
+    text = _format_caption_document(segments, caption_format=CaptionFormat.VTT)
+
+    assert "This sentence should wrap near a comma,\nrather than becoming one long caption line." in text
+
+
+def test_dedupe_adjacent_caption_blocks_trims_boundary_overlap_only():
+    segments = [
+        TranscriptSegmentTiming(text="This section explains accessible", start=0.0, end=1.8, average_probability=0.9),
+        TranscriptSegmentTiming(text="accessible captions for learners", start=1.8, end=3.4, average_probability=0.9),
+    ]
+
+    deduped = _dedupe_adjacent_caption_blocks(segments)
+
+    assert deduped[0].text == "This section explains accessible"
+    assert deduped[1].text == "captions for learners"
 
 
 def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossary(monkeypatch, tmp_path: Path):

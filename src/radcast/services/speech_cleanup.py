@@ -41,6 +41,7 @@ _FILLER_MAX_DURATION_SECONDS = 1.35
 _CUT_CROSSFADE_SECONDS = 0.012
 _TRANSCRIBE_PROGRESS_MIN_INTERVAL_SECONDS = 0.8
 _TOKEN_RE = re.compile(r"[^a-z']+")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _AGGRESSIVE_TRANSCRIBE_WINDOW_SECONDS = 8.0
 _AGGRESSIVE_TRANSCRIBE_OVERLAP_SECONDS = 2.0
 _CAPTION_FAST_WINDOW_SECONDS = 8.0
@@ -155,6 +156,12 @@ _CAPTION_REVIEW_PROMPT = (
     "Review low-confidence transcript lines carefully. Prefer the spoken wording, preserve names and te reo Māori, "
     "and correct likely misheard words rather than paraphrasing."
 )
+_CAPTION_MAX_LINES = 2
+_CAPTION_MAX_LINE_CHARS = 45
+_CAPTION_TARGET_LINE_CHARS = 42
+_CAPTION_MAX_BLOCK_CHARS = _CAPTION_MAX_LINE_CHARS * _CAPTION_MAX_LINES
+_BOUNDARY_DEDUPE_MAX_TOKENS = 3
+_SHORT_ORPHAN_TOKENS = {"a", "an", "and", "as", "at", "by", "for", "in", "of", "on", "or", "the", "to", "with"}
 
 
 @dataclass(frozen=True)
@@ -237,6 +244,14 @@ class CaptionTranscriptionProfile:
     condition_on_previous_text: bool
     initial_prompt: str | None
     review_sweep: bool = False
+
+
+@dataclass(frozen=True)
+class CaptionCue:
+    text: str
+    start: float
+    end: float
+    average_probability: float | None = None
 
 
 @dataclass(frozen=True)
@@ -552,6 +567,7 @@ class SpeechCleanupService:
                 initial_prompt=profile.initial_prompt,
                 window_seconds=profile.window_seconds,
                 overlap_seconds=profile.overlap_seconds,
+                language_override="auto",
             )
             segments = _dedupe_caption_segments(segments)
 
@@ -565,7 +581,7 @@ class SpeechCleanupService:
                         0.82,
                         "Reviewing low-confidence caption lines.",
                         _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=10),
-                    )
+                )
                 segments = self._review_and_correct_caption_segments(
                     analysis_wav=analysis_wav,
                     base_segments=segments,
@@ -576,6 +592,9 @@ class SpeechCleanupService:
                 segments = _dedupe_caption_segments(segments)
                 quality_report = _build_caption_quality_report(segments)
 
+            segments = _compose_accessible_caption_blocks(segments)
+            quality_report = _build_caption_quality_report(segments)
+
             output_path = audio_path.with_suffix(f".{caption_format.value}")
             review_path = None
             if on_stage:
@@ -585,7 +604,7 @@ class SpeechCleanupService:
                     _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=2),
                 )
             output_path.write_text(
-                _format_caption_document(segments, caption_format=caption_format),
+                _render_caption_document(segments, caption_format=caption_format),
                 encoding="utf-8",
             )
             if quality_report.review_recommended:
@@ -627,6 +646,7 @@ class SpeechCleanupService:
         beam_size: int | None = None,
         condition_on_previous_text: bool = False,
         initial_prompt: str | None = None,
+        language_override: str | None = None,
     ):
         kwargs = {
             "beam_size": max(1, int(beam_size or self.beam_size)),
@@ -639,8 +659,9 @@ class SpeechCleanupService:
             prompt_text = _AGGRESSIVE_FILLER_PROMPT
         if prompt_text:
             kwargs["initial_prompt"] = prompt_text
-        if self.transcribe_language and self.transcribe_language != "auto":
-            kwargs["language"] = self.transcribe_language
+        language = self.transcribe_language if language_override is None else language_override
+        if language and language != "auto":
+            kwargs["language"] = language
         segment_iter, _info = model.transcribe(str(audio_path), **kwargs)
         return segment_iter
 
@@ -664,6 +685,7 @@ class SpeechCleanupService:
         initial_prompt: str | None = None,
         window_seconds: float | None = None,
         overlap_seconds: float | None = None,
+        language_override: str | None = None,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         normalized_mode = _normalize_filler_mode(filler_removal_mode)
         should_use_windowed = force_windowed or (remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE)
@@ -686,6 +708,7 @@ class SpeechCleanupService:
                 initial_prompt=initial_prompt,
                 window_seconds=window_seconds,
                 overlap_seconds=overlap_seconds,
+                language_override=language_override,
             )
 
         if cancel_check and cancel_check():
@@ -695,13 +718,18 @@ class SpeechCleanupService:
         words: list[TranscriptWordTiming] = []
         segments: list[TranscriptSegmentTiming] = []
         last_progress_emit_at = 0.0
+        transcribe_kwargs = {
+            "preserve_fillers": preserve_fillers,
+            "beam_size": effective_beam_size,
+            "condition_on_previous_text": condition_on_previous_text,
+            "initial_prompt": initial_prompt,
+        }
+        if language_override is not None:
+            transcribe_kwargs["language_override"] = language_override
         for seg in self._transcribe_file(
             model,
             audio_path,
-            preserve_fillers=preserve_fillers,
-            beam_size=effective_beam_size,
-            condition_on_previous_text=condition_on_previous_text,
-            initial_prompt=initial_prompt,
+            **transcribe_kwargs,
         ):
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
@@ -769,6 +797,7 @@ class SpeechCleanupService:
         initial_prompt: str | None = None,
         window_seconds: float | None = None,
         overlap_seconds: float | None = None,
+        language_override: str | None = None,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         if cancel_check and cancel_check():
             raise JobCancelledError("job cancelled")
@@ -797,13 +826,18 @@ class SpeechCleanupService:
                 end_idx = max(start_idx, min(len(waveform), int(round(window_end * sample_rate))))
                 window_path = tmp_path / f"window_{int(round(window_start * 1000)):06d}.wav"
                 _write_pcm16_wav(window_path, waveform[start_idx:end_idx], sample_rate=sample_rate)
+                transcribe_kwargs = {
+                    "preserve_fillers": preserve_fillers,
+                    "beam_size": beam_size,
+                    "condition_on_previous_text": condition_on_previous_text,
+                    "initial_prompt": initial_prompt,
+                }
+                if language_override is not None:
+                    transcribe_kwargs["language_override"] = language_override
                 transcribed_segments = self._transcribe_file(
                     model,
                     window_path,
-                    preserve_fillers=preserve_fillers,
-                    beam_size=beam_size,
-                    condition_on_previous_text=condition_on_previous_text,
-                    initial_prompt=initial_prompt,
+                    **transcribe_kwargs,
                 )
 
                 left_guard_seconds = 0.0 if window_index == 0 else resolved_overlap_seconds / 2.0
@@ -1703,6 +1737,225 @@ def _best_overlapping_segment(
     return best_segment
 
 
+def _compose_accessible_caption_blocks(
+    segments: list[TranscriptSegmentTiming],
+) -> list[TranscriptSegmentTiming]:
+    composed: list[TranscriptSegmentTiming] = []
+    for segment in segments:
+        cleaned_text = _clean_caption_text(segment.text)
+        if not cleaned_text:
+            continue
+        sentence_units = _split_segment_into_sentence_units(segment)
+        for unit_text, unit_start, unit_end, unit_probability in sentence_units:
+            for cue in _split_sentence_unit_into_cues(
+                unit_text,
+                start=unit_start,
+                end=unit_end,
+                average_probability=unit_probability,
+            ):
+                composed.append(cue)
+    return _dedupe_adjacent_caption_blocks(composed)
+
+
+def _split_segment_into_sentence_units(
+    segment: TranscriptSegmentTiming,
+) -> list[tuple[str, float, float, float | None]]:
+    cleaned_text = _clean_caption_text(segment.text)
+    if not cleaned_text:
+        return []
+    pieces = [piece.strip() for piece in _SENTENCE_SPLIT_RE.split(cleaned_text) if piece.strip()]
+    if len(pieces) <= 1:
+        return [(cleaned_text, segment.start, segment.end, segment.average_probability)]
+
+    total_chars = max(1, sum(len(piece) for piece in pieces))
+    duration = max(0.2, segment.end - segment.start)
+    cursor = segment.start
+    units: list[tuple[str, float, float, float | None]] = []
+    for index, piece in enumerate(pieces):
+        remaining_chars = sum(len(item) for item in pieces[index:])
+        if index == len(pieces) - 1 or remaining_chars <= 0:
+            piece_end = segment.end
+        else:
+            piece_duration = duration * (len(piece) / total_chars)
+            piece_end = min(segment.end, max(cursor + 0.2, cursor + piece_duration))
+        units.append((piece, cursor, piece_end, segment.average_probability))
+        cursor = piece_end
+    if units:
+        last_text, last_start, _last_end, last_probability = units[-1]
+        units[-1] = (last_text, last_start, segment.end, last_probability)
+    return units
+
+
+def _split_sentence_unit_into_cues(
+    text: str,
+    *,
+    start: float,
+    end: float,
+    average_probability: float | None,
+) -> list[TranscriptSegmentTiming]:
+    words = text.split()
+    if not words:
+        return []
+    if len(_clean_caption_text(text)) <= _CAPTION_MAX_BLOCK_CHARS:
+        return [
+            TranscriptSegmentTiming(
+                text=_wrap_caption_block_lines(text),
+                start=start,
+                end=end,
+                average_probability=average_probability,
+            )
+        ]
+
+    cues: list[TranscriptSegmentTiming] = []
+    total_words = len(words)
+    cursor = 0
+    duration = max(0.2, end - start)
+    while cursor < total_words:
+        remaining_words = total_words - cursor
+        chunk_size = _choose_caption_chunk_size(words, cursor)
+        chunk_words = words[cursor : cursor + chunk_size]
+        chunk_text = " ".join(chunk_words)
+        chunk_start = start + (duration * (cursor / total_words))
+        chunk_end = end if cursor + chunk_size >= total_words else start + (duration * ((cursor + chunk_size) / total_words))
+        chunk_end = max(chunk_start + 0.2, chunk_end)
+        cues.append(
+            TranscriptSegmentTiming(
+                text=_wrap_caption_block_lines(chunk_text),
+                start=chunk_start,
+                end=chunk_end,
+                average_probability=average_probability,
+            )
+        )
+        cursor += chunk_size
+        if remaining_words == chunk_size:
+            break
+    if cues:
+        last = cues[-1]
+        cues[-1] = TranscriptSegmentTiming(
+            text=last.text,
+            start=last.start,
+            end=end,
+            average_probability=last.average_probability,
+        )
+    return cues
+
+
+def _choose_caption_chunk_size(words: list[str], start_index: int) -> int:
+    best_index = start_index + 1
+    best_score = float("-inf")
+    char_count = 0
+    for index in range(start_index, len(words)):
+        word = words[index]
+        char_count += len(word) + (1 if index > start_index else 0)
+        chunk_size = index - start_index + 1
+        if char_count > _CAPTION_MAX_BLOCK_CHARS + 10 and chunk_size > 1:
+            break
+        score = 0.0
+        if char_count <= _CAPTION_MAX_BLOCK_CHARS:
+            score += 10.0
+        score -= abs(char_count - (_CAPTION_TARGET_LINE_CHARS * _CAPTION_MAX_LINES * 0.8)) / 12.0
+        if word.endswith((".", "!", "?")):
+            score += 7.0
+        elif word.endswith((",", ";", ":")):
+            score += 4.0
+        elif len(word) <= 3 and word.lower() in _SHORT_ORPHAN_TOKENS:
+            score -= 3.0
+        if score > best_score:
+            best_score = score
+            best_index = index + 1
+    return max(1, best_index - start_index)
+
+
+def _wrap_caption_block_lines(text: str) -> str:
+    cleaned = _clean_caption_text(text)
+    if len(cleaned) <= _CAPTION_MAX_LINE_CHARS:
+        return cleaned
+    words = cleaned.split()
+    if len(words) <= 1:
+        return cleaned
+
+    best_break = None
+    best_score = float("-inf")
+    for index in range(1, len(words)):
+        left = " ".join(words[:index])
+        right = " ".join(words[index:])
+        if len(left) > _CAPTION_MAX_LINE_CHARS or len(right) > _CAPTION_MAX_LINE_CHARS:
+            continue
+        score = 0.0
+        score -= abs(len(left) - len(right)) / 5.0
+        if words[index - 1].endswith((".", "!", "?")):
+            score += 5.0
+        elif words[index - 1].endswith((",", ";", ":")):
+            score += 3.0
+        if len(right.split()) == 1:
+            score -= 6.0
+        if words[index].lower() in _SHORT_ORPHAN_TOKENS:
+            score -= 2.0
+        if score > best_score:
+            best_score = score
+            best_break = index
+
+    if best_break is None:
+        midpoint = max(1, len(words) // 2)
+        left = " ".join(words[:midpoint])
+        right = " ".join(words[midpoint:])
+        return f"{left}\n{right}"
+
+    left = " ".join(words[:best_break])
+    right = " ".join(words[best_break:])
+    return f"{left}\n{right}"
+
+
+def _dedupe_adjacent_caption_blocks(
+    segments: list[TranscriptSegmentTiming],
+) -> list[TranscriptSegmentTiming]:
+    if not segments:
+        return []
+    deduped: list[TranscriptSegmentTiming] = []
+    for segment in sorted(segments, key=lambda item: (item.start, item.end)):
+        normalized_text = _clean_caption_text(segment.text)
+        display_text = str(segment.text or "").strip()
+        normalized_segment = TranscriptSegmentTiming(
+            text=display_text,
+            start=segment.start,
+            end=segment.end,
+            average_probability=segment.average_probability,
+        )
+        if not deduped:
+            deduped.append(normalized_segment)
+            continue
+        previous = deduped[-1]
+        overlap = _boundary_overlap_tokens(previous.text, normalized_text)
+        if overlap > 0:
+            next_words = normalized_text.split()[overlap:]
+            if next_words:
+                normalized_segment = TranscriptSegmentTiming(
+                    text=" ".join(next_words),
+                    start=normalized_segment.start,
+                    end=normalized_segment.end,
+                    average_probability=normalized_segment.average_probability,
+                )
+        if normalized_segment.text:
+            deduped.append(normalized_segment)
+    return deduped
+
+
+def _boundary_overlap_tokens(previous_text: str, next_text: str) -> int:
+    previous_tokens = previous_text.split()
+    next_tokens = next_text.split()
+    max_overlap = min(_BOUNDARY_DEDUPE_MAX_TOKENS, len(previous_tokens), len(next_tokens))
+    for size in range(max_overlap, 0, -1):
+        prev_tail = [_normalize_token(token) for token in previous_tokens[-size:]]
+        next_head = [_normalize_token(token) for token in next_tokens[:size]]
+        if any(not token for token in prev_tail + next_head):
+            continue
+        if prev_tail == next_head:
+            if size == 1 and previous_tokens[-1] == next_tokens[0] and previous_tokens[-1].istitle():
+                return 0
+            return size
+    return 0
+
+
 def _segment_overlap(start_a: float, end_a: float, start_b: float, end_b: float) -> float:
     overlap = max(0.0, min(end_a, end_b) - max(start_a, start_b))
     if overlap <= 0.0:
@@ -1711,14 +1964,14 @@ def _segment_overlap(start_a: float, end_a: float, start_b: float, end_b: float)
     return overlap / span
 
 
-def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption_format: CaptionFormat) -> str:
+def _render_caption_document(segments: list[TranscriptSegmentTiming], *, caption_format: CaptionFormat) -> str:
     rows = [(index, segment) for index, segment in enumerate(segments, start=1) if _clean_caption_text(segment.text)]
     if caption_format == CaptionFormat.VTT:
         blocks = ["WEBVTT", ""]
         for index, segment in rows:
             start_text = _format_caption_timestamp(segment.start, separator=".")
             end_text = _format_caption_timestamp(max(segment.end, segment.start + 0.2), separator=".")
-            text = _clean_caption_text(segment.text)
+            text = str(segment.text or "").strip()
             blocks.extend([str(index), f"{start_text} --> {end_text}", text, ""])
         return "\n".join(blocks).rstrip() + "\n"
 
@@ -1726,9 +1979,16 @@ def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption
     for index, segment in rows:
         start_text = _format_caption_timestamp(segment.start, separator=",")
         end_text = _format_caption_timestamp(max(segment.end, segment.start + 0.2), separator=",")
-        text = _clean_caption_text(segment.text)
+        text = str(segment.text or "").strip()
         blocks.extend([str(index), f"{start_text} --> {end_text}", text, ""])
     return "\n".join(blocks).rstrip() + ("\n" if blocks else "")
+
+
+def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption_format: CaptionFormat) -> str:
+    return _render_caption_document(
+        _compose_accessible_caption_blocks(segments),
+        caption_format=caption_format,
+    )
 
 
 def _clean_caption_text(text: str) -> str:
