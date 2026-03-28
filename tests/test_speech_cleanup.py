@@ -14,6 +14,7 @@ from radcast.services.speech_cleanup import (
     SpeechCleanupService,
     TranscriptSegmentTiming,
     TranscriptWordTiming,
+    _compose_accessible_caption_blocks,
     _dedupe_adjacent_caption_blocks,
     _format_caption_document,
     _collect_timing_rows,
@@ -590,6 +591,57 @@ def test_dedupe_adjacent_caption_blocks_trims_boundary_overlap_only():
 
     assert deduped[0].text == "This section explains accessible"
     assert deduped[1].text == "captions for learners"
+
+
+def test_compose_accessible_caption_blocks_merges_connector_fragment_with_previous_cue():
+    segments = [
+        TranscriptSegmentTiming(
+            text="In a tikanga Māori space, the victim has a very important role in the process of utu,",
+            start=0.88,
+            end=8.32,
+            average_probability=0.91,
+        ),
+        TranscriptSegmentTiming(
+            text="or the process of rebalancing.",
+            start=8.42,
+            end=10.02,
+            average_probability=0.91,
+        ),
+    ]
+
+    composed = _compose_accessible_caption_blocks(segments)
+
+    rendered_text = " ".join(segment.text.replace("\n", " ") for segment in composed)
+
+    assert rendered_text == (
+        "In a tikanga Māori space, the victim has a very important role in the process of utu, "
+        "or the process of rebalancing."
+    )
+    assert all(not segment.text.startswith("or ") for segment in composed)
+
+
+def test_compose_accessible_caption_blocks_merges_short_leadin_with_following_clause():
+    segments = [
+        TranscriptSegmentTiming(text="So coming to", start=26.32, end=27.5, average_probability=0.93),
+        TranscriptSegmentTiming(
+            text="an agreement as to how it is best to rehabilitate and rebalance the harm",
+            start=27.5,
+            end=38.1,
+            average_probability=0.93,
+        ),
+        TranscriptSegmentTiming(text="that was done.", start=38.1, end=38.78, average_probability=0.93),
+    ]
+
+    composed = _compose_accessible_caption_blocks(segments)
+
+    rendered_text = " ".join(segment.text.replace("\n", " ") for segment in composed)
+
+    assert rendered_text == (
+        "So coming to an agreement as to how it is best to rehabilitate and rebalance the harm "
+        "that was done."
+    )
+    assert all(segment.text != "So coming to" for segment in composed)
+    assert all(segment.text != "that was done." for segment in composed)
 
 
 def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossary(monkeypatch, tmp_path: Path):

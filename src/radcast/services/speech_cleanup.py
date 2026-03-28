@@ -161,7 +161,50 @@ _CAPTION_MAX_LINE_CHARS = 45
 _CAPTION_TARGET_LINE_CHARS = 42
 _CAPTION_MAX_BLOCK_CHARS = _CAPTION_MAX_LINE_CHARS * _CAPTION_MAX_LINES
 _BOUNDARY_DEDUPE_MAX_TOKENS = 3
+_CAPTION_FRAGMENT_MAX_GAP_SECONDS = 0.45
+_CAPTION_FRAGMENT_MIN_DURATION_SECONDS = 1.2
+_CAPTION_FRAGMENT_MAX_COMBINED_DURATION_SECONDS = 12.5
+_CAPTION_FRAGMENT_MAX_COMBINED_WORDS = 24
 _SHORT_ORPHAN_TOKENS = {"a", "an", "and", "as", "at", "by", "for", "in", "of", "on", "or", "the", "to", "with"}
+_LEADING_FRAGMENT_TOKENS = {
+    "and",
+    "as",
+    "because",
+    "but",
+    "if",
+    "in",
+    "of",
+    "or",
+    "so",
+    "that",
+    "the",
+    "then",
+    "to",
+    "when",
+    "which",
+    "with",
+}
+_TRAILING_FRAGMENT_TOKENS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "because",
+    "but",
+    "for",
+    "if",
+    "in",
+    "of",
+    "or",
+    "so",
+    "that",
+    "the",
+    "then",
+    "to",
+    "when",
+    "which",
+    "with",
+}
 
 
 @dataclass(frozen=True)
@@ -1754,7 +1797,7 @@ def _compose_accessible_caption_blocks(
                 average_probability=unit_probability,
             ):
                 composed.append(cue)
-    return _dedupe_adjacent_caption_blocks(composed)
+    return _refine_accessible_caption_blocks(_dedupe_adjacent_caption_blocks(composed))
 
 
 def _split_segment_into_sentence_units(
@@ -1860,6 +1903,13 @@ def _choose_caption_chunk_size(words: list[str], start_index: int) -> int:
             score += 4.0
         elif len(word) <= 3 and word.lower() in _SHORT_ORPHAN_TOKENS:
             score -= 3.0
+        current_word = _normalize_token(word)
+        if current_word in _LEADING_FRAGMENT_TOKENS:
+            score += 2.5
+        if index + 1 < len(words):
+            next_word = _normalize_token(words[index + 1])
+            if next_word in _LEADING_FRAGMENT_TOKENS:
+                score -= 5.0
         if score > best_score:
             best_score = score
             best_index = index + 1
@@ -1938,6 +1988,140 @@ def _dedupe_adjacent_caption_blocks(
         if normalized_segment.text:
             deduped.append(normalized_segment)
     return deduped
+
+
+def _refine_accessible_caption_blocks(
+    segments: list[TranscriptSegmentTiming],
+) -> list[TranscriptSegmentTiming]:
+    merged = _merge_caption_fragments(segments)
+    refined: list[TranscriptSegmentTiming] = []
+    for segment in merged:
+        text = _clean_caption_text(segment.text)
+        if not text:
+            continue
+        if len(text) <= _CAPTION_MAX_BLOCK_CHARS:
+            refined.append(
+                TranscriptSegmentTiming(
+                    text=_wrap_caption_block_lines(text),
+                    start=segment.start,
+                    end=segment.end,
+                    average_probability=segment.average_probability,
+                )
+            )
+            continue
+        refined.extend(
+            _split_sentence_unit_into_cues(
+                text,
+                start=segment.start,
+                end=segment.end,
+                average_probability=segment.average_probability,
+            )
+        )
+    return _dedupe_adjacent_caption_blocks(refined)
+
+
+def _merge_caption_fragments(
+    segments: list[TranscriptSegmentTiming],
+) -> list[TranscriptSegmentTiming]:
+    ordered = [
+        TranscriptSegmentTiming(
+            text=_clean_caption_text(segment.text),
+            start=segment.start,
+            end=segment.end,
+            average_probability=segment.average_probability,
+        )
+        for segment in sorted(segments, key=lambda item: (item.start, item.end))
+        if _clean_caption_text(segment.text)
+    ]
+    if not ordered:
+        return []
+
+    merged: list[TranscriptSegmentTiming] = []
+    index = 0
+    while index < len(ordered):
+        current = ordered[index]
+        if index + 1 < len(ordered) and _should_attach_fragment_to_next(current, ordered[index + 1]):
+            merged.append(_merge_caption_pair(current, ordered[index + 1]))
+            index += 2
+            continue
+        if merged and _should_attach_fragment_to_previous(merged[-1], current):
+            merged[-1] = _merge_caption_pair(merged[-1], current)
+            index += 1
+            continue
+        merged.append(current)
+        index += 1
+    return merged
+
+
+def _should_attach_fragment_to_next(
+    current: TranscriptSegmentTiming,
+    following: TranscriptSegmentTiming,
+) -> bool:
+    text = _clean_caption_text(current.text)
+    if not text:
+        return False
+    words = text.split()
+    if not words:
+        return False
+    duration = max(0.0, current.end - current.start)
+    last_word = _normalize_token(words[-1])
+    looks_incomplete = (
+        last_word in _TRAILING_FRAGMENT_TOKENS
+        or text.endswith(("…", "..."))
+        or (duration < _CAPTION_FRAGMENT_MIN_DURATION_SECONDS and last_word in _TRAILING_FRAGMENT_TOKENS)
+    )
+    return looks_incomplete and _can_merge_caption_pair(current, following)
+
+
+def _should_attach_fragment_to_previous(
+    previous: TranscriptSegmentTiming,
+    current: TranscriptSegmentTiming,
+) -> bool:
+    text = _clean_caption_text(current.text)
+    if not text:
+        return False
+    words = text.split()
+    if not words:
+        return False
+    duration = max(0.0, current.end - current.start)
+    first_word = _normalize_token(words[0])
+    looks_leading = (
+        first_word in _LEADING_FRAGMENT_TOKENS
+        or text[:1].islower()
+        or (duration < _CAPTION_FRAGMENT_MIN_DURATION_SECONDS and first_word in _LEADING_FRAGMENT_TOKENS)
+    )
+    return looks_leading and _can_merge_caption_pair(previous, current)
+
+
+def _can_merge_caption_pair(
+    left: TranscriptSegmentTiming,
+    right: TranscriptSegmentTiming,
+) -> bool:
+    if right.start - left.end > _CAPTION_FRAGMENT_MAX_GAP_SECONDS:
+        return False
+    combined_duration = max(0.0, right.end - left.start)
+    if combined_duration > _CAPTION_FRAGMENT_MAX_COMBINED_DURATION_SECONDS:
+        return False
+    combined_words = len(_clean_caption_text(left.text).split()) + len(_clean_caption_text(right.text).split())
+    return combined_words <= _CAPTION_FRAGMENT_MAX_COMBINED_WORDS
+
+
+def _merge_caption_pair(
+    left: TranscriptSegmentTiming,
+    right: TranscriptSegmentTiming,
+) -> TranscriptSegmentTiming:
+    probabilities = [
+        probability
+        for probability in (left.average_probability, right.average_probability)
+        if probability is not None
+    ]
+    average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
+    return TranscriptSegmentTiming(
+        text=f"{_clean_caption_text(left.text)} {_clean_caption_text(right.text)}".strip(),
+        start=left.start,
+        end=right.end,
+        average_probability=average_probability,
+    )
 
 
 def _boundary_overlap_tokens(previous_text: str, next_text: str) -> int:
