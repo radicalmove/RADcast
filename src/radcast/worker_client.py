@@ -6,6 +6,7 @@ import argparse
 import base64
 import json
 import logging
+import re
 import socket
 import tempfile
 import threading
@@ -28,6 +29,7 @@ from radcast.services.speech_cleanup import SpeechCleanupService
 from radcast.utils.audio import probe_duration_seconds
 
 LOG = logging.getLogger("radcast.worker")
+_WINDOW_DETAIL_RE = re.compile(r"\bWindow\s+(\d+)\s+of\s+(\d+)\b", re.IGNORECASE)
 
 
 def _heartbeat_eta_seconds(
@@ -41,6 +43,63 @@ def _heartbeat_eta_seconds(
     current_time = time.monotonic() if now_monotonic is None else float(now_monotonic)
     elapsed = max(0.0, current_time - float(eta_updated_at_monotonic))
     return max(0, int(round(max(0.0, float(eta_seconds) - elapsed))))
+
+
+def _heartbeat_progress(
+    progress: float,
+    *,
+    stage: str,
+    detail: str | None,
+    progress_updated_at_monotonic: float | None,
+    cleanup_requested: bool,
+    caption_requested: bool,
+    enhancement_requested: bool,
+    remaining_eta_seconds: int | None = None,
+    now_monotonic: float | None = None,
+) -> float:
+    normalized_stage = str(stage or "").strip().lower()
+    if normalized_stage not in {"cleanup", "captions"} or progress_updated_at_monotonic is None:
+        return float(progress)
+    match = _WINDOW_DETAIL_RE.search(str(detail or ""))
+    if not match:
+        return float(progress)
+    current_window = max(1, int(match.group(1)))
+    total_windows = max(current_window, int(match.group(2)))
+    if current_window >= total_windows:
+        return float(progress)
+
+    current_time = time.monotonic() if now_monotonic is None else float(now_monotonic)
+    elapsed = max(0.0, current_time - float(progress_updated_at_monotonic))
+
+    if normalized_stage == "captions":
+        stage_end = map_postprocess_stage_progress(
+            1.0,
+            stage="captions",
+            cleanup_requested=cleanup_requested,
+            caption_requested=caption_requested,
+            enhancement_requested=enhancement_requested,
+        )
+    else:
+        stage_end = map_postprocess_stage_progress(
+            1.0,
+            stage="cleanup",
+            cleanup_requested=cleanup_requested,
+            caption_requested=caption_requested,
+            enhancement_requested=enhancement_requested,
+        )
+
+    remaining_windows = max(1, total_windows - current_window)
+    next_gap = max(0.0, (stage_end - float(progress)) / (remaining_windows + 1))
+    if next_gap <= 0.0:
+        return float(progress)
+
+    soft_target = float(progress) + (next_gap * 0.55)
+    if remaining_eta_seconds is not None and remaining_eta_seconds > 0:
+        expected_window_seconds = max(60.0, min(240.0, float(remaining_eta_seconds) / remaining_windows))
+    else:
+        expected_window_seconds = 120.0
+    creep_ratio = max(0.0, min(1.0, elapsed / expected_window_seconds))
+    return min(soft_target, float(progress) + ((soft_target - float(progress)) * creep_ratio))
 
 
 class WorkerClient:
@@ -231,6 +290,7 @@ class WorkerClient:
                 "stage": "worker_running",
                 "detail": None,
                 "eta_seconds": None,
+                "progress_updated_at_monotonic": None,
                 "eta_updated_at_monotonic": None,
             }
             progress_lock = threading.Lock()
@@ -255,6 +315,7 @@ class WorkerClient:
                     progress_state["stage"] = stage or progress_state["stage"]
                     progress_state["detail"] = detail
                     progress_state["eta_seconds"] = None if eta_seconds is None else max(0, int(eta_seconds))
+                    progress_state["progress_updated_at_monotonic"] = time.monotonic()
                     progress_state["eta_updated_at_monotonic"] = None if eta_seconds is None else time.monotonic()
                 status = self._post_progress_update(job_id, progress=progress, stage=stage, detail=detail, eta_seconds=eta_seconds)
                 if status in {"ignored", "cancelled"}:
@@ -263,13 +324,23 @@ class WorkerClient:
             def heartbeat_worker() -> None:
                 while not stop_heartbeat.wait(10):
                     with progress_lock:
-                        progress = float(progress_state["progress"])
-                        stage = str(progress_state["stage"] or "worker_running")
                         eta_seconds = _heartbeat_eta_seconds(
                             progress_state["eta_seconds"],
                             progress_state["eta_updated_at_monotonic"],
                         )
-                    status = self._post_progress_update(job_id, progress=progress, stage=stage, eta_seconds=eta_seconds)
+                        progress = _heartbeat_progress(
+                            float(progress_state["progress"]),
+                            stage=str(progress_state["stage"] or "worker_running"),
+                            detail=str(progress_state["detail"] or ""),
+                            progress_updated_at_monotonic=progress_state["progress_updated_at_monotonic"],
+                            cleanup_requested=cleanup_requested,
+                            caption_requested=caption_requested,
+                            enhancement_requested=enhancement_requested,
+                            remaining_eta_seconds=eta_seconds,
+                        )
+                        stage = str(progress_state["stage"] or "worker_running")
+                        detail = str(progress_state["detail"] or "")
+                    status = self._post_progress_update(job_id, progress=progress, stage=stage, detail=detail, eta_seconds=eta_seconds)
                     if status in {"ignored", "cancelled"}:
                         mark_cancel_requested()
                         return
