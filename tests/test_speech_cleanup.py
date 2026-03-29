@@ -592,6 +592,20 @@ def test_clean_caption_text_dedupes_accidental_repeated_first_word():
     assert _clean_caption_text("If If that apparent inconsistency is found") == "If that apparent inconsistency is found"
 
 
+def test_clean_caption_text_joins_in_this_case_fragment_to_following_clause():
+    assert (
+        _clean_caption_text("In this case, it touches upon the presumption to be found, the presumption of innocence")
+        == "In this case, it touches upon the presumption of innocence"
+    )
+
+
+def test_clean_caption_text_removes_bad_it_is_the_join():
+    assert (
+        _clean_caption_text("it is The apparent inconsistency at step 2 is legitimised and Parliament's")
+        == "The apparent inconsistency at step 2 is legitimised and Parliament's"
+    )
+
+
 def test_format_caption_document_normalizes_transcript_artifacts_before_render():
     segments = [
         TranscriptSegmentTiming(
@@ -871,6 +885,50 @@ def test_compose_accessible_caption_blocks_merges_justified_tail_fragment():
 
     assert all(not text.startswith("is now justified.") for text in texts)
     assert any("The apparent inconsistency at step 2 is legitimised" in text for text in texts)
+
+
+def test_format_caption_document_cleans_remaining_legal_phrase_artifacts():
+    segments = [
+        TranscriptSegmentTiming(
+            text="In this case, it",
+            start=84.40,
+            end=86.42,
+            average_probability=0.9,
+        ),
+        TranscriptSegmentTiming(
+            text="touches upon the presumption to be found, the presumption of innocence",
+            start=86.42,
+            end=91.98,
+            average_probability=0.88,
+        ),
+        TranscriptSegmentTiming(
+            text="until found guilty.",
+            start=91.98,
+            end=93.49,
+            average_probability=0.9,
+        ),
+        TranscriptSegmentTiming(
+            text="it is The apparent inconsistency at step 2 is legitimised and Parliament's",
+            start=181.55,
+            end=187.15,
+            average_probability=0.88,
+        ),
+        TranscriptSegmentTiming(
+            text="intended meaning prevails.",
+            start=187.15,
+            end=188.58,
+            average_probability=0.9,
+        ),
+    ]
+
+    text = _format_caption_document(segments, caption_format=CaptionFormat.VTT)
+
+    assert "presumption to be found" not in text
+    assert "In this case, it touches upon the presumption" in text
+    assert "of innocence until found guilty." in text
+    assert "it is The apparent inconsistency" not in text
+    assert "The apparent inconsistency at step" in text
+    assert "2 is legitimised and Parliament's" in text
 
 
 def test_build_caption_prompt_includes_nz_legal_terms():

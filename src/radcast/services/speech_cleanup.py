@@ -2602,7 +2602,14 @@ def _clean_caption_text(text: str) -> str:
         r"Step \1 is to ascertain",
         cleaned,
     )
+    cleaned = re.sub(
+        r"\bpresumption to be found,\s+the presumption of innocence\b",
+        "presumption of innocence",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(r"^is now justified\.\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^it is\s+(?=The apparent inconsistency\b)", "", cleaned, flags=re.IGNORECASE)
     return cleaned
 
 
