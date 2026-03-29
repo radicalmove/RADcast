@@ -355,7 +355,7 @@ class SpeechCleanupService:
     def __init__(self) -> None:
         self.cleanup_model_size = os.environ.get("RADCAST_SPEECH_CLEANUP_MODEL", "small").strip() or "small"
         self.caption_fast_model_size = os.environ.get("RADCAST_CAPTION_FAST_MODEL", self.cleanup_model_size).strip() or self.cleanup_model_size
-        self.caption_accurate_model_size = os.environ.get("RADCAST_CAPTION_ACCURATE_MODEL", "medium").strip() or "medium"
+        self.caption_accurate_model_size = os.environ.get("RADCAST_CAPTION_ACCURATE_MODEL", "large-v3-turbo").strip() or "large-v3-turbo"
         self.caption_reviewed_model_size = os.environ.get("RADCAST_CAPTION_REVIEWED_MODEL", "large-v3").strip() or "large-v3"
         self.device = os.environ.get("RADCAST_SPEECH_CLEANUP_DEVICE", "auto").strip() or "auto"
         self.compute_type = os.environ.get("RADCAST_SPEECH_CLEANUP_COMPUTE_TYPE", "int8").strip() or "int8"
@@ -387,7 +387,7 @@ class SpeechCleanupService:
                 return base_seconds
             cold_start_seconds = 0
             if not first_pass_ready:
-                cold_start_seconds += 95
+                cold_start_seconds += 65
             if not review_ready:
                 cold_start_seconds += 80
             return min(base_seconds + cold_start_seconds, 24 * 60)
@@ -396,7 +396,7 @@ class SpeechCleanupService:
         if normalized_quality == CaptionQualityMode.FAST:
             cold_start_seconds = 18
         elif normalized_quality == CaptionQualityMode.ACCURATE:
-            cold_start_seconds = 95
+            cold_start_seconds = 65
         else:
             cold_start_seconds = 145
         return min(base_seconds + cold_start_seconds, 22 * 60)

@@ -894,6 +894,12 @@ def test_estimate_caption_runtime_seconds_adds_cold_start_for_uncached_accurate_
     assert cold_seconds > warm_seconds
 
 
+def test_caption_accurate_model_defaults_to_large_v3_turbo():
+    service = SpeechCleanupService()
+
+    assert service.caption_accurate_model_size == "large-v3-turbo"
+
+
 def test_estimate_caption_runtime_seconds_for_reviewed_mode_accounts_for_review_model_cache(monkeypatch):
     service = SpeechCleanupService()
     monkeypatch.setattr(
