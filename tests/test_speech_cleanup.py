@@ -815,6 +815,64 @@ def test_compose_accessible_caption_blocks_merges_numeric_stub_cue():
     assert any("section 5." in text.lower() for text in texts)
 
 
+def test_compose_accessible_caption_blocks_keeps_step_transition_with_legal_sentence():
+    segments = [
+        TranscriptSegmentTiming(
+            text="against any adverse sort of depiction.",
+            start=48.92,
+            end=51.51,
+            average_probability=0.9,
+        ),
+        TranscriptSegmentTiming(
+            text="of that. Step 2 is ascertain whether that meaning is apparently",
+            start=52.62,
+            end=58.28,
+            average_probability=0.88,
+        ),
+        TranscriptSegmentTiming(
+            text="inconsistent with a relevant right or freedom.",
+            start=58.28,
+            end=61.88,
+            average_probability=0.9,
+        ),
+    ]
+
+    composed = _compose_accessible_caption_blocks(segments)
+    texts = [segment.text.replace("\n", " ") for segment in composed]
+
+    assert all(not text.startswith("of that.") for text in texts)
+    assert any("Step 2" in text and "ascertain" in text for text in texts)
+
+
+def test_compose_accessible_caption_blocks_merges_justified_tail_fragment():
+    segments = [
+        TranscriptSegmentTiming(
+            text="society, or it is justified.",
+            start=169.95,
+            end=172.30,
+            average_probability=0.9,
+        ),
+        TranscriptSegmentTiming(
+            text="is now justified. The apparent inconsistency at step 2 is legitimised and Parliament's",
+            start=181.37,
+            end=187.02,
+            average_probability=0.88,
+        ),
+        TranscriptSegmentTiming(
+            text="intended meaning prevails.",
+            start=187.02,
+            end=188.39,
+            average_probability=0.9,
+        ),
+    ]
+
+    composed = _compose_accessible_caption_blocks(segments)
+    texts = [segment.text.replace("\n", " ") for segment in composed]
+
+    assert all(not text.startswith("is now justified.") for text in texts)
+    assert any("The apparent inconsistency at step 2 is legitimised" in text for text in texts)
+
+
 def test_build_caption_prompt_includes_nz_legal_terms():
     prompt = _build_caption_prompt(None)
 

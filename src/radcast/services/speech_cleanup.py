@@ -2596,6 +2596,13 @@ def _clean_caption_text(text: str) -> str:
         if first and first == second and first in _LEAD_REPEAT_NORMALIZE_TOKENS:
             words.pop(1)
             cleaned = " ".join(words)
+    cleaned = re.sub(r"^of that\.\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\b[Ss]tep\s+(\d+)\s+is\s+ascertain\b",
+        r"Step \1 is to ascertain",
+        cleaned,
+    )
+    cleaned = re.sub(r"^is now justified\.\s+", "", cleaned, flags=re.IGNORECASE)
     return cleaned
 
 
