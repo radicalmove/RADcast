@@ -213,6 +213,18 @@ _TRAILING_FRAGMENT_TOKENS = {
     "with",
 }
 
+_LEAD_REPEAT_NORMALIZE_TOKENS = {
+    "a",
+    "an",
+    "and",
+    "but",
+    "if",
+    "or",
+    "so",
+    "that",
+    "the",
+}
+
 
 @dataclass(frozen=True)
 class TranscriptWordTiming:
@@ -2175,7 +2187,10 @@ def _refine_accessible_caption_blocks(
         )
     rebalanced = _rebalance_adjacent_caption_blocks(refined)
     repaired = _merge_short_caption_stubs(rebalanced)
-    return _dedupe_adjacent_caption_blocks(repaired)
+    finalized: list[TranscriptSegmentTiming] = []
+    for segment in _dedupe_adjacent_caption_blocks(repaired):
+        finalized.extend(_split_or_wrap_caption_segment(segment))
+    return finalized
 
 
 def _rebalance_adjacent_caption_blocks(
@@ -2570,7 +2585,18 @@ def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption
 
 
 def _clean_caption_text(text: str) -> str:
-    return " ".join(str(text or "").split()).strip()
+    cleaned = " ".join(str(text or "").split()).strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\s*-\s*([A-Za-z])", r"-\1", cleaned)
+    words = cleaned.split()
+    if len(words) >= 2:
+        first = _normalize_token(words[0])
+        second = _normalize_token(words[1])
+        if first and first == second and first in _LEAD_REPEAT_NORMALIZE_TOKENS:
+            words.pop(1)
+            cleaned = " ".join(words)
+    return cleaned
 
 
 def _format_caption_timestamp(seconds: float, *, separator: str) -> str:

@@ -16,6 +16,7 @@ from radcast.services.speech_cleanup import (
     TranscriptWordTiming,
     _caption_review_flag_budget,
     _compose_accessible_caption_blocks,
+    _clean_caption_text,
     _dedupe_adjacent_caption_blocks,
     _format_caption_document,
     _build_caption_prompt,
@@ -581,6 +582,36 @@ def test_format_caption_document_wraps_long_line_into_two_readable_lines():
     text = _format_caption_document(segments, caption_format=CaptionFormat.VTT)
 
     assert "This sentence should wrap near a comma,\nrather than becoming one long caption line." in text
+
+
+def test_clean_caption_text_normalizes_hyphen_spaced_compounds():
+    assert _clean_caption_text("step -by -step methodology") == "step-by-step methodology"
+
+
+def test_clean_caption_text_dedupes_accidental_repeated_first_word():
+    assert _clean_caption_text("If If that apparent inconsistency is found") == "If that apparent inconsistency is found"
+
+
+def test_format_caption_document_normalizes_transcript_artifacts_before_render():
+    segments = [
+        TranscriptSegmentTiming(
+            text="is he sets out a step -by -step methodology for approaching any inconsistency with NZBORA.",
+            start=0.0,
+            end=5.0,
+            average_probability=0.88,
+        ),
+        TranscriptSegmentTiming(
+            text="If If that apparent inconsistency that is found at Step 2 ascertain whether it is justified.",
+            start=5.1,
+            end=10.2,
+            average_probability=0.84,
+        ),
+    ]
+
+    text = _format_caption_document(segments, caption_format=CaptionFormat.VTT)
+
+    assert "step-by-step" in text
+    assert "If If" not in text
 
 
 def test_dedupe_adjacent_caption_blocks_trims_boundary_overlap_only():
