@@ -30,6 +30,19 @@ from radcast.utils.audio import probe_duration_seconds
 LOG = logging.getLogger("radcast.worker")
 
 
+def _heartbeat_eta_seconds(
+    eta_seconds: int | None,
+    eta_updated_at_monotonic: float | None,
+    *,
+    now_monotonic: float | None = None,
+) -> int | None:
+    if eta_seconds is None or eta_updated_at_monotonic is None:
+        return None
+    current_time = time.monotonic() if now_monotonic is None else float(now_monotonic)
+    elapsed = max(0.0, current_time - float(eta_updated_at_monotonic))
+    return max(0, int(round(max(0.0, float(eta_seconds) - elapsed))))
+
+
 class WorkerClient:
     def __init__(
         self,
@@ -213,7 +226,13 @@ class WorkerClient:
                     caption_eta_seconds = None
 
             stage_durations_seconds: dict[str, float] = {}
-            progress_state = {"progress": 0.18, "stage": "worker_running", "detail": None, "eta_seconds": None}
+            progress_state = {
+                "progress": 0.18,
+                "stage": "worker_running",
+                "detail": None,
+                "eta_seconds": None,
+                "eta_updated_at_monotonic": None,
+            }
             progress_lock = threading.Lock()
             stop_heartbeat = threading.Event()
             cancel_requested = threading.Event()
@@ -236,6 +255,7 @@ class WorkerClient:
                     progress_state["stage"] = stage or progress_state["stage"]
                     progress_state["detail"] = detail
                     progress_state["eta_seconds"] = None if eta_seconds is None else max(0, int(eta_seconds))
+                    progress_state["eta_updated_at_monotonic"] = None if eta_seconds is None else time.monotonic()
                 status = self._post_progress_update(job_id, progress=progress, stage=stage, detail=detail, eta_seconds=eta_seconds)
                 if status in {"ignored", "cancelled"}:
                     mark_cancel_requested()
@@ -245,7 +265,10 @@ class WorkerClient:
                     with progress_lock:
                         progress = float(progress_state["progress"])
                         stage = str(progress_state["stage"] or "worker_running")
-                        eta_seconds = progress_state["eta_seconds"]
+                        eta_seconds = _heartbeat_eta_seconds(
+                            progress_state["eta_seconds"],
+                            progress_state["eta_updated_at_monotonic"],
+                        )
                     status = self._post_progress_update(job_id, progress=progress, stage=stage, eta_seconds=eta_seconds)
                     if status in {"ignored", "cancelled"}:
                         mark_cancel_requested()

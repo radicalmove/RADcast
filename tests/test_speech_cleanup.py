@@ -14,6 +14,7 @@ from radcast.services.speech_cleanup import (
     SpeechCleanupService,
     TranscriptSegmentTiming,
     TranscriptWordTiming,
+    _caption_review_flag_budget,
     _compose_accessible_caption_blocks,
     _dedupe_adjacent_caption_blocks,
     _format_caption_document,
@@ -929,6 +930,24 @@ def test_windowed_transcription_eta_stays_conservative_across_tail():
         total_windows=12,
         coverage=0.94,
     ) >= 8
+
+
+def test_windowed_transcription_eta_does_not_explode_from_one_slow_early_window():
+    eta = _windowed_transcription_eta_seconds(
+        elapsed_seconds=300,
+        cleanup_eta_seconds=900,
+        processed_windows=1,
+        total_windows=8,
+        coverage=0.13,
+    )
+
+    assert eta <= 1500
+
+
+def test_review_budget_shrinks_for_long_reviewed_caption_jobs():
+    assert _caption_review_flag_budget(90) >= _caption_review_flag_budget(300)
+    assert _caption_review_flag_budget(300) >= _caption_review_flag_budget(900)
+    assert _caption_review_flag_budget(900) <= 4
 
 
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):

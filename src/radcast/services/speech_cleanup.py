@@ -375,7 +375,11 @@ class SpeechCleanupService:
     ) -> int:
         normalized_quality = _normalize_caption_quality_mode(quality_mode)
         base_seconds = estimate_caption_seconds(duration_seconds, quality_mode=normalized_quality)
-        profile = self._caption_profile_for_mode(normalized_quality, caption_prompt=None)
+        profile = self._caption_profile_for_mode(
+            normalized_quality,
+            caption_prompt=None,
+            duration_seconds=duration_seconds,
+        )
         if normalized_quality == CaptionQualityMode.REVIEWED:
             first_pass_ready = self._model_cache_ready(profile.model_size)
             review_ready = self._model_cache_ready(self.caption_reviewed_model_size)
@@ -584,8 +588,13 @@ class SpeechCleanupService:
         input_duration = probe_duration_seconds(audio_path)
         quality_mode = _normalize_caption_quality_mode(caption_quality_mode)
         caption_prompt = _build_caption_prompt(caption_glossary)
-        profile = self._caption_profile_for_mode(quality_mode, caption_prompt=caption_prompt)
+        profile = self._caption_profile_for_mode(
+            quality_mode,
+            caption_prompt=caption_prompt,
+            duration_seconds=input_duration,
+        )
         caption_eta_seconds = self.estimate_caption_runtime_seconds(input_duration, quality_mode=quality_mode)
+        review_budget = _caption_review_flag_budget(input_duration)
         started_at = time.monotonic()
         if on_stage:
             detail = (
@@ -629,14 +638,18 @@ class SpeechCleanupService:
                 if on_stage:
                     on_stage(
                         0.82,
-                        "Reviewing low-confidence caption lines.",
+                        _caption_review_detail(0, min(review_budget, len(quality_report.flagged_segments))),
                         _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=10),
-                )
+                    )
                 segments = self._review_and_correct_caption_segments(
                     analysis_wav=analysis_wav,
                     base_segments=segments,
                     quality_report=quality_report,
                     prompt_text=caption_prompt,
+                    on_stage=on_stage,
+                    started_at=started_at,
+                    caption_eta_seconds=caption_eta_seconds,
+                    review_budget=review_budget,
                     cancel_check=cancel_check,
                 )
                 segments = _dedupe_caption_segments(segments)
@@ -909,7 +922,7 @@ class SpeechCleanupService:
                     processed_windows = min(total_windows, window_index + 1)
                     on_stage(
                         progress,
-                        transcribe_detail,
+                        _windowed_stage_detail(transcribe_detail, processed_windows, total_windows),
                         _windowed_transcription_eta_seconds(
                             elapsed_seconds=max(0.0, time.monotonic() - started_at),
                             cleanup_eta_seconds=cleanup_eta_seconds,
@@ -931,6 +944,7 @@ class SpeechCleanupService:
         caption_quality_mode: CaptionQualityMode,
         *,
         caption_prompt: str | None,
+        duration_seconds: float,
     ) -> CaptionTranscriptionProfile:
         if caption_quality_mode == CaptionQualityMode.FAST:
             return CaptionTranscriptionProfile(
@@ -942,11 +956,13 @@ class SpeechCleanupService:
                 initial_prompt=caption_prompt,
             )
         if caption_quality_mode == CaptionQualityMode.REVIEWED:
+            reviewed_window_seconds = _reviewed_caption_window_seconds(duration_seconds)
+            reviewed_overlap_seconds = _reviewed_caption_overlap_seconds(reviewed_window_seconds)
             return CaptionTranscriptionProfile(
                 model_size=self.caption_accurate_model_size,
                 beam_size=self.caption_accurate_beam_size,
-                window_seconds=_CAPTION_REVIEWED_WINDOW_SECONDS,
-                overlap_seconds=_CAPTION_REVIEWED_OVERLAP_SECONDS,
+                window_seconds=reviewed_window_seconds,
+                overlap_seconds=reviewed_overlap_seconds,
                 condition_on_previous_text=True,
                 initial_prompt=caption_prompt,
                 review_sweep=True,
@@ -967,6 +983,10 @@ class SpeechCleanupService:
         base_segments: list[TranscriptSegmentTiming],
         quality_report: CaptionQualityReport,
         prompt_text: str | None,
+        on_stage: CleanupStageCallback | None = None,
+        started_at: float | None = None,
+        caption_eta_seconds: int | None = None,
+        review_budget: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptSegmentTiming]:
         if not quality_report.flagged_segments:
@@ -974,11 +994,23 @@ class SpeechCleanupService:
         model = self._load_model(self.caption_reviewed_model_size)
         waveform, sample_rate = _read_pcm16_wav(analysis_wav)
         corrected = list(base_segments)
+        review_targets = quality_report.flagged_segments[: max(1, int(review_budget or _CAPTION_REVIEW_MAX_FLAGS))]
         with tempfile.TemporaryDirectory(prefix="radcast_caption_review_") as tmp:
             tmp_path = Path(tmp)
-            for flag in quality_report.flagged_segments[:_CAPTION_REVIEW_MAX_FLAGS]:
+            for index, flag in enumerate(review_targets, start=1):
                 if cancel_check and cancel_check():
                     raise JobCancelledError("job cancelled")
+                if on_stage and started_at is not None and caption_eta_seconds is not None:
+                    on_stage(
+                        0.82 + (0.08 * ((index - 1) / max(1, len(review_targets)))),
+                        _caption_review_detail(index, len(review_targets)),
+                        _caption_review_eta_seconds(
+                            started_at=started_at,
+                            caption_eta_seconds=caption_eta_seconds,
+                            review_index=index,
+                            review_total=len(review_targets),
+                        ),
+                    )
                 matched_index = _find_segment_index(corrected, flag)
                 if matched_index is None:
                     continue
@@ -1353,15 +1385,30 @@ def _windowed_transcription_eta_seconds(
         cleanup_eta_seconds=cleanup_eta_seconds,
         coverage=coverage,
     )
-    remaining = max(window_projection, coverage_projection * 0.95)
+    baseline_projection = max(
+        1.0,
+        (max(1.0, float(cleanup_eta_seconds)) / safe_total_windows) * remaining_windows,
+    )
+    capped_window_projection = min(
+        window_projection,
+        max(baseline_projection * 1.65, coverage_projection * 1.2),
+    )
+    remaining = max(baseline_projection, capped_window_projection, coverage_projection * 0.92)
+    remaining = min(
+        remaining,
+        max(
+            float(cleanup_eta_seconds) * 1.45,
+            baseline_projection * 1.65,
+        ),
+    )
     progress_ratio = safe_processed_windows / safe_total_windows
     if progress_ratio < 0.3:
-        remaining *= 1.22
-    elif progress_ratio < 0.55:
         remaining *= 1.14
-    elif progress_ratio < 0.8:
+    elif progress_ratio < 0.55:
         remaining *= 1.08
-    remaining += 6.0
+    elif progress_ratio < 0.8:
+        remaining *= 1.04
+    remaining += 4.0
     if remaining_windows >= 6:
         floor_seconds = 24
     elif remaining_windows >= 3:
@@ -1371,6 +1418,64 @@ def _windowed_transcription_eta_seconds(
     else:
         floor_seconds = 3
     return max(floor_seconds, int(round(max(1.0, remaining))))
+
+
+def _windowed_stage_detail(base_detail: str, processed_windows: int, total_windows: int) -> str:
+    clean_detail = str(base_detail or "").strip() or "Processing speech."
+    if total_windows <= 1:
+        return clean_detail
+    return f"{clean_detail} Window {processed_windows} of {total_windows}."
+
+
+def _caption_review_flag_budget(duration_seconds: float | None) -> int:
+    safe_duration = max(1.0, float(duration_seconds or 1.0))
+    if safe_duration >= 12 * 60:
+        return 3
+    if safe_duration >= 6 * 60:
+        return 4
+    if safe_duration >= 3 * 60:
+        return 6
+    return _CAPTION_REVIEW_MAX_FLAGS
+
+
+def _reviewed_caption_window_seconds(duration_seconds: float | None) -> float:
+    safe_duration = max(1.0, float(duration_seconds or 1.0))
+    if safe_duration >= 6 * 60:
+        return 30.0
+    if safe_duration >= 3 * 60:
+        return 28.0
+    return _CAPTION_REVIEWED_WINDOW_SECONDS
+
+
+def _reviewed_caption_overlap_seconds(window_seconds: float) -> float:
+    if window_seconds >= 30.0:
+        return 2.0
+    if window_seconds >= 28.0:
+        return 2.25
+    return _CAPTION_REVIEWED_OVERLAP_SECONDS
+
+
+def _caption_review_detail(review_index: int, review_total: int) -> str:
+    safe_total = max(0, int(review_total))
+    if safe_total <= 0:
+        return "Reviewing low-confidence caption lines."
+    if review_index <= 0:
+        return f"Preparing caption review sweep ({safe_total} flagged segment{'s' if safe_total != 1 else ''})."
+    return f"Reviewing difficult caption segments ({review_index} of {safe_total})."
+
+
+def _caption_review_eta_seconds(
+    *,
+    started_at: float,
+    caption_eta_seconds: int,
+    review_index: int,
+    review_total: int,
+) -> int:
+    remaining = _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=8)
+    safe_total = max(1, int(review_total))
+    safe_index = max(0, min(safe_total, int(review_index)))
+    remaining_reviews = max(0, safe_total - safe_index)
+    return max(8, min(remaining, 18 + (remaining_reviews * 9)))
 
 
 def _collect_timing_rows(
