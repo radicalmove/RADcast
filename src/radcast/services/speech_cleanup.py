@@ -597,11 +597,17 @@ class SpeechCleanupService:
         review_budget = _caption_review_flag_budget(input_duration)
         started_at = time.monotonic()
         if on_stage:
+            caption_window_count = _window_count_for_duration(
+                input_duration,
+                profile.window_seconds,
+                profile.overlap_seconds,
+            )
             detail = (
                 f"Loading {profile.model_size} caption model and transcribing speech for captions."
                 if not self._model_cache_ready(profile.model_size)
                 else "Transcribing speech for captions."
             )
+            detail = _windowed_stage_detail(detail, 1, caption_window_count)
             on_stage(0.02, detail, caption_eta_seconds)
 
         with tempfile.TemporaryDirectory(prefix="radcast_captions_") as tmp:
@@ -1425,6 +1431,18 @@ def _windowed_stage_detail(base_detail: str, processed_windows: int, total_windo
     if total_windows <= 1:
         return clean_detail
     return f"{clean_detail} Window {processed_windows} of {total_windows}."
+
+
+def _window_count_for_duration(
+    duration_seconds: float,
+    window_seconds: float,
+    overlap_seconds: float,
+) -> int:
+    safe_duration = max(0.0, float(duration_seconds))
+    resolved_window_seconds = min(max(float(window_seconds), 1.0), max(safe_duration, 1.0))
+    resolved_overlap_seconds = min(float(overlap_seconds), max(0.0, resolved_window_seconds / 2.0))
+    step_seconds = max(0.5, resolved_window_seconds - resolved_overlap_seconds)
+    return max(1, int(math.ceil(max(safe_duration - resolved_window_seconds, 0.0) / step_seconds)) + 1)
 
 
 def _caption_review_flag_budget(duration_seconds: float | None) -> int:

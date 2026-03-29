@@ -950,6 +950,35 @@ def test_review_budget_shrinks_for_long_reviewed_caption_jobs():
     assert _caption_review_flag_budget(900) <= 4
 
 
+def test_generate_caption_file_seeds_window_detail_before_first_window_finishes(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 65.0), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+
+    progress_updates: list[tuple[float, str, int | None]] = []
+
+    def fake_transcribe_timeline(*args, **kwargs):
+        return [], [TranscriptSegmentTiming(text="Caption text", start=0.0, end=1.0)]
+
+    monkeypatch.setattr(service, "_transcribe_timeline", fake_transcribe_timeline)
+
+    service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+        on_stage=lambda progress, detail, eta: progress_updates.append((progress, detail, eta)),
+    )
+
+    assert progress_updates
+    initial_detail = progress_updates[0][1]
+    assert "Window 1 of" in initial_detail
+
+
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     tone_t = np.linspace(0.0, 0.28, int(sample_rate * 0.28), endpoint=False)
