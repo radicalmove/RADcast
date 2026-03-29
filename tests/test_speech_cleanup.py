@@ -17,6 +17,7 @@ from radcast.services.speech_cleanup import (
     _compose_accessible_caption_blocks,
     _dedupe_adjacent_caption_blocks,
     _format_caption_document,
+    _build_caption_prompt,
     _collect_timing_rows,
     _transcription_eta_seconds,
     _windowed_transcription_eta_seconds,
@@ -758,6 +759,38 @@ def test_compose_accessible_caption_blocks_rebalances_continuation_starts():
     assert all(not text.startswith("and ") for text in texts)
 
 
+def test_compose_accessible_caption_blocks_merges_numeric_stub_cue():
+    segments = [
+        TranscriptSegmentTiming(
+            text="five, which is if Parliament's intended meaning represents an unjustified limit under section",
+            start=39.40,
+            end=40.82,
+            average_probability=0.92,
+        ),
+        TranscriptSegmentTiming(text="5.", start=40.82, end=41.02, average_probability=0.92),
+        TranscriptSegmentTiming(
+            text="The court must examine So only now, after that Section 5 analysis, do we move on.",
+            start=41.02,
+            end=49.48,
+            average_probability=0.92,
+        ),
+    ]
+
+    composed = _compose_accessible_caption_blocks(segments)
+    texts = [segment.text.replace("\n", " ") for segment in composed]
+
+    assert all(text != "5." for text in texts)
+    assert any("section 5." in text.lower() for text in texts)
+
+
+def test_build_caption_prompt_includes_nz_legal_terms():
+    prompt = _build_caption_prompt(None)
+
+    assert "NZBORA" in prompt
+    assert "Tipping J" in prompt
+    assert "Moonen" in prompt
+
+
 def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossary(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
@@ -807,8 +840,8 @@ def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossa
     assert captured["model_size"] == service.caption_accurate_model_size
     assert captured["beam_size"] == service.caption_accurate_beam_size
     assert captured["condition_on_previous_text"] is True
-    assert captured["window_seconds"] == 16.0
-    assert captured["overlap_seconds"] == 3.0
+    assert captured["window_seconds"] == 24.0
+    assert captured["overlap_seconds"] == 2.5
     assert captured["review_called"] is True
     assert "organisation" in str(captured["initial_prompt"])
     assert "Te Tiriti o Waitangi" in str(captured["initial_prompt"])
@@ -830,7 +863,7 @@ def test_generate_caption_file_writes_review_notes_for_low_confidence_segments(m
         lambda *args, **kwargs: (
             [],
             [
-                TranscriptSegmentTiming(text="This line should be checked", start=0.0, end=1.4, average_probability=0.39),
+                TranscriptSegmentTiming(text="This line should be checked", start=0.0, end=1.4, average_probability=0.31),
                 TranscriptSegmentTiming(text="This line is okay", start=1.6, end=2.2, average_probability=0.83),
             ],
         ),

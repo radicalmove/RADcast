@@ -48,10 +48,10 @@ _CAPTION_FAST_WINDOW_SECONDS = 8.0
 _CAPTION_FAST_OVERLAP_SECONDS = 1.5
 _CAPTION_ACCURATE_WINDOW_SECONDS = 12.0
 _CAPTION_ACCURATE_OVERLAP_SECONDS = 2.5
-_CAPTION_REVIEWED_WINDOW_SECONDS = 16.0
-_CAPTION_REVIEWED_OVERLAP_SECONDS = 3.0
+_CAPTION_REVIEWED_WINDOW_SECONDS = 24.0
+_CAPTION_REVIEWED_OVERLAP_SECONDS = 2.5
 _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS = 1.8
-_CAPTION_REVIEW_MAX_FLAGS = 18
+_CAPTION_REVIEW_MAX_FLAGS = 8
 _AGGRESSIVE_FILLER_PROMPT = (
     "Transcribe all spoken disfluencies exactly, including um, ums, uh, uhh, ah, ahh, erm, mm, and hesitation sounds."
 )
@@ -156,6 +156,11 @@ _CAPTION_REVIEW_PROMPT = (
     "Review low-confidence transcript lines carefully. Prefer the spoken wording, preserve names and te reo Māori, "
     "and correct likely misheard words rather than paraphrasing."
 )
+_NZ_LEGAL_CAPTION_PROMPT = (
+    "This audio may include New Zealand legal and teaching terms. Prefer accurate forms such as Hansen, Tipping J, "
+    "Moonen, NZBORA, New Zealand Bill of Rights Act, Parliament, presumption of innocence, freedom of expression, "
+    "section 4, section 5, and section 6 when spoken clearly."
+)
 _CAPTION_MAX_LINES = 2
 _CAPTION_MAX_LINE_CHARS = 45
 _CAPTION_TARGET_LINE_CHARS = 42
@@ -165,6 +170,8 @@ _CAPTION_FRAGMENT_MAX_GAP_SECONDS = 0.45
 _CAPTION_FRAGMENT_MIN_DURATION_SECONDS = 1.2
 _CAPTION_FRAGMENT_MAX_COMBINED_DURATION_SECONDS = 12.5
 _CAPTION_FRAGMENT_MAX_COMBINED_WORDS = 24
+_CAPTION_STUB_MAX_DURATION_SECONDS = 1.25
+_CAPTION_STUB_MAX_WORDS = 5
 _SHORT_ORPHAN_TOKENS = {"a", "an", "and", "as", "at", "by", "for", "in", "of", "on", "or", "the", "to", "with"}
 _LEADING_FRAGMENT_TOKENS = {
     "and",
@@ -1183,7 +1190,7 @@ def _combine_prompt_parts(*parts: str | None) -> str | None:
 
 def _build_caption_prompt(custom_glossary: str | None) -> str:
     glossary_terms = _normalize_custom_glossary(custom_glossary)
-    prompt_parts = [_NZ_ENGLISH_STYLE_PROMPT, _MAORI_GLOSSARY_PROMPT]
+    prompt_parts = [_NZ_ENGLISH_STYLE_PROMPT, _MAORI_GLOSSARY_PROMPT, _NZ_LEGAL_CAPTION_PROMPT]
     if glossary_terms:
         prompt_parts.append(
             "Also prefer these course or project terms if spoken clearly: " + ", ".join(glossary_terms) + "."
@@ -1711,15 +1718,15 @@ def _caption_review_reason(
     probability = segment.average_probability
     if probability is None:
         return "No word confidence data was available for this caption line."
-    low_threshold = 0.45
-    warn_threshold = 0.58
+    low_threshold = 0.4
+    warn_threshold = 0.54
     if average_probability is not None:
-        low_threshold = min(low_threshold, max(0.34, average_probability - 0.22))
-        warn_threshold = min(warn_threshold, max(0.46, average_probability - 0.14))
+        low_threshold = min(low_threshold, max(0.32, average_probability - 0.24))
+        warn_threshold = min(warn_threshold, max(0.44, average_probability - 0.16))
     token_count = len(text.split())
     if probability < low_threshold:
         return "Very low confidence caption line."
-    if probability < warn_threshold and token_count >= 5:
+    if probability < warn_threshold and token_count >= 7:
         return "Low confidence on a longer caption line."
     return None
 
@@ -2043,7 +2050,9 @@ def _refine_accessible_caption_blocks(
                 average_probability=segment.average_probability,
             )
         )
-    return _dedupe_adjacent_caption_blocks(_rebalance_adjacent_caption_blocks(refined))
+    rebalanced = _rebalance_adjacent_caption_blocks(refined)
+    repaired = _merge_short_caption_stubs(rebalanced)
+    return _dedupe_adjacent_caption_blocks(repaired)
 
 
 def _rebalance_adjacent_caption_blocks(
@@ -2062,6 +2071,39 @@ def _rebalance_adjacent_caption_blocks(
             continue
         rebalanced[index], rebalanced[index + 1] = replacement
     return rebalanced
+
+
+def _merge_short_caption_stubs(
+    segments: list[TranscriptSegmentTiming],
+) -> list[TranscriptSegmentTiming]:
+    if len(segments) < 2:
+        return segments
+    merged = list(segments)
+    index = 0
+    while index < len(merged):
+        current = merged[index]
+        if not _is_short_caption_stub(current):
+            index += 1
+            continue
+        if index + 1 < len(merged) and _should_attach_stub_to_next(current):
+            combined = _merge_caption_pair(current, merged[index + 1])
+            replacement = _split_or_wrap_caption_segment(combined)
+            merged[index : index + 2] = replacement
+            index = max(0, index - 1)
+            continue
+        if index > 0:
+            combined = _merge_caption_pair(merged[index - 1], current)
+            replacement = _split_or_wrap_caption_segment(combined)
+            merged[index - 1 : index + 1] = replacement
+            index = max(0, index - 2)
+            continue
+        if index + 1 < len(merged):
+            combined = _merge_caption_pair(current, merged[index + 1])
+            replacement = _split_or_wrap_caption_segment(combined)
+            merged[index : index + 2] = replacement
+            continue
+        index += 1
+    return _rebalance_adjacent_caption_blocks(merged)
 
 
 def _merge_caption_fragments(
@@ -2289,6 +2331,68 @@ def _caption_text_score(text: str) -> float:
     if len(words) <= 3 and not cleaned.endswith((".", "!", "?")):
         score -= 4.0
     return score
+
+
+def _is_short_caption_stub(segment: TranscriptSegmentTiming) -> bool:
+    text = _clean_caption_text(segment.text)
+    if not text:
+        return False
+    words = text.split()
+    duration = max(0.0, segment.end - segment.start)
+    first_word = _normalize_token(words[0]) if words else ""
+    last_word = _normalize_token(words[-1]) if words else ""
+    if duration < 0.35:
+        return True
+    if re.fullmatch(r"(section\s+)?\d+[.)]?", text.strip(), flags=re.IGNORECASE):
+        return True
+    if len(words) <= 2 and re.fullmatch(r"[\d\W]+", text):
+        return True
+    if duration <= _CAPTION_STUB_MAX_DURATION_SECONDS and len(words) <= _CAPTION_STUB_MAX_WORDS:
+        if text[:1].islower() or first_word in _LEADING_FRAGMENT_TOKENS or last_word in _TRAILING_FRAGMENT_TOKENS:
+            return True
+    return False
+
+
+def _should_attach_stub_to_next(segment: TranscriptSegmentTiming) -> bool:
+    text = _clean_caption_text(segment.text)
+    if not text:
+        return False
+    words = text.split()
+    if not words:
+        return False
+    first_word = _normalize_token(words[0])
+    last_word = _normalize_token(words[-1])
+    if re.fullmatch(r"(section\s+)?\d+[.)]?", text.strip(), flags=re.IGNORECASE):
+        return False
+    return (
+        not text.endswith((".", "!", "?"))
+        or first_word in _LEADING_FRAGMENT_TOKENS
+        or last_word in _TRAILING_FRAGMENT_TOKENS
+        or text[:1].islower()
+    )
+
+
+def _split_or_wrap_caption_segment(
+    segment: TranscriptSegmentTiming,
+) -> list[TranscriptSegmentTiming]:
+    text = _clean_caption_text(segment.text)
+    if not text:
+        return []
+    if len(text) <= _CAPTION_MAX_BLOCK_CHARS:
+        return [
+            TranscriptSegmentTiming(
+                text=_wrap_caption_block_lines(text),
+                start=segment.start,
+                end=segment.end,
+                average_probability=segment.average_probability,
+            )
+        ]
+    return _split_sentence_unit_into_cues(
+        text,
+        start=segment.start,
+        end=segment.end,
+        average_probability=segment.average_probability,
+    )
 
 
 def _boundary_overlap_tokens(previous_text: str, next_text: str) -> int:
