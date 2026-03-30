@@ -52,6 +52,10 @@ _CAPTION_REVIEWED_WINDOW_SECONDS = 24.0
 _CAPTION_REVIEWED_OVERLAP_SECONDS = 2.5
 _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS = 1.8
 _CAPTION_REVIEW_MAX_FLAGS = 8
+_CAPTION_LANGUAGE_PIN_MIN_PROBABILITY = 0.9
+_DENSE_SPEECH_VAD_DISABLE_MAX_REMOVED_SECONDS = 0.6
+_DENSE_SPEECH_VAD_DISABLE_MAX_REMOVED_RATIO = 0.02
+_DENSE_SPEECH_VAD_DISABLE_REQUIRED_WINDOWS = 2
 _AGGRESSIVE_FILLER_PROMPT = (
     "Transcribe all spoken disfluencies exactly, including um, ums, uh, uhh, ah, ahh, erm, mm, and hesitation sounds."
 )
@@ -651,6 +655,12 @@ class SpeechCleanupService:
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
 
+            if on_stage:
+                on_stage(
+                    0.72,
+                    "Analyzing caption confidence.",
+                    _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=8),
+                )
             quality_report = _build_caption_quality_report(segments)
             if profile.review_sweep and quality_report.flagged_segments:
                 if on_stage:
@@ -673,6 +683,12 @@ class SpeechCleanupService:
                 segments = _dedupe_caption_segments(segments)
                 quality_report = _build_caption_quality_report(segments)
 
+            if on_stage:
+                on_stage(
+                    0.9,
+                    "Formatting accessible captions.",
+                    _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=4),
+                )
             segments = _compose_accessible_caption_blocks(segments)
             quality_report = _build_caption_quality_report(segments)
 
@@ -680,7 +696,7 @@ class SpeechCleanupService:
             review_path = None
             if on_stage:
                 on_stage(
-                    0.92,
+                    0.96,
                     f"Writing {caption_format.value.upper()} captions.",
                     _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=2),
                 )
@@ -718,6 +734,35 @@ class SpeechCleanupService:
             self._models[resolved_model_size] = model
             return model
 
+    def _transcribe_file_with_info(
+        self,
+        model,
+        audio_path: Path,
+        *,
+        preserve_fillers: bool,
+        beam_size: int | None = None,
+        condition_on_previous_text: bool = False,
+        initial_prompt: str | None = None,
+        language_override: str | None = None,
+        vad_filter_override: bool | None = None,
+    ) -> tuple[list[object], object | None]:
+        kwargs = {
+            "beam_size": max(1, int(beam_size or self.beam_size)),
+            "word_timestamps": True,
+            "vad_filter": (not preserve_fillers) if vad_filter_override is None else bool(vad_filter_override),
+            "condition_on_previous_text": condition_on_previous_text,
+        }
+        prompt_text = initial_prompt
+        if preserve_fillers and not prompt_text:
+            prompt_text = _AGGRESSIVE_FILLER_PROMPT
+        if prompt_text:
+            kwargs["initial_prompt"] = prompt_text
+        language = self.transcribe_language if language_override is None else language_override
+        if language and language != "auto":
+            kwargs["language"] = language
+        segment_iter, info = model.transcribe(str(audio_path), **kwargs)
+        return list(segment_iter), info
+
     def _transcribe_file(
         self,
         model,
@@ -729,22 +774,16 @@ class SpeechCleanupService:
         initial_prompt: str | None = None,
         language_override: str | None = None,
     ):
-        kwargs = {
-            "beam_size": max(1, int(beam_size or self.beam_size)),
-            "word_timestamps": True,
-            "vad_filter": not preserve_fillers,
-            "condition_on_previous_text": condition_on_previous_text,
-        }
-        prompt_text = initial_prompt
-        if preserve_fillers and not prompt_text:
-            prompt_text = _AGGRESSIVE_FILLER_PROMPT
-        if prompt_text:
-            kwargs["initial_prompt"] = prompt_text
-        language = self.transcribe_language if language_override is None else language_override
-        if language and language != "auto":
-            kwargs["language"] = language
-        segment_iter, _info = model.transcribe(str(audio_path), **kwargs)
-        return segment_iter
+        segments, _info = self._transcribe_file_with_info(
+            model,
+            audio_path,
+            preserve_fillers=preserve_fillers,
+            beam_size=beam_size,
+            condition_on_previous_text=condition_on_previous_text,
+            initial_prompt=initial_prompt,
+            language_override=language_override,
+        )
+        return segments
 
     def _transcribe_timeline(
         self,
@@ -893,6 +932,9 @@ class SpeechCleanupService:
         step_seconds = max(0.5, resolved_window_seconds - resolved_overlap_seconds)
         words: list[TranscriptWordTiming] = []
         segments: list[TranscriptSegmentTiming] = []
+        window_language_override = language_override
+        window_vad_filter = not preserve_fillers
+        dense_vad_windows = 0
 
         with tempfile.TemporaryDirectory(prefix="radcast_cleanup_transcribe_") as tmp:
             tmp_path = Path(tmp)
@@ -907,18 +949,27 @@ class SpeechCleanupService:
                 end_idx = max(start_idx, min(len(waveform), int(round(window_end * sample_rate))))
                 window_path = tmp_path / f"window_{int(round(window_start * 1000)):06d}.wav"
                 _write_pcm16_wav(window_path, waveform[start_idx:end_idx], sample_rate=sample_rate)
-                transcribe_kwargs = {
-                    "preserve_fillers": preserve_fillers,
-                    "beam_size": beam_size,
-                    "condition_on_previous_text": condition_on_previous_text,
-                    "initial_prompt": initial_prompt,
-                }
-                if language_override is not None:
-                    transcribe_kwargs["language_override"] = language_override
-                transcribed_segments = self._transcribe_file(
+                transcribed_segments, transcribe_info = self._transcribe_file_with_info(
                     model,
                     window_path,
-                    **transcribe_kwargs,
+                    preserve_fillers=preserve_fillers,
+                    beam_size=beam_size,
+                    condition_on_previous_text=condition_on_previous_text,
+                    initial_prompt=initial_prompt,
+                    language_override=window_language_override,
+                    vad_filter_override=window_vad_filter,
+                )
+                window_language_override = _next_window_language_override(
+                    requested_override=language_override,
+                    current_override=window_language_override,
+                    transcribe_info=transcribe_info,
+                )
+                window_vad_filter, dense_vad_windows = _next_window_vad_filter(
+                    current_vad_filter=window_vad_filter,
+                    preserve_fillers=preserve_fillers,
+                    total_duration=total_duration,
+                    transcribe_info=transcribe_info,
+                    dense_vad_windows=dense_vad_windows,
                 )
 
                 left_guard_seconds = 0.0 if window_index == 0 else resolved_overlap_seconds / 2.0
@@ -1470,19 +1521,81 @@ def _caption_review_flag_budget(duration_seconds: float | None) -> int:
 
 def _reviewed_caption_window_seconds(duration_seconds: float | None) -> float:
     safe_duration = max(1.0, float(duration_seconds or 1.0))
-    if safe_duration >= 6 * 60:
-        return 30.0
+    if safe_duration >= 5 * 60:
+        return 42.0
     if safe_duration >= 3 * 60:
-        return 28.0
+        return 34.0
     return _CAPTION_REVIEWED_WINDOW_SECONDS
 
 
 def _reviewed_caption_overlap_seconds(window_seconds: float) -> float:
+    if window_seconds >= 42.0:
+        return 1.5
+    if window_seconds >= 34.0:
+        return 1.75
     if window_seconds >= 30.0:
         return 2.0
     if window_seconds >= 28.0:
         return 2.25
     return _CAPTION_REVIEWED_OVERLAP_SECONDS
+
+
+def _next_window_language_override(
+    *,
+    requested_override: str | None,
+    current_override: str | None,
+    transcribe_info: object | None,
+) -> str | None:
+    normalized_requested = str(requested_override or "").strip().lower()
+    if normalized_requested and normalized_requested != "auto":
+        return normalized_requested
+    normalized_current = str(current_override or "").strip().lower()
+    if normalized_current and normalized_current != "auto":
+        return normalized_current
+    detected_language = str(getattr(transcribe_info, "language", "") or "").strip().lower()
+    detected_probability = getattr(transcribe_info, "language_probability", None)
+    try:
+        probability = float(detected_probability) if detected_probability is not None else None
+    except (TypeError, ValueError):
+        probability = None
+    if detected_language and probability is not None and probability >= _CAPTION_LANGUAGE_PIN_MIN_PROBABILITY:
+        return detected_language
+    return "auto" if normalized_requested == "auto" else current_override
+
+
+def _next_window_vad_filter(
+    *,
+    current_vad_filter: bool,
+    preserve_fillers: bool,
+    total_duration: float,
+    transcribe_info: object | None,
+    dense_vad_windows: int,
+) -> tuple[bool, int]:
+    if preserve_fillers or not current_vad_filter:
+        return current_vad_filter, dense_vad_windows
+    duration_value = getattr(transcribe_info, "duration", None)
+    duration_after_vad_value = getattr(transcribe_info, "duration_after_vad", None)
+    try:
+        duration_seconds = float(duration_value) if duration_value is not None else None
+        duration_after_vad_seconds = float(duration_after_vad_value) if duration_after_vad_value is not None else None
+    except (TypeError, ValueError):
+        duration_seconds = None
+        duration_after_vad_seconds = None
+    if duration_seconds is None or duration_after_vad_seconds is None:
+        return current_vad_filter, dense_vad_windows
+    removed_seconds = max(0.0, duration_seconds - duration_after_vad_seconds)
+    removed_ratio = removed_seconds / max(1.0, duration_seconds)
+    if (
+        total_duration >= 60.0
+        and removed_seconds <= _DENSE_SPEECH_VAD_DISABLE_MAX_REMOVED_SECONDS
+        and removed_ratio <= _DENSE_SPEECH_VAD_DISABLE_MAX_REMOVED_RATIO
+    ):
+        dense_vad_windows += 1
+    else:
+        dense_vad_windows = 0
+    if dense_vad_windows >= _DENSE_SPEECH_VAD_DISABLE_REQUIRED_WINDOWS:
+        return False, dense_vad_windows
+    return current_vad_filter, dense_vad_windows
 
 
 def _caption_review_detail(review_index: int, review_total: int) -> str:

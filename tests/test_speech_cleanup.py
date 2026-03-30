@@ -342,7 +342,7 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
 
     monkeypatch.setattr(service, "_load_model", lambda _model_size=None: object())
 
-    def fake_transcribe_file(
+    def fake_transcribe_file_with_info(
         _model,
         clip_path: Path,
         *,
@@ -350,6 +350,8 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
         beam_size: int | None = None,
         condition_on_previous_text: bool = False,
         initial_prompt: str | None = None,
+        language_override: str | None = None,
+        vad_filter_override: bool | None = None,
     ):
         calls.append((clip_path.name, preserve_fillers))
         if clip_path.name == "window_000000.wav":
@@ -360,7 +362,7 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
                     text="um",
                     words=[SimpleNamespace(start=1.2, end=1.45, word="um", probability=0.02)],
                 )
-            ]
+            ], SimpleNamespace()
         if clip_path.name == "window_006000.wav":
             return [
                 SimpleNamespace(
@@ -369,10 +371,10 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
                     text="uh",
                     words=[SimpleNamespace(start=1.1, end=1.34, word="uh", probability=0.01)],
                 )
-            ]
-        return []
+            ], SimpleNamespace()
+        return [], SimpleNamespace()
 
-    monkeypatch.setattr(service, "_transcribe_file", fake_transcribe_file)
+    monkeypatch.setattr(service, "_transcribe_file_with_info", fake_transcribe_file_with_info)
 
     words, _segments = service._transcribe_timeline(
         audio_path,
@@ -511,6 +513,34 @@ def test_generate_caption_file_uses_accurate_profile_and_maori_glossary(monkeypa
     assert "organisation" in str(captured["initial_prompt"])
 
 
+def test_generate_reviewed_caption_file_uses_larger_windows_for_long_audio(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 350.0), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+
+    captured: dict[str, object] = {}
+
+    def fake_transcribe_timeline(*args, **kwargs):
+        captured.update(kwargs)
+        return [], [TranscriptSegmentTiming(text="Caption text", start=0.0, end=0.9)]
+
+    monkeypatch.setattr(service, "_transcribe_timeline", fake_transcribe_timeline)
+
+    service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+    )
+
+    assert captured["window_seconds"] == 42.0
+    assert captured["overlap_seconds"] == 1.5
+
+
 def test_caption_transcribe_file_does_not_force_english_when_caption_language_is_auto(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     audio = np.zeros(int(sample_rate * 0.8), dtype=np.float32)
@@ -537,6 +567,41 @@ def test_caption_transcribe_file_does_not_force_english_when_caption_language_is
     )
 
     assert "language" not in captured
+
+
+def test_transcribe_windowed_timeline_reuses_detected_language_and_disables_vad_for_dense_speech(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 70.0), dtype=np.float32)
+    audio_path = tmp_path / "caption.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "_load_model", lambda _model_size=None: FakeModel())
+
+    calls: list[dict[str, object]] = []
+
+    class FakeModel:
+        def transcribe(self, path: str, **kwargs):
+            calls.append(kwargs)
+            return iter([]), SimpleNamespace(language="en", language_probability=0.995, duration=20.0, duration_after_vad=19.98)
+
+    service._transcribe_windowed_timeline(
+        audio_path,
+        total_duration=70.0,
+        started_at=0.0,
+        cleanup_eta_seconds=300,
+        on_stage=None,
+        preserve_fillers=False,
+        window_seconds=20.0,
+        overlap_seconds=2.0,
+        language_override="auto",
+    )
+
+    assert len(calls) >= 3
+    assert "language" not in calls[0]
+    assert calls[0]["vad_filter"] is True
+    assert calls[1]["language"] == "en"
+    assert calls[2]["vad_filter"] is False
 
 
 def test_generate_caption_file_dedupes_overlapping_duplicate_lines(monkeypatch, tmp_path: Path):
@@ -1223,6 +1288,38 @@ def test_generate_caption_file_seeds_window_detail_before_first_window_finishes(
     assert progress_updates
     initial_detail = progress_updates[0][1]
     assert "Window 1 of" in initial_detail
+
+
+def test_generate_caption_file_emits_post_transcription_analysis_and_formatting_stages(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 90.0), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda *args, **kwargs: (
+            [],
+            [TranscriptSegmentTiming(text="Caption text", start=0.0, end=1.0, average_probability=0.95)],
+        ),
+    )
+
+    progress_updates: list[tuple[float, str, int | None]] = []
+
+    service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+        on_stage=lambda progress, detail, eta: progress_updates.append((progress, detail, eta)),
+    )
+
+    details = [detail for _, detail, _ in progress_updates]
+    assert any("Analyzing caption confidence." in detail for detail in details)
+    assert any("Formatting accessible captions." in detail for detail in details)
 
 
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):
