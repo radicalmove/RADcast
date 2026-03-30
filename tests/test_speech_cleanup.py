@@ -606,6 +606,24 @@ def test_clean_caption_text_removes_bad_it_is_the_join():
     )
 
 
+def test_clean_caption_text_fixes_step_two_ascertain_phrase():
+    assert (
+        _clean_caption_text(
+            "If that apparent inconsistency that is found at Step 2 ascertain whether that inconsistency is nevertheless justified."
+        )
+        == "If that apparent inconsistency is found at Step 2, ascertain whether that inconsistency is nevertheless justified."
+    )
+
+
+def test_clean_caption_text_simplifies_step_four_transition_phrase():
+    assert (
+        _clean_caption_text(
+            "Now, if it is justified, and so this is moving to step 4, if the inconsistency is a justified limit"
+        )
+        == "Now, moving to step 4, if the inconsistency is a justified limit"
+    )
+
+
 def test_format_caption_document_normalizes_transcript_artifacts_before_render():
     segments = [
         TranscriptSegmentTiming(
@@ -929,6 +947,43 @@ def test_format_caption_document_cleans_remaining_legal_phrase_artifacts():
     assert "it is The apparent inconsistency" not in text
     assert "The apparent inconsistency at step" in text
     assert "2 is legitimised and Parliament's" in text
+
+
+def test_format_caption_document_cleans_remaining_hansen_step_phrases():
+    segments = [
+        TranscriptSegmentTiming(
+            text="If that apparent inconsistency that is found at Step 2 ascertain",
+            start=103.91,
+            end=109.22,
+            average_probability=0.88,
+        ),
+        TranscriptSegmentTiming(
+            text="whether that inconsistency is nevertheless justified in terms of section 5.",
+            start=109.22,
+            end=114.51,
+            average_probability=0.9,
+        ),
+        TranscriptSegmentTiming(
+            text="Now, if it is justified, and so this is moving to step 4, if the inconsistency",
+            start=172.86,
+            end=177.73,
+            average_probability=0.88,
+        ),
+        TranscriptSegmentTiming(
+            text="is a justified limit, and you have made that argument.",
+            start=177.73,
+            end=183.20,
+            average_probability=0.9,
+        ),
+    ]
+
+    text = _format_caption_document(segments, caption_format=CaptionFormat.VTT)
+
+    assert "that is found at Step 2 ascertain" not in text
+    assert "is found at Step 2," in text
+    assert "ascertain whether that inconsistency" in text
+    assert "and so this is moving to step 4" not in text
+    assert "Now, moving to step 4" in text
 
 
 def test_build_caption_prompt_includes_nz_legal_terms():
