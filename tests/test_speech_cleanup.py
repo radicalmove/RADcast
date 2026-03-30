@@ -606,6 +606,15 @@ def test_clean_caption_text_removes_bad_it_is_the_join():
     )
 
 
+def test_clean_caption_text_removes_bad_it_is_the_join_mid_sentence():
+    assert (
+        _clean_caption_text(
+            "is a justified limit, and you have made that argument, it is The apparent inconsistency at step 2 is legitimised"
+        )
+        == "is a justified limit, and you have made that argument, The apparent inconsistency at step 2 is legitimised"
+    )
+
+
 def test_clean_caption_text_fixes_step_two_ascertain_phrase():
     assert (
         _clean_caption_text(
@@ -984,6 +993,35 @@ def test_format_caption_document_cleans_remaining_hansen_step_phrases():
     assert "ascertain whether that inconsistency" in text
     assert "and so this is moving to step 4" not in text
     assert "Now, moving to step 4" in text
+
+
+def test_format_caption_document_removes_embedded_it_is_the_join():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Now, moving to step 4, if the inconsistency is a justified limit, and you have made that argument,",
+            start=172.86,
+            end=180.52,
+            average_probability=0.9,
+        ),
+        TranscriptSegmentTiming(
+            text="it is The apparent inconsistency at step 2 is legitimised and Parliament's",
+            start=180.52,
+            end=186.15,
+            average_probability=0.88,
+        ),
+        TranscriptSegmentTiming(
+            text="intended meaning prevails.",
+            start=186.15,
+            end=187.58,
+            average_probability=0.9,
+        ),
+    ]
+
+    text = _format_caption_document(segments, caption_format=CaptionFormat.VTT)
+
+    assert "it is The apparent" not in text
+    assert ", The" in text
+    assert "inconsistency at step 2 is" in text
 
 
 def test_build_caption_prompt_includes_nz_legal_terms():
