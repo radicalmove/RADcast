@@ -7,7 +7,6 @@ import os
 import re
 import shutil
 import tempfile
-import threading
 import time
 import wave
 import math
@@ -21,6 +20,7 @@ import numpy as np
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
 from radcast.models import CaptionFormat, CaptionQualityMode, FillerRemovalMode, OutputFormat
 from radcast.progress import estimate_caption_seconds, estimate_speech_cleanup_seconds
+from radcast.services.caption_backends import CaptionTranscriptionResult, FasterWhisperCaptionBackend
 from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
 
 CleanupStageCallback = Callable[[float, str, int | None], None]
@@ -320,8 +320,16 @@ class SpeechCleanupService:
         self.caption_fast_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_FAST_BEAM_SIZE", str(self.beam_size))))
         self.caption_accurate_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_ACCURATE_BEAM_SIZE", "3")))
         self.caption_reviewed_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_REVIEWED_BEAM_SIZE", "5")))
-        self._models: dict[str, object] = {}
-        self._model_lock = threading.Lock()
+        self._caption_backend = FasterWhisperCaptionBackend(
+            default_model_size=self.cleanup_model_size,
+            device=self.device,
+            compute_type=self.compute_type,
+            transcribe_language=self.transcribe_language,
+            default_beam_size=self.beam_size,
+        )
+        # Preserve the existing cache inspection surface while the orchestration layer
+        # is being migrated to backend-owned transcription.
+        self._models = self._caption_backend._models
 
     def estimate_caption_runtime_seconds(
         self,
@@ -382,7 +390,7 @@ class SpeechCleanupService:
         resolved_model_size = str(model_size or "").strip()
         if not resolved_model_size:
             return False
-        if resolved_model_size in self._models:
+        if resolved_model_size in self._caption_backend._models:
             return True
         if "/" in resolved_model_size:
             owner, repo = resolved_model_size.split("/", 1)
@@ -630,33 +638,18 @@ class SpeechCleanupService:
         )
 
     def _load_model(self, model_size: str | None = None):
-        resolved_model_size = str(model_size or self.cleanup_model_size).strip() or self.cleanup_model_size
-        cached = self._models.get(resolved_model_size)
-        if cached is not None:
-            return cached
-        with self._model_lock:
-            cached = self._models.get(resolved_model_size)
-            if cached is not None:
-                return cached
-            try:
-                from faster_whisper import WhisperModel
-            except ImportError as exc:  # pragma: no cover - availability is checked before runtime use
-                raise EnhancementRuntimeError(
-                    "faster-whisper is required for speech cleanup. Install with 'pip install -e .'."
-                ) from exc
-            self._evict_cached_models_except(resolved_model_size)
-            model = WhisperModel(resolved_model_size, device=self.device, compute_type=self.compute_type)
-            self._models = {resolved_model_size: model}
+        try:
+            model = self._caption_backend.load_model(model_size)
+            self._models = self._caption_backend._models
             return model
+        except RuntimeError as exc:
+            raise EnhancementRuntimeError(
+                "faster-whisper is required for speech cleanup. Install with 'pip install -e .'."
+            ) from exc
 
     def _evict_cached_models_except(self, keep_model_size: str) -> None:
-        if not self._models:
-            return
-        stale_keys = [key for key in self._models.keys() if key != keep_model_size]
-        if not stale_keys:
-            return
-        for key in stale_keys:
-            self._models.pop(key, None)
+        self._caption_backend._evict_cached_models_except(keep_model_size)
+        self._models = self._caption_backend._models
         gc.collect()
 
     def _transcribe_file(
@@ -669,21 +662,17 @@ class SpeechCleanupService:
         condition_on_previous_text: bool = False,
         initial_prompt: str | None = None,
     ):
-        kwargs = {
-            "beam_size": max(1, int(beam_size or self.beam_size)),
-            "word_timestamps": True,
-            "vad_filter": not preserve_fillers,
-            "condition_on_previous_text": condition_on_previous_text,
-        }
         prompt_text = initial_prompt
         if preserve_fillers and not prompt_text:
             prompt_text = _AGGRESSIVE_FILLER_PROMPT
-        if prompt_text:
-            kwargs["initial_prompt"] = prompt_text
-        if self.transcribe_language and self.transcribe_language != "auto":
-            kwargs["language"] = self.transcribe_language
-        segment_iter, _info = model.transcribe(str(audio_path), **kwargs)
-        return segment_iter
+        return self._caption_backend.transcribe_loaded_model(
+            model,
+            audio_path,
+            preserve_fillers=preserve_fillers,
+            beam_size=beam_size,
+            condition_on_previous_text=condition_on_previous_text,
+            initial_prompt=prompt_text,
+        )
 
     def _transcribe_timeline(
         self,
@@ -733,45 +722,25 @@ class SpeechCleanupService:
             raise JobCancelledError("job cancelled")
         model = self._load_model(model_size)
 
-        words: list[TranscriptWordTiming] = []
-        segments: list[TranscriptSegmentTiming] = []
-        last_progress_emit_at = 0.0
-        for seg in self._transcribe_file(
+        transcription = self._transcribe_file(
             model,
             audio_path,
             preserve_fillers=preserve_fillers,
             beam_size=effective_beam_size,
             condition_on_previous_text=condition_on_previous_text,
             initial_prompt=initial_prompt,
-        ):
+        )
+        words, segments = _collect_timing_rows(
+            transcription,
+            window_offset_seconds=0.0,
+            keep_start_seconds=0.0,
+            keep_end_seconds=max(total_duration, 0.0) if total_duration > 0 else float("inf"),
+        )
+        last_progress_emit_at = 0.0
+        for seg in segments:
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
-            start = max(0.0, float(seg.start))
-            end = max(start, float(seg.end))
-            text = str(seg.text or "").strip()
-            probabilities: list[float] = []
-            for word in seg.words or []:
-                if word.probability is not None:
-                    probabilities.append(float(word.probability))
-            segments.append(
-                TranscriptSegmentTiming(
-                    text=text,
-                    start=start,
-                    end=end,
-                    average_probability=(sum(probabilities) / len(probabilities)) if probabilities else None,
-                )
-            )
-            for word in seg.words or []:
-                word_start = max(0.0, float(word.start))
-                word_end = max(word_start, float(word.end))
-                words.append(
-                    TranscriptWordTiming(
-                        text=str(word.word or "").strip(),
-                        start=word_start,
-                        end=word_end,
-                        probability=float(word.probability) if word.probability is not None else None,
-                    )
-                )
+            end = max(0.0, float(seg.end))
             if on_stage:
                 now = time.monotonic()
                 if (
@@ -990,7 +959,7 @@ class SpeechCleanupService:
             initial_prompt=_combine_prompt_parts(prompt_text, _CAPTION_REVIEW_PROMPT),
         )
         _, candidate_segments = _collect_timing_rows(
-            list(review_segments),
+            review_segments,
             window_offset_seconds=snippet_start,
             keep_start_seconds=0.0,
             keep_end_seconds=max(0.0, snippet_end - snippet_start),
@@ -1335,7 +1304,7 @@ def _windowed_transcription_eta_seconds(
 
 
 def _collect_timing_rows(
-    transcribed_segments: list[object],
+    transcribed_segments: CaptionTranscriptionResult | list[object],
     *,
     window_offset_seconds: float,
     keep_start_seconds: float,
@@ -1343,6 +1312,51 @@ def _collect_timing_rows(
 ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
     words: list[TranscriptWordTiming] = []
     segments: list[TranscriptSegmentTiming] = []
+    if isinstance(transcribed_segments, CaptionTranscriptionResult):
+        source_segments = transcribed_segments.segments
+        for seg in source_segments:
+            seg_start = max(0.0, float(seg.start))
+            seg_end = max(seg_start, float(seg.end))
+            if seg_end <= keep_start_seconds or seg_start >= keep_end_seconds:
+                continue
+            text = str(seg.text or "").strip()
+            segment_probabilities: list[float] = []
+            segment_words: list[str] = []
+            segments.append(
+                TranscriptSegmentTiming(
+                    text=text,
+                    start=window_offset_seconds + max(seg_start, keep_start_seconds),
+                    end=window_offset_seconds + min(seg_end, keep_end_seconds),
+                )
+            )
+            for word in seg.words or ():
+                word_start = max(0.0, float(word.start))
+                word_end = max(word_start, float(word.end))
+                if word_end <= keep_start_seconds or word_start >= keep_end_seconds:
+                    continue
+                probability = float(word.probability) if word.probability is not None else None
+                if probability is not None:
+                    segment_probabilities.append(probability)
+                token_text = str(word.text or "").strip()
+                if token_text:
+                    segment_words.append(token_text)
+                words.append(
+                    TranscriptWordTiming(
+                        text=token_text,
+                        start=window_offset_seconds + max(word_start, keep_start_seconds),
+                        end=window_offset_seconds + min(word_end, keep_end_seconds),
+                        probability=probability,
+                    )
+                )
+            segment_text = " ".join(segment_words).strip() or text
+            segments[-1] = TranscriptSegmentTiming(
+                text=segment_text,
+                start=segments[-1].start,
+                end=segments[-1].end,
+                average_probability=(sum(segment_probabilities) / len(segment_probabilities)) if segment_probabilities else None,
+            )
+        return words, segments
+
     for seg in transcribed_segments:
         seg_start = max(0.0, float(seg.start))
         seg_end = max(seg_start, float(seg.end))
