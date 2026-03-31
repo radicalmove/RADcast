@@ -10,6 +10,7 @@ import tempfile
 import time
 import wave
 import math
+import platform
 from dataclasses import dataclass
 from importlib.util import find_spec
 from pathlib import Path
@@ -20,6 +21,10 @@ import numpy as np
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
 from radcast.models import CaptionFormat, CaptionQualityMode, FillerRemovalMode, OutputFormat
 from radcast.progress import estimate_caption_seconds, estimate_speech_cleanup_seconds
+from radcast.services.caption_backend_selection import (
+    CaptionBackendSelectionError,
+    resolve_caption_backend_id,
+)
 from radcast.services.caption_backends import CaptionTranscriptionResult, FasterWhisperCaptionBackend
 from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
 
@@ -320,6 +325,18 @@ class SpeechCleanupService:
         self.caption_fast_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_FAST_BEAM_SIZE", str(self.beam_size))))
         self.caption_accurate_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_ACCURATE_BEAM_SIZE", "3")))
         self.caption_reviewed_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_REVIEWED_BEAM_SIZE", "5")))
+        available_backends = {"faster_whisper"}
+        try:
+            self.caption_backend_id = resolve_caption_backend_id(
+                os.environ.get("RADCAST_CAPTION_BACKEND", "auto"),
+                platform_name=platform.system(),
+                runtime_context=os.environ.get("RADCAST_RUNTIME_CONTEXT", "server"),
+                available_backends=available_backends,
+            )
+        except CaptionBackendSelectionError as exc:
+            raise EnhancementRuntimeError(str(exc)) from exc
+        if self.caption_backend_id != "faster_whisper":
+            raise EnhancementRuntimeError(f"Caption backend '{self.caption_backend_id}' is not implemented yet")
         self._caption_backend = FasterWhisperCaptionBackend(
             default_model_size=self.cleanup_model_size,
             device=self.device,
