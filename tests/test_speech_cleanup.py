@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import shutil
+import time
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -694,6 +695,64 @@ def test_windowed_transcription_eta_stays_conservative_across_tail():
         total_windows=12,
         coverage=0.94,
     ) >= 8
+
+
+def test_windowed_caption_progress_detail_includes_window_counts(monkeypatch, tmp_path: Path):
+    service = SpeechCleanupService()
+    details: list[str] = []
+
+    monkeypatch.setattr(service, "_load_model", lambda model_size=None: object())
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup._read_pcm16_wav",
+        lambda _path: (np.zeros((20 * 16000, 1), dtype=np.float32), 16000),
+    )
+    monkeypatch.setattr("radcast.services.speech_cleanup._write_pcm16_wav", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "_transcribe_file", lambda *args, **kwargs: [])
+
+    service._transcribe_windowed_timeline(
+        tmp_path / "input.wav",
+        total_duration=20.0,
+        started_at=time.monotonic(),
+        cleanup_eta_seconds=120,
+        on_stage=lambda _progress, detail, _eta: details.append(detail),
+        transcribe_detail="Transcribing speech for captions.",
+        window_seconds=8.0,
+        overlap_seconds=1.5,
+    )
+
+    assert details[0] == "Transcribing speech for captions. Window 1 of 3."
+    assert details[1] == "Transcribing speech for captions. Window 2 of 3."
+    assert details[2] == "Transcribing speech for captions. Window 3 of 3."
+
+
+def test_generate_caption_file_announces_first_window_before_transcription(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    tone_t = np.linspace(0.0, 0.5, int(sample_rate * 0.5), endpoint=False)
+    audio = (0.1 * np.sin(2.0 * np.pi * 220.0 * tone_t)).astype(np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    stages: list[tuple[float, str, int | None]] = []
+
+    monkeypatch.setattr(service, "_model_cache_ready", lambda _model_size: False)
+    monkeypatch.setattr(service, "estimate_caption_runtime_seconds", lambda *_args, **_kwargs: 90)
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst, *, audio_filters=None: shutil.copy2(src, dst))
+    monkeypatch.setattr(service, "_transcribe_timeline", lambda *_args, **_kwargs: ([], []))
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+        on_stage=lambda progress, detail, eta: stages.append((progress, detail, eta)),
+    )
+
+    assert result.caption_path.exists()
+    assert stages[0][0] == 0.02
+    assert "Loading" in stages[0][1]
+    assert "caption model and transcribing speech for captions." in stages[0][1]
+    assert "Window 1 of 1." in stages[0][1]
+    assert stages[0][2] == 90
 
 
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):
