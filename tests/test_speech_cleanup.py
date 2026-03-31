@@ -655,6 +655,13 @@ def test_estimate_caption_runtime_seconds_for_reviewed_mode_accounts_for_review_
     assert cold_seconds > warm_seconds
 
 
+def test_caption_beam_defaults_are_local_helper_friendly():
+    service = SpeechCleanupService()
+
+    assert service.caption_accurate_beam_size == 3
+    assert service.caption_reviewed_beam_size == 5
+
+
 def test_load_model_evicts_other_cached_models(monkeypatch):
     service = SpeechCleanupService()
 
@@ -782,6 +789,51 @@ def test_generate_caption_file_defers_eta_for_multiwindow_caption_runs(monkeypat
     assert stages[0][0] == 0.02
     assert "Window 1 of 27." in stages[0][1]
     assert stages[0][2] is None
+
+
+def test_review_caption_flag_uses_configured_review_beam(monkeypatch, tmp_path: Path):
+    service = SpeechCleanupService()
+    service.caption_reviewed_beam_size = 5
+
+    sample_rate = 16000
+    waveform = np.zeros((sample_rate * 2, 1), dtype=np.float32)
+    tmp_review = tmp_path / "review"
+    tmp_review.mkdir()
+    flag = SimpleNamespace(start=0.2, end=0.8, text="hello world", average_probability=0.3)
+    captured: dict[str, object] = {}
+
+    def fake_transcribe_file(_model, _snippet_path, **kwargs):
+        captured.update(kwargs)
+        return [
+            SimpleNamespace(
+                text="hello better world",
+                start=0.0,
+                end=0.7,
+                words=[
+                    SimpleNamespace(word="hello", start=0.0, end=0.2, probability=0.92),
+                    SimpleNamespace(word="better", start=0.2, end=0.45, probability=0.91),
+                    SimpleNamespace(word="world", start=0.45, end=0.7, probability=0.93),
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(service, "_transcribe_file", fake_transcribe_file)
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup._best_overlapping_segment",
+        lambda segments, _flag: segments[0] if segments else None,
+    )
+
+    result = service._review_caption_flag(
+        model=object(),
+        waveform=waveform,
+        sample_rate=sample_rate,
+        flag=flag,
+        prompt_text="prompt",
+        tmp_path=tmp_review,
+    )
+
+    assert result is not None
+    assert captured["beam_size"] == 5
 
 
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):
