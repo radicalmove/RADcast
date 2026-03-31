@@ -27,10 +27,21 @@ Dataset builder:
 python scripts/build_paired_restoration_dataset.py \
   --pair "/path/to/lecture-original.wav::/path/to/adobe-target.wav" \
   --output-dir experiments/paired-restoration/run01 \
-  --segment-seconds 8 \
-  --hop-seconds 4 \
+  --segment-seconds 4 \
+  --hop-seconds 2 \
   --valid-fraction 0.2
 ```
+
+Current dataset defaults are speech-centered rather than plain sliding windows:
+- shorter `4s` segments
+- `2s` hop
+- windows are built around contiguous speech spans in the clean target
+- each segment records:
+  - `clean_active_ratio`
+  - `noisy_active_ratio`
+  - `envelope_correlation`
+
+This is deliberate. The previous long-window builder kept too much room tail and weakly aligned speech, which pushed the restoration model toward darker/recessed outputs instead of the Adobe-style close-mic target.
 
 Automatic pair discovery:
 
@@ -53,9 +64,22 @@ python scripts/build_paired_restoration_dataset.py \
   --output-dir experiments/paired-restoration/run01
 ```
 
+Or re-segment an already-local paired WAV dataset without touching the original cloud files again:
+
+```bash
+python scripts/build_paired_restoration_dataset.py \
+  --dataset-manifest /path/to/existing/manifest.jsonl \
+  --output-dir experiments/paired-restoration/run02 \
+  --sample-rate 16000 \
+  --segment-seconds 4 \
+  --hop-seconds 2
+```
+
 Recommended targets:
 - best: real close-mic recordings of the same speaker/content
 - acceptable for bootstrapping: Adobe Podcast outputs as provisional `clean` targets
+
+For moving the experiment stack onto a dedicated Windows GPU box under `WSL2`, see [windows_gpu_box.md](./windows_gpu_box.md).
 
 Official SGMSE training launch:
 

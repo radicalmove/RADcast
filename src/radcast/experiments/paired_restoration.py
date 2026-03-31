@@ -20,6 +20,7 @@ class PairedSource:
     pair_id: str
     noisy_path: Path
     clean_path: Path
+    split: str | None = None
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,9 @@ class SegmentRecord:
     split: str
     duration_seconds: float
     sample_rate: int
+    clean_active_ratio: float
+    noisy_active_ratio: float
+    envelope_correlation: float
     noisy_path: Path
     clean_path: Path
     source_noisy_path: Path
@@ -149,7 +153,23 @@ def load_pairs_jsonl(path: Path) -> list[PairedSource]:
         noisy_path = Path(payload["noisy_path"]).expanduser().resolve()
         clean_path = Path(payload["clean_path"]).expanduser().resolve()
         pair_id = sanitize_pair_id(str(payload.get("pair_id") or clean_path.stem or noisy_path.stem))
-        entries.append(PairedSource(pair_id=pair_id, noisy_path=noisy_path, clean_path=clean_path))
+        entries.append(PairedSource(pair_id=pair_id, noisy_path=noisy_path, clean_path=clean_path, split=payload.get("split")))
+    return entries
+
+
+def load_pairs_from_dataset_manifest(path: Path) -> list[PairedSource]:
+    manifest_path = path.expanduser().resolve()
+    dataset_root = manifest_path.parent
+    entries: list[PairedSource] = []
+    for line in manifest_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        payload = json.loads(line)
+        noisy_path = (dataset_root / payload["noisy_path"]).resolve()
+        clean_path = (dataset_root / payload["clean_path"]).resolve()
+        pair_id = sanitize_pair_id(str(payload.get("segment_id") or payload.get("pair_id") or clean_path.stem or noisy_path.stem))
+        entries.append(PairedSource(pair_id=pair_id, noisy_path=noisy_path, clean_path=clean_path, split=payload.get("split")))
     return entries
 
 
@@ -158,10 +178,15 @@ def build_paired_dataset(
     pairs: Iterable[PairedSource],
     output_dir: Path,
     sample_rate: int = 48_000,
-    segment_seconds: float = 8.0,
-    hop_seconds: float = 4.0,
+    segment_seconds: float = 4.0,
+    hop_seconds: float = 2.0,
     activity_threshold_db: float = -38.0,
-    min_active_ratio: float = 0.30,
+    min_active_ratio: float = 0.40,
+    speech_centered: bool = True,
+    speech_pad_seconds: float = 0.20,
+    min_span_seconds: float = 0.50,
+    max_gap_seconds: float = 0.18,
+    min_envelope_correlation: float = 0.70,
     valid_fraction: float = 0.2,
     overwrite: bool = False,
 ) -> list[SegmentRecord]:
@@ -183,7 +208,7 @@ def build_paired_dataset(
     with tempfile.TemporaryDirectory(prefix="radcast_paired_dataset_") as temp_dir_raw:
         temp_dir = Path(temp_dir_raw)
         for pair in pairs_list:
-            split = split_for_pair_id(pair.pair_id, valid_fraction=valid_fraction)
+            split = pair.split or split_for_pair_id(pair.pair_id, valid_fraction=valid_fraction)
             noisy_wav = temp_dir / f"{pair.pair_id}.noisy.wav"
             clean_wav = temp_dir / f"{pair.pair_id}.clean.wav"
             _ffmpeg_to_mono_wav(pair.noisy_path, noisy_wav, sample_rate=sample_rate)
@@ -209,20 +234,47 @@ def build_paired_dataset(
             split_noisy_dir.mkdir(parents=True, exist_ok=True)
             split_clean_dir.mkdir(parents=True, exist_ok=True)
 
+            if speech_centered:
+                candidate_starts = _speech_centered_segment_starts(
+                    clean_audio=clean_mono,
+                    total_samples=total_samples,
+                    sample_rate=noisy_sr,
+                    segment_samples=segment_samples,
+                    hop_samples=hop_samples,
+                    threshold_db=activity_threshold_db,
+                    speech_pad_seconds=speech_pad_seconds,
+                    min_span_seconds=min_span_seconds,
+                    max_gap_seconds=max_gap_seconds,
+                )
+            else:
+                candidate_starts = range(0, max(total_samples - segment_samples + 1, 1), hop_samples)
+
             segment_index = 0
-            for start_sample in range(0, max(total_samples - segment_samples + 1, 1), hop_samples):
+            for start_sample in candidate_starts:
                 end_sample = min(total_samples, start_sample + segment_samples)
                 if end_sample - start_sample < int(0.75 * segment_samples):
                     continue
 
                 noisy_chunk = noisy_mono[start_sample:end_sample]
                 clean_chunk = clean_mono[start_sample:end_sample]
-                if not _segment_is_active(
+                clean_active_ratio = _segment_activity_ratio(
                     clean_chunk,
                     sample_rate=noisy_sr,
                     threshold_db=activity_threshold_db,
-                    min_active_ratio=min_active_ratio,
-                ):
+                )
+                noisy_active_ratio = _segment_activity_ratio(
+                    noisy_chunk,
+                    sample_rate=noisy_sr,
+                    threshold_db=activity_threshold_db,
+                )
+                envelope_correlation = _segment_envelope_correlation(
+                    noisy_chunk,
+                    clean_chunk,
+                    sample_rate=noisy_sr,
+                )
+                if clean_active_ratio < min_active_ratio:
+                    continue
+                if envelope_correlation < min_envelope_correlation:
                     continue
 
                 segment_id = f"{pair.pair_id}-seg{segment_index:04d}"
@@ -237,6 +289,9 @@ def build_paired_dataset(
                     split=split,
                     duration_seconds=len(noisy_chunk) / float(noisy_sr),
                     sample_rate=noisy_sr,
+                    clean_active_ratio=clean_active_ratio,
+                    noisy_active_ratio=noisy_active_ratio,
+                    envelope_correlation=envelope_correlation,
                     noisy_path=noisy_output.relative_to(destination),
                     clean_path=clean_output.relative_to(destination),
                     source_noisy_path=pair.noisy_path,
@@ -255,6 +310,9 @@ def build_paired_dataset(
         segment_seconds=segment_seconds,
         hop_seconds=hop_seconds,
         valid_fraction=valid_fraction,
+        speech_centered=speech_centered,
+        min_active_ratio=min_active_ratio,
+        min_envelope_correlation=min_envelope_correlation,
     )
     return records
 
@@ -289,13 +347,12 @@ def _to_mono(audio: np.ndarray) -> np.ndarray:
     return audio.mean(axis=1).astype(np.float32, copy=False)
 
 
-def _segment_is_active(
+def _segment_activity_ratio(
     audio: np.ndarray,
     *,
     sample_rate: int,
     threshold_db: float,
-    min_active_ratio: float,
-) -> bool:
+) -> float:
     frame_samples = max(1, int(round(sample_rate * 0.04)))
     hop_samples = max(1, int(round(sample_rate * 0.02)))
     frame_count = 0
@@ -311,8 +368,128 @@ def _segment_is_active(
         if db >= threshold_db:
             active_count += 1
     if frame_count == 0:
-        return False
-    return (active_count / float(frame_count)) >= min_active_ratio
+        return 0.0
+    return active_count / float(frame_count)
+
+
+def _activity_mask(
+    audio: np.ndarray,
+    *,
+    sample_rate: int,
+    threshold_db: float,
+) -> tuple[np.ndarray, int, int]:
+    frame_samples = max(1, int(round(sample_rate * 0.04)))
+    hop_samples = max(1, int(round(sample_rate * 0.02)))
+    active: list[bool] = []
+    for start in range(0, max(len(audio) - frame_samples + 1, 1), hop_samples):
+        end = min(len(audio), start + frame_samples)
+        frame = audio[start:end]
+        if frame.size == 0:
+            active.append(False)
+            continue
+        rms = float(np.sqrt(np.mean(np.square(frame)) + 1e-12))
+        db = 20.0 * np.log10(rms + 1e-12)
+        active.append(db >= threshold_db)
+    return np.asarray(active, dtype=bool), frame_samples, hop_samples
+
+
+def _speech_centered_segment_starts(
+    *,
+    clean_audio: np.ndarray,
+    total_samples: int,
+    sample_rate: int,
+    segment_samples: int,
+    hop_samples: int,
+    threshold_db: float,
+    speech_pad_seconds: float,
+    min_span_seconds: float,
+    max_gap_seconds: float,
+) -> list[int]:
+    active_mask, _frame_samples, frame_hop_samples = _activity_mask(
+        clean_audio,
+        sample_rate=sample_rate,
+        threshold_db=threshold_db,
+    )
+    if active_mask.size == 0:
+        return []
+
+    max_gap_frames = max(1, int(round(max_gap_seconds / 0.02)))
+    min_span_frames = max(1, int(round(min_span_seconds / 0.02)))
+    pad_samples = max(0, int(round(speech_pad_seconds * sample_rate)))
+
+    spans: list[tuple[int, int]] = []
+    active_indices = np.flatnonzero(active_mask)
+    if active_indices.size == 0:
+        return []
+
+    start_frame = int(active_indices[0])
+    prev_frame = int(active_indices[0])
+    for frame_idx in map(int, active_indices[1:]):
+        if frame_idx - prev_frame <= max_gap_frames:
+            prev_frame = frame_idx
+            continue
+        if prev_frame - start_frame + 1 >= min_span_frames:
+            spans.append((start_frame, prev_frame))
+        start_frame = frame_idx
+        prev_frame = frame_idx
+    if prev_frame - start_frame + 1 >= min_span_frames:
+        spans.append((start_frame, prev_frame))
+
+    starts: set[int] = set()
+    for start_frame, end_frame in spans:
+        span_start = max(0, (start_frame * frame_hop_samples) - pad_samples)
+        span_end = min(total_samples, ((end_frame + 1) * frame_hop_samples) + pad_samples)
+        span_length = span_end - span_start
+        if span_length <= segment_samples:
+            center = (span_start + span_end) // 2
+            segment_start = min(max(0, center - (segment_samples // 2)), max(total_samples - segment_samples, 0))
+            starts.add(segment_start)
+            continue
+
+        cursor = span_start
+        last_allowed = max(span_end - segment_samples, 0)
+        while cursor <= last_allowed:
+            starts.add(min(cursor, max(total_samples - segment_samples, 0)))
+            cursor += hop_samples
+        starts.add(min(last_allowed, max(total_samples - segment_samples, 0)))
+    return sorted(starts)
+
+
+def _segment_envelope_correlation(
+    noisy_audio: np.ndarray,
+    clean_audio: np.ndarray,
+    *,
+    sample_rate: int,
+) -> float:
+    noisy_env = _rms_envelope(noisy_audio, sample_rate=sample_rate)
+    clean_env = _rms_envelope(clean_audio, sample_rate=sample_rate)
+    count = min(noisy_env.size, clean_env.size)
+    if count <= 1:
+        return 0.0
+    noisy_env = noisy_env[:count]
+    clean_env = clean_env[:count]
+    noisy_std = float(np.std(noisy_env))
+    clean_std = float(np.std(clean_env))
+    if noisy_std < 1e-8 or clean_std < 1e-8:
+        return 0.0
+    corr = float(np.corrcoef(noisy_env, clean_env)[0, 1])
+    if np.isnan(corr):
+        return 0.0
+    return corr
+
+
+def _rms_envelope(audio: np.ndarray, *, sample_rate: int) -> np.ndarray:
+    frame_samples = max(1, int(round(sample_rate * 0.04)))
+    hop_samples = max(1, int(round(sample_rate * 0.02)))
+    values: list[float] = []
+    for start in range(0, max(len(audio) - frame_samples + 1, 1), hop_samples):
+        end = min(len(audio), start + frame_samples)
+        frame = audio[start:end]
+        if frame.size == 0:
+            continue
+        rms = float(np.sqrt(np.mean(np.square(frame)) + 1e-12))
+        values.append(rms)
+    return np.asarray(values, dtype=np.float32)
 
 
 def _segment_record_to_json(record: SegmentRecord) -> dict[str, object]:
@@ -322,6 +499,9 @@ def _segment_record_to_json(record: SegmentRecord) -> dict[str, object]:
         "split": record.split,
         "duration_seconds": round(record.duration_seconds, 6),
         "sample_rate": record.sample_rate,
+        "clean_active_ratio": round(record.clean_active_ratio, 6),
+        "noisy_active_ratio": round(record.noisy_active_ratio, 6),
+        "envelope_correlation": round(record.envelope_correlation, 6),
         "noisy_path": record.noisy_path.as_posix(),
         "clean_path": record.clean_path.as_posix(),
         "source_noisy_path": str(record.source_noisy_path),
@@ -336,6 +516,9 @@ def _write_training_readme(
     segment_seconds: float,
     hop_seconds: float,
     valid_fraction: float,
+    speech_centered: bool,
+    min_active_ratio: float,
+    min_envelope_correlation: float,
 ) -> None:
     content = (
         "# Paired Restoration Dataset\n\n"
@@ -350,6 +533,9 @@ def _write_training_readme(
         f"- sample rate: `{sample_rate}`\n"
         f"- segment length: `{segment_seconds}` seconds\n"
         f"- hop length: `{hop_seconds}` seconds\n"
+        f"- speech centered windows: `{speech_centered}`\n"
+        f"- min clean active ratio: `{min_active_ratio}`\n"
+        f"- min envelope correlation: `{min_envelope_correlation}`\n"
         f"- valid fraction: `{valid_fraction}`\n\n"
         "This layout matches the base directory structure expected by the official SGMSE training code.\n"
     )

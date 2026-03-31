@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from radcast.experiments.paired_restoration import (
     build_paired_dataset,
+    load_pairs_from_dataset_manifest,
     load_pairs_jsonl,
     parse_pair_argument,
 )
@@ -34,12 +35,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="JSONL file with noisy_path, clean_path, and optional pair_id fields.",
     )
+    source.add_argument(
+        "--dataset-manifest",
+        type=Path,
+        help="Existing paired-dataset manifest.jsonl with relative noisy_path/clean_path entries.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True, help="Dataset output folder")
     parser.add_argument("--sample-rate", type=int, default=48_000)
-    parser.add_argument("--segment-seconds", type=float, default=8.0)
-    parser.add_argument("--hop-seconds", type=float, default=4.0)
+    parser.add_argument("--segment-seconds", type=float, default=4.0)
+    parser.add_argument("--hop-seconds", type=float, default=2.0)
     parser.add_argument("--activity-threshold-db", type=float, default=-38.0)
-    parser.add_argument("--min-active-ratio", type=float, default=0.30)
+    parser.add_argument("--min-active-ratio", type=float, default=0.40)
+    parser.add_argument("--no-speech-centered", action="store_true", help="Disable speech-span window selection and use plain sliding windows")
+    parser.add_argument("--speech-pad-seconds", type=float, default=0.20)
+    parser.add_argument("--min-span-seconds", type=float, default=0.50)
+    parser.add_argument("--max-gap-seconds", type=float, default=0.18)
+    parser.add_argument("--min-envelope-correlation", type=float, default=0.70)
     parser.add_argument("--valid-fraction", type=float, default=0.2)
     parser.add_argument("--overwrite", action="store_true")
     return parser
@@ -47,7 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    if args.pairs_jsonl:
+    if args.dataset_manifest:
+        pairs = load_pairs_from_dataset_manifest(args.dataset_manifest)
+    elif args.pairs_jsonl:
         pairs = load_pairs_jsonl(args.pairs_jsonl.expanduser().resolve())
     else:
         pairs = [parse_pair_argument(raw) for raw in (args.pair or [])]
@@ -60,6 +73,11 @@ def main() -> None:
         hop_seconds=args.hop_seconds,
         activity_threshold_db=args.activity_threshold_db,
         min_active_ratio=args.min_active_ratio,
+        speech_centered=not args.no_speech_centered,
+        speech_pad_seconds=args.speech_pad_seconds,
+        min_span_seconds=args.min_span_seconds,
+        max_gap_seconds=args.max_gap_seconds,
+        min_envelope_correlation=args.min_envelope_correlation,
         valid_fraction=args.valid_fraction,
         overwrite=args.overwrite,
     )
