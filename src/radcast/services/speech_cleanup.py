@@ -220,6 +220,26 @@ class SpeechCleanupResult:
         return ", ".join(parts).capitalize() + "."
 
 
+def _estimate_window_count(
+    *,
+    total_duration: float,
+    window_seconds: float,
+    overlap_seconds: float,
+) -> int:
+    safe_duration = max(0.0, float(total_duration))
+    if safe_duration <= 0.0:
+        return 1
+    resolved_window_seconds = min(max(float(window_seconds), 1.0), safe_duration)
+    resolved_overlap_seconds = min(float(overlap_seconds), max(0.0, resolved_window_seconds / 2.0))
+    step_seconds = max(0.5, resolved_window_seconds - resolved_overlap_seconds)
+    return max(1, int(math.ceil(max(safe_duration - resolved_window_seconds, 0.0) / step_seconds)) + 1)
+
+
+def _windowed_stage_detail(detail: str, *, current_window: int, total_windows: int) -> str:
+    base = str(detail or "").strip().rstrip(".")
+    return f"{base}. Window {max(1, int(current_window))} of {max(1, int(total_windows))}."
+
+
 @dataclass(frozen=True)
 class CaptionExportResult:
     caption_path: Path
@@ -522,6 +542,11 @@ class SpeechCleanupService:
         caption_prompt = _build_caption_prompt(caption_glossary)
         profile = self._caption_profile_for_mode(quality_mode, caption_prompt=caption_prompt)
         caption_eta_seconds = self.estimate_caption_runtime_seconds(input_duration, quality_mode=quality_mode)
+        total_windows = _estimate_window_count(
+            total_duration=input_duration,
+            window_seconds=profile.window_seconds,
+            overlap_seconds=profile.overlap_seconds,
+        )
         started_at = time.monotonic()
         if on_stage:
             detail = (
@@ -529,7 +554,11 @@ class SpeechCleanupService:
                 if not self._model_cache_ready(profile.model_size)
                 else "Transcribing speech for captions."
             )
-            on_stage(0.02, detail, caption_eta_seconds)
+            on_stage(
+                0.02,
+                _windowed_stage_detail(detail, current_window=1, total_windows=total_windows),
+                caption_eta_seconds,
+            )
 
         with tempfile.TemporaryDirectory(prefix="radcast_captions_") as tmp:
             tmp_path = Path(tmp)
@@ -837,7 +866,11 @@ class SpeechCleanupService:
                     processed_windows = min(total_windows, window_index + 1)
                     on_stage(
                         progress,
-                        transcribe_detail,
+                        _windowed_stage_detail(
+                            transcribe_detail,
+                            current_window=processed_windows,
+                            total_windows=total_windows,
+                        ),
                         _windowed_transcription_eta_seconds(
                             elapsed_seconds=max(0.0, time.monotonic() - started_at),
                             cleanup_eta_seconds=cleanup_eta_seconds,
