@@ -617,6 +617,70 @@ def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossa
     assert "kaiwhakahaere" in str(captured["review_prompt"])
 
 
+def test_generate_caption_file_reviewed_mode_passes_selected_caption_backend(monkeypatch, tmp_path: Path):
+    from radcast.services import speech_cleanup as speech_cleanup_module
+
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    monkeypatch.setenv("RADCAST_RUNTIME_CONTEXT", "local_helper")
+    monkeypatch.setenv("RADCAST_CAPTION_BACKEND", "auto")
+    monkeypatch.setattr(speech_cleanup_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        speech_cleanup_module.WhisperCppCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.FasterWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+
+    captured: dict[str, object] = {}
+
+    def fake_transcribe_timeline(*args, **kwargs):
+        captured["backend_id"] = kwargs["backend"].id
+        return [], [
+            TranscriptSegmentTiming(
+                text="Organisation and tikanga need careful review here",
+                start=0.0,
+                end=1.1,
+                average_probability=0.35,
+            )
+        ]
+
+    monkeypatch.setattr(service, "_transcribe_timeline", fake_transcribe_timeline)
+    monkeypatch.setattr(
+        service,
+        "_review_and_correct_caption_segments",
+        lambda **kwargs: [
+            TranscriptSegmentTiming(
+                text="Organisation and tikanga Māori need careful review here",
+                start=0.0,
+                end=1.1,
+                average_probability=0.86,
+            )
+        ],
+    )
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+    )
+
+    assert result.caption_path.exists()
+    assert captured["backend_id"] == "whispercpp"
+    assert service.caption_backend_id == "whispercpp"
+
+
 def test_generate_caption_file_writes_review_notes_for_low_confidence_segments(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
