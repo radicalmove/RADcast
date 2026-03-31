@@ -119,6 +119,79 @@ def test_worker_timeout_failure_switches_to_server_fallback(monkeypatch):
     assert "Switching to RADcast server fallback." in str(called["reason"])
 
 
+def test_caption_only_worker_job_skips_fallback_watch_when_superseding_running_helper_job(monkeypatch):
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    sample_b64 = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkw"
+
+    monkeypatch.setattr("radcast.api.probe_duration_seconds", lambda path: 349.5)
+
+    scheduled: list[str] = []
+
+    def fake_schedule(job_id: str) -> None:
+        scheduled.append(job_id)
+
+    def fake_cancel(project_id_arg: str, *, reason: str):
+        assert reason == "superseded by a newer request"
+        return [
+            {
+                "job_id": "job_old",
+                "status": "running",
+                "assigned_worker_id": "wrk_b66a7fd434",
+                "type": "enhance",
+            }
+        ]
+
+    monkeypatch.setattr(radcast_api, "_schedule_worker_fallback_watch", fake_schedule)
+    monkeypatch.setattr(radcast_api, "WORKER_FALLBACK_ENABLED", True)
+    monkeypatch.setattr(radcast_api.worker_manager, "cancel_project_jobs", fake_cancel)
+    monkeypatch.setattr(
+        radcast_api,
+        "_worker_availability_snapshot",
+        lambda: {
+            "worker_total_count": 1,
+            "worker_online_count": 1,
+            "worker_online_window_seconds": 60,
+            "worker_summary": "1 live helper device",
+        },
+    )
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+
+        uploaded = client.post(
+            f"/projects/{project_id}/source-audio",
+            json={"filename": "lecture.wav", "audio_b64": sample_b64},
+        )
+        assert uploaded.status_code == 200
+        audio_hash = uploaded.json()["audio_hash"]
+
+        response = client.post(
+            "/enhance/simple",
+            json={
+                "project_id": project_id,
+                "input_audio_hash": audio_hash,
+                "output_format": "mp3",
+                "enhancement_model": "none",
+                "caption_format": "vtt",
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["worker_mode"] is True
+        assert payload["worker_fallback_timeout_seconds"] == 0
+        assert scheduled == []
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        project_root = Path("projects") / project_id
+        if project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_project_create_and_list_roundtrip():
     client = TestClient(app)
     project_id = f"radcast-{uuid.uuid4().hex[:8]}"
