@@ -209,8 +209,8 @@ class WorkerManager:
 
         return job_id
 
-    def cancel_project_jobs(self, project_id: str, *, reason: str) -> list[str]:
-        cancelled: list[str] = []
+    def cancel_project_jobs(self, project_id: str, *, reason: str) -> list[dict[str, Any]]:
+        cancelled: list[dict[str, Any]] = []
         with self._lock:
             jobs = self._read_list(self.jobs_path)
             changed = False
@@ -219,15 +219,23 @@ class WorkerManager:
                     continue
                 if entry.get("status") not in {"queued", "running", "fallback_local"}:
                     continue
+                cancelled.append(
+                    {
+                        "job_id": str(entry.get("job_id") or ""),
+                        "status": str(entry.get("status") or ""),
+                        "assigned_worker_id": entry.get("assigned_worker_id"),
+                        "type": str(entry.get("type") or ""),
+                    }
+                )
                 entry["status"] = "cancelled"
                 entry["error"] = reason
                 entry["updated_at"] = _now_iso()
-                cancelled.append(str(entry.get("job_id") or ""))
                 changed = True
             if changed:
                 self._write_list(self.jobs_path, jobs)
 
-        for job_id in cancelled:
+        for item in cancelled:
+            job_id = str(item.get("job_id") or "")
             if not job_id:
                 continue
             self._update_job_manifest(
@@ -239,7 +247,7 @@ class WorkerManager:
                 error=reason,
                 log=reason,
             )
-        return [job_id for job_id in cancelled if job_id]
+        return [item for item in cancelled if item.get("job_id")]
 
     def claim_job_for_local_fallback(
         self,

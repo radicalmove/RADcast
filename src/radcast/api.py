@@ -1565,7 +1565,7 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
                 resolved_clip_end_seconds = saved_trim.clip_end_seconds
 
     output_name = _build_output_name(input_audio_filename, req.output_name)
-    worker_manager.cancel_project_jobs(scoped_project_id, reason="superseded by a newer request")
+    cancelled_jobs = worker_manager.cancel_project_jobs(scoped_project_id, reason="superseded by a newer request")
     worker_req = WorkerEnhanceEnqueueRequest(
         project_id=scoped_project_id,
         input_audio_b64=base64.b64encode(input_audio_bytes).decode("utf-8"),
@@ -1584,7 +1584,17 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
     )
     job_id = worker_manager.enqueue_enhance_job(worker_req)
     worker_snapshot = _worker_availability_snapshot()
-    if WORKER_FALLBACK_ENABLED:
+    should_wait_for_local_helper = (
+        selected_model == EnhancementModel.NONE
+        and req.caption_format is not None
+        and any(
+            str(item.get("status") or "").lower() == "running"
+            and str(item.get("assigned_worker_id") or "") not in {"", "local-fallback"}
+            for item in cancelled_jobs
+            if isinstance(item, dict)
+        )
+    )
+    if WORKER_FALLBACK_ENABLED and not should_wait_for_local_helper:
         _schedule_worker_fallback_watch(job_id)
     return {
         "job_id": job_id,
@@ -1595,7 +1605,9 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         "output_name": output_name,
         "enhancement_model": selected_model.value,
         "worker_mode": True,
-        "worker_fallback_timeout_seconds": WORKER_FALLBACK_TIMEOUT_SECONDS if WORKER_FALLBACK_ENABLED else 0,
+        "worker_fallback_timeout_seconds": (
+            WORKER_FALLBACK_TIMEOUT_SECONDS if WORKER_FALLBACK_ENABLED and not should_wait_for_local_helper else 0
+        ),
         **worker_snapshot,
     }
 
