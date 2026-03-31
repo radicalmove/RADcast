@@ -557,7 +557,7 @@ class SpeechCleanupService:
             on_stage(
                 0.02,
                 _windowed_stage_detail(detail, current_window=1, total_windows=total_windows),
-                caption_eta_seconds,
+                caption_eta_seconds if total_windows <= 1 else None,
             )
 
         with tempfile.TemporaryDirectory(prefix="radcast_captions_") as tmp:

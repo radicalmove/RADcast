@@ -755,6 +755,35 @@ def test_generate_caption_file_announces_first_window_before_transcription(monke
     assert stages[0][2] == 90
 
 
+def test_generate_caption_file_defers_eta_for_multiwindow_caption_runs(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    tone_t = np.linspace(0.0, 0.5, int(sample_rate * 0.5), endpoint=False)
+    audio = (0.1 * np.sin(2.0 * np.pi * 220.0 * tone_t)).astype(np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    stages: list[tuple[float, str, int | None]] = []
+
+    monkeypatch.setattr(service, "_model_cache_ready", lambda _model_size: False)
+    monkeypatch.setattr(service, "estimate_caption_runtime_seconds", lambda *_args, **_kwargs: 700)
+    monkeypatch.setattr("radcast.services.speech_cleanup.probe_duration_seconds", lambda _path: 349.5)
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst, *, audio_filters=None: shutil.copy2(src, dst))
+    monkeypatch.setattr(service, "_transcribe_timeline", lambda *_args, **_kwargs: ([], []))
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+        on_stage=lambda progress, detail, eta: stages.append((progress, detail, eta)),
+    )
+
+    assert result.caption_path.exists()
+    assert stages[0][0] == 0.02
+    assert "Window 1 of 27." in stages[0][1]
+    assert stages[0][2] is None
+
+
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     tone_t = np.linspace(0.0, 0.28, int(sample_rate * 0.28), endpoint=False)
