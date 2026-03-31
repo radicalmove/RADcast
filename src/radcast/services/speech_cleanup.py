@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import re
 import shutil
@@ -614,9 +615,20 @@ class SpeechCleanupService:
                 raise EnhancementRuntimeError(
                     "faster-whisper is required for speech cleanup. Install with 'pip install -e .'."
                 ) from exc
+            self._evict_cached_models_except(resolved_model_size)
             model = WhisperModel(resolved_model_size, device=self.device, compute_type=self.compute_type)
-            self._models[resolved_model_size] = model
+            self._models = {resolved_model_size: model}
             return model
+
+    def _evict_cached_models_except(self, keep_model_size: str) -> None:
+        if not self._models:
+            return
+        stale_keys = [key for key in self._models.keys() if key != keep_model_size]
+        if not stale_keys:
+            return
+        for key in stale_keys:
+            self._models.pop(key, None)
+        gc.collect()
 
     def _transcribe_file(
         self,

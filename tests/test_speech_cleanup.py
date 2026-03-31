@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import shutil
 import wave
 from pathlib import Path
@@ -651,6 +652,26 @@ def test_estimate_caption_runtime_seconds_for_reviewed_mode_accounts_for_review_
     warm_seconds = service.estimate_caption_runtime_seconds(120, quality_mode=CaptionQualityMode.REVIEWED)
 
     assert cold_seconds > warm_seconds
+
+
+def test_load_model_evicts_other_cached_models(monkeypatch):
+    service = SpeechCleanupService()
+
+    class FakeWhisperModel:
+        def __init__(self, model_size: str, device: str | None = None, compute_type: str | None = None):
+            self.model_size = model_size
+            self.device = device
+            self.compute_type = compute_type
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel))
+
+    medium_model = service._load_model("medium")
+    assert service._models.keys() == {"medium"}
+
+    large_model = service._load_model("large-v3")
+    assert service._models.keys() == {"large-v3"}
+    assert medium_model is not large_model
+    assert service._load_model("large-v3") is large_model
 
 
 def test_transcription_eta_stays_conservative_until_late_caption_stage():
