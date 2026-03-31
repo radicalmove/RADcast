@@ -246,6 +246,24 @@ def test_heartbeat_progress_does_not_creep_without_window_detail():
     assert progressed == base_progress
 
 
+def test_heartbeat_progress_creeps_windowed_caption_stage_without_eta():
+    base_progress = 0.2549
+
+    progressed = _heartbeat_progress(
+        base_progress,
+        stage="captions",
+        detail="Transcribing speech for captions. Window 1 of 27.",
+        progress_updated_at_monotonic=10.0,
+        cleanup_requested=False,
+        caption_requested=True,
+        enhancement_requested=False,
+        remaining_eta_seconds=None,
+        now_monotonic=130.0,
+    )
+
+    assert progressed > base_progress
+
+
 def test_apply_local_caption_defaults_on_macos(monkeypatch):
     for key in (
         "RADCAST_RUNTIME_CONTEXT",

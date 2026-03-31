@@ -793,6 +793,23 @@ def test_windowed_transcription_eta_stays_conservative_across_tail():
     ) >= 8
 
 
+def test_windowed_transcription_eta_defers_until_third_window():
+    assert _windowed_transcription_eta_seconds(
+        elapsed_seconds=25,
+        cleanup_eta_seconds=140,
+        processed_windows=1,
+        total_windows=6,
+        coverage=0.17,
+    ) is None
+    assert _windowed_transcription_eta_seconds(
+        elapsed_seconds=33,
+        cleanup_eta_seconds=140,
+        processed_windows=2,
+        total_windows=6,
+        coverage=0.34,
+    ) is None
+
+
 def test_windowed_caption_progress_detail_includes_window_counts(monkeypatch, tmp_path: Path):
     service = SpeechCleanupService()
     details: list[str] = []

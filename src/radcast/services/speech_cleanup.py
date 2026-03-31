@@ -1340,25 +1340,22 @@ def _windowed_transcription_eta_seconds(
     processed_windows: int,
     total_windows: int,
     coverage: float,
-) -> int:
+) -> int | None:
     safe_processed_windows = max(1, int(processed_windows))
     safe_total_windows = max(safe_processed_windows, int(total_windows))
+    if safe_processed_windows < 3 and safe_total_windows > 1:
+        return None
     remaining_windows = max(0, safe_total_windows - safe_processed_windows)
     average_window_seconds = max(1.0, float(elapsed_seconds) / safe_processed_windows)
     window_projection = remaining_windows * average_window_seconds
-    coverage_projection = _transcription_eta_seconds(
-        elapsed_seconds=elapsed_seconds,
-        cleanup_eta_seconds=cleanup_eta_seconds,
-        coverage=coverage,
-    )
-    remaining = max(window_projection, coverage_projection * 0.95)
+    remaining = window_projection
     progress_ratio = safe_processed_windows / safe_total_windows
-    if progress_ratio < 0.3:
-        remaining *= 1.22
+    if progress_ratio < 0.35:
+        remaining *= 1.12
     elif progress_ratio < 0.55:
-        remaining *= 1.14
-    elif progress_ratio < 0.8:
         remaining *= 1.08
+    elif progress_ratio < 0.8:
+        remaining *= 1.04
     remaining += 6.0
     if remaining_windows >= 6:
         floor_seconds = 24
