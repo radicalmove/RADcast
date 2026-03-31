@@ -15,7 +15,7 @@ from radcast.api import app
 from radcast.exceptions import JobCancelledError
 from radcast.models import CaptionFormat, FillerRemovalMode
 from radcast.services.speech_cleanup import SpeechCleanupResult
-from radcast.worker_client import WorkerClient
+from radcast.worker_client import WorkerClient, _heartbeat_eta_seconds, _heartbeat_progress
 
 
 def test_worker_queue_round_trip_completes_job(monkeypatch):
@@ -195,6 +195,49 @@ def test_worker_progress_preserves_helper_cleanup_stage(monkeypatch):
         project_root = Path("projects") / project_id
         if project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_heartbeat_eta_counts_down():
+    assert _heartbeat_eta_seconds(120, 10.0, now_monotonic=40.0) == 90
+    assert _heartbeat_eta_seconds(10, 10.0, now_monotonic=40.0) == 0
+    assert _heartbeat_eta_seconds(None, 10.0, now_monotonic=40.0) is None
+
+
+def test_heartbeat_progress_creeps_windowed_caption_stage():
+    base_progress = 0.2549
+
+    progressed = _heartbeat_progress(
+        base_progress,
+        stage="captions",
+        detail="Transcribing speech for captions. Window 1 of 27.",
+        progress_updated_at_monotonic=10.0,
+        cleanup_requested=False,
+        caption_requested=True,
+        enhancement_requested=False,
+        remaining_eta_seconds=700,
+        now_monotonic=130.0,
+    )
+
+    assert progressed > base_progress
+    assert progressed < 0.985
+
+
+def test_heartbeat_progress_does_not_creep_without_window_detail():
+    base_progress = 0.2549
+
+    progressed = _heartbeat_progress(
+        base_progress,
+        stage="captions",
+        detail="Transcribing speech for captions.",
+        progress_updated_at_monotonic=10.0,
+        cleanup_requested=False,
+        caption_requested=True,
+        enhancement_requested=False,
+        remaining_eta_seconds=700,
+        now_monotonic=130.0,
+    )
+
+    assert progressed == base_progress
 
 
 def test_worker_completion_applies_server_side_speech_cleanup(monkeypatch):
