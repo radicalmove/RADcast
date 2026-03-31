@@ -6,6 +6,8 @@ import argparse
 import base64
 import json
 import logging
+import os
+import platform
 import re
 import socket
 import tempfile
@@ -30,6 +32,12 @@ from radcast.utils.audio import probe_duration_seconds
 
 LOG = logging.getLogger("radcast.worker")
 _WINDOW_DETAIL_RE = re.compile(r"\bWindow\s+(\d+)\s+of\s+(\d+)\b", re.IGNORECASE)
+_MACOS_LOCAL_CAPTION_DEFAULTS = {
+    "RADCAST_CAPTION_ACCURATE_MODEL": "small",
+    "RADCAST_CAPTION_ACCURATE_BEAM_SIZE": "3",
+    "RADCAST_CAPTION_REVIEWED_MODEL": "medium",
+    "RADCAST_CAPTION_REVIEWED_BEAM_SIZE": "3",
+}
 
 
 def _heartbeat_eta_seconds(
@@ -91,6 +99,13 @@ def _heartbeat_progress(
     return min(soft_target, float(progress) + ((soft_target - float(progress)) * creep_ratio))
 
 
+def _apply_local_caption_defaults() -> None:
+    if platform.system().lower() != "darwin":
+        return
+    for key, value in _MACOS_LOCAL_CAPTION_DEFAULTS.items():
+        os.environ.setdefault(key, value)
+
+
 class WorkerClient:
     def __init__(
         self,
@@ -110,6 +125,7 @@ class WorkerClient:
         self.worker_id: str | None = None
         self.api_key: str | None = None
 
+        _apply_local_caption_defaults()
         self.session = requests.Session()
         self.enhance_service = EnhanceService()
         self.speech_cleanup_service = SpeechCleanupService()

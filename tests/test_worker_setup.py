@@ -66,6 +66,10 @@ def test_macos_launch_agent_payload_sets_program_arguments(tmp_path: Path):
     assert "ProgramArguments" in payload
     assert "PATH" in payload["EnvironmentVariables"]
     assert payload["EnvironmentVariables"]["RADCAST_STUDIO_V18_ENHANCE_DEVICE"] == "cpu"
+    assert payload["EnvironmentVariables"]["RADCAST_CAPTION_ACCURATE_MODEL"] == "small"
+    assert payload["EnvironmentVariables"]["RADCAST_CAPTION_ACCURATE_BEAM_SIZE"] == "3"
+    assert payload["EnvironmentVariables"]["RADCAST_CAPTION_REVIEWED_MODEL"] == "medium"
+    assert payload["EnvironmentVariables"]["RADCAST_CAPTION_REVIEWED_BEAM_SIZE"] == "3"
     assert payload["WorkingDirectory"] == str((tmp_path / ".radcast").resolve())
     assert payload["ProcessType"] == "Background"
     assert payload["KeepAlive"] == {"SuccessfulExit": False, "Crashed": True}

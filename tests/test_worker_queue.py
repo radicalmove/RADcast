@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import shutil
 import threading
 import time
@@ -15,7 +16,12 @@ from radcast.api import app
 from radcast.exceptions import JobCancelledError
 from radcast.models import CaptionFormat, FillerRemovalMode
 from radcast.services.speech_cleanup import SpeechCleanupResult
-from radcast.worker_client import WorkerClient, _heartbeat_eta_seconds, _heartbeat_progress
+from radcast.worker_client import (
+    WorkerClient,
+    _apply_local_caption_defaults,
+    _heartbeat_eta_seconds,
+    _heartbeat_progress,
+)
 
 
 def test_worker_queue_round_trip_completes_job(monkeypatch):
@@ -238,6 +244,35 @@ def test_heartbeat_progress_does_not_creep_without_window_detail():
     )
 
     assert progressed == base_progress
+
+
+def test_apply_local_caption_defaults_on_macos(monkeypatch):
+    for key in (
+        "RADCAST_CAPTION_ACCURATE_MODEL",
+        "RADCAST_CAPTION_ACCURATE_BEAM_SIZE",
+        "RADCAST_CAPTION_REVIEWED_MODEL",
+        "RADCAST_CAPTION_REVIEWED_BEAM_SIZE",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr("radcast.worker_client.platform.system", lambda: "Darwin")
+
+    _apply_local_caption_defaults()
+
+    assert os.environ["RADCAST_CAPTION_ACCURATE_MODEL"] == "small"
+    assert os.environ["RADCAST_CAPTION_ACCURATE_BEAM_SIZE"] == "3"
+    assert os.environ["RADCAST_CAPTION_REVIEWED_MODEL"] == "medium"
+    assert os.environ["RADCAST_CAPTION_REVIEWED_BEAM_SIZE"] == "3"
+
+
+def test_apply_local_caption_defaults_does_not_override_explicit_env(monkeypatch):
+    monkeypatch.setenv("RADCAST_CAPTION_ACCURATE_MODEL", "medium")
+    monkeypatch.setenv("RADCAST_CAPTION_REVIEWED_MODEL", "large-v3")
+    monkeypatch.setattr("radcast.worker_client.platform.system", lambda: "Darwin")
+
+    _apply_local_caption_defaults()
+
+    assert os.environ["RADCAST_CAPTION_ACCURATE_MODEL"] == "medium"
+    assert os.environ["RADCAST_CAPTION_REVIEWED_MODEL"] == "large-v3"
 
 
 def test_worker_completion_applies_server_side_speech_cleanup(monkeypatch):

@@ -84,6 +84,12 @@ def macos_launch_agent_payload(*, label: str, python_exe: Path, server_url: str,
     logs_dir.mkdir(parents=True, exist_ok=True)
     environment = {"PATH": default_worker_path([str(python_exe.parent)])}
     environment.setdefault("RADCAST_STUDIO_V18_ENHANCE_DEVICE", "cpu")
+    # Apple Silicon local helpers handle reviewed captions much more reliably with a lighter
+    # first-pass model and a smaller review model. The server path remains unchanged.
+    environment.setdefault("RADCAST_CAPTION_ACCURATE_MODEL", "small")
+    environment.setdefault("RADCAST_CAPTION_ACCURATE_BEAM_SIZE", "3")
+    environment.setdefault("RADCAST_CAPTION_REVIEWED_MODEL", "medium")
+    environment.setdefault("RADCAST_CAPTION_REVIEWED_BEAM_SIZE", "3")
     return {
         "Label": label,
         "ProgramArguments": build_worker_command_args(

@@ -655,7 +655,9 @@ def test_estimate_caption_runtime_seconds_for_reviewed_mode_accounts_for_review_
     assert cold_seconds > warm_seconds
 
 
-def test_caption_beam_defaults_are_local_helper_friendly():
+def test_caption_beam_defaults_are_local_helper_friendly(monkeypatch):
+    monkeypatch.delenv("RADCAST_CAPTION_ACCURATE_BEAM_SIZE", raising=False)
+    monkeypatch.delenv("RADCAST_CAPTION_REVIEWED_BEAM_SIZE", raising=False)
     service = SpeechCleanupService()
 
     assert service.caption_accurate_beam_size == 3
