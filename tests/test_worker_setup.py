@@ -65,6 +65,8 @@ def test_macos_launch_agent_payload_sets_program_arguments(tmp_path: Path):
     assert payload["Label"] == "com.radcast.worker"
     assert "ProgramArguments" in payload
     assert "PATH" in payload["EnvironmentVariables"]
+    assert payload["EnvironmentVariables"]["RADCAST_RUNTIME_CONTEXT"] == "local_helper"
+    assert payload["EnvironmentVariables"]["RADCAST_CAPTION_BACKEND"] == "auto"
     assert payload["EnvironmentVariables"]["RADCAST_STUDIO_V18_ENHANCE_DEVICE"] == "cpu"
     assert payload["EnvironmentVariables"]["RADCAST_CAPTION_ACCURATE_MODEL"] == "small"
     assert payload["EnvironmentVariables"]["RADCAST_CAPTION_ACCURATE_BEAM_SIZE"] == "3"

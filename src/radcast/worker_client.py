@@ -102,6 +102,8 @@ def _heartbeat_progress(
 def _apply_local_caption_defaults() -> None:
     if platform.system().lower() != "darwin":
         return
+    os.environ.setdefault("RADCAST_RUNTIME_CONTEXT", "local_helper")
+    os.environ.setdefault("RADCAST_CAPTION_BACKEND", "auto")
     for key, value in _MACOS_LOCAL_CAPTION_DEFAULTS.items():
         os.environ.setdefault(key, value)
 

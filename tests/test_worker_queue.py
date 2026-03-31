@@ -248,6 +248,8 @@ def test_heartbeat_progress_does_not_creep_without_window_detail():
 
 def test_apply_local_caption_defaults_on_macos(monkeypatch):
     for key in (
+        "RADCAST_RUNTIME_CONTEXT",
+        "RADCAST_CAPTION_BACKEND",
         "RADCAST_CAPTION_ACCURATE_MODEL",
         "RADCAST_CAPTION_ACCURATE_BEAM_SIZE",
         "RADCAST_CAPTION_REVIEWED_MODEL",
@@ -258,6 +260,8 @@ def test_apply_local_caption_defaults_on_macos(monkeypatch):
 
     _apply_local_caption_defaults()
 
+    assert os.environ["RADCAST_RUNTIME_CONTEXT"] == "local_helper"
+    assert os.environ["RADCAST_CAPTION_BACKEND"] == "auto"
     assert os.environ["RADCAST_CAPTION_ACCURATE_MODEL"] == "small"
     assert os.environ["RADCAST_CAPTION_ACCURATE_BEAM_SIZE"] == "3"
     assert os.environ["RADCAST_CAPTION_REVIEWED_MODEL"] == "medium"

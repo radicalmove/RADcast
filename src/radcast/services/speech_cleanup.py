@@ -25,7 +25,12 @@ from radcast.services.caption_backend_selection import (
     CaptionBackendSelectionError,
     resolve_caption_backend_id,
 )
-from radcast.services.caption_backends import CaptionTranscriptionResult, FasterWhisperCaptionBackend
+from radcast.services.caption_backends import (
+    CaptionBackend,
+    CaptionTranscriptionResult,
+    FasterWhisperCaptionBackend,
+    WhisperCppCaptionBackend,
+)
 from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
 
 CleanupStageCallback = Callable[[float, str, int | None], None]
@@ -325,7 +330,27 @@ class SpeechCleanupService:
         self.caption_fast_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_FAST_BEAM_SIZE", str(self.beam_size))))
         self.caption_accurate_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_ACCURATE_BEAM_SIZE", "3")))
         self.caption_reviewed_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_REVIEWED_BEAM_SIZE", "5")))
-        available_backends = {"faster_whisper"}
+        faster_backend = FasterWhisperCaptionBackend(
+            default_model_size=self.cleanup_model_size,
+            device=self.device,
+            compute_type=self.compute_type,
+            transcribe_language=self.transcribe_language,
+            default_beam_size=self.beam_size,
+        )
+        whispercpp_backend = WhisperCppCaptionBackend(
+            default_model_size=self.cleanup_model_size,
+            transcribe_language=self.transcribe_language,
+            default_beam_size=self.beam_size,
+        )
+        self._caption_backends: dict[str, CaptionBackend] = {
+            faster_backend.id: faster_backend,
+            whispercpp_backend.id: whispercpp_backend,
+        }
+        available_backends = {
+            backend_id
+            for backend_id, backend in self._caption_backends.items()
+            if backend.capability_status()[0]
+        }
         try:
             self.caption_backend_id = resolve_caption_backend_id(
                 os.environ.get("RADCAST_CAPTION_BACKEND", "auto"),
@@ -335,18 +360,11 @@ class SpeechCleanupService:
             )
         except CaptionBackendSelectionError as exc:
             raise EnhancementRuntimeError(str(exc)) from exc
-        if self.caption_backend_id != "faster_whisper":
-            raise EnhancementRuntimeError(f"Caption backend '{self.caption_backend_id}' is not implemented yet")
-        self._caption_backend = FasterWhisperCaptionBackend(
-            default_model_size=self.cleanup_model_size,
-            device=self.device,
-            compute_type=self.compute_type,
-            transcribe_language=self.transcribe_language,
-            default_beam_size=self.beam_size,
-        )
+        self._caption_backend = self._caption_backends[self.caption_backend_id]
+        self._faster_whisper_backend = faster_backend
         # Preserve the existing cache inspection surface while the orchestration layer
         # is being migrated to backend-owned transcription.
-        self._models = self._caption_backend._models
+        self._models = getattr(self._caption_backend, "_models", {})
 
     def estimate_caption_runtime_seconds(
         self,
@@ -601,6 +619,7 @@ class SpeechCleanupService:
                 cancel_check=cancel_check,
                 force_windowed=True,
                 preserve_fillers=False,
+                backend=self._caption_backend,
                 model_size=profile.model_size,
                 beam_size=profile.beam_size,
                 condition_on_previous_text=profile.condition_on_previous_text,
@@ -654,10 +673,11 @@ class SpeechCleanupService:
             quality_report=quality_report,
         )
 
-    def _load_model(self, model_size: str | None = None):
+    def _load_model(self, model_size: str | None = None, *, backend: CaptionBackend | None = None):
+        selected_backend = backend or self._faster_whisper_backend
         try:
-            model = self._caption_backend.load_model(model_size)
-            self._models = self._caption_backend._models
+            model = selected_backend.load_model(model_size)
+            self._models = getattr(selected_backend, "_models", {})
             return model
         except RuntimeError as exc:
             raise EnhancementRuntimeError(
@@ -665,8 +685,8 @@ class SpeechCleanupService:
             ) from exc
 
     def _evict_cached_models_except(self, keep_model_size: str) -> None:
-        self._caption_backend._evict_cached_models_except(keep_model_size)
-        self._models = self._caption_backend._models
+        self._faster_whisper_backend._evict_cached_models_except(keep_model_size)
+        self._models = self._faster_whisper_backend._models
         gc.collect()
 
     def _transcribe_file(
@@ -675,14 +695,26 @@ class SpeechCleanupService:
         audio_path: Path,
         *,
         preserve_fillers: bool,
+        backend: CaptionBackend | None = None,
+        model_size: str | None = None,
         beam_size: int | None = None,
         condition_on_previous_text: bool = False,
         initial_prompt: str | None = None,
     ):
+        selected_backend = backend or self._faster_whisper_backend
         prompt_text = initial_prompt
         if preserve_fillers and not prompt_text:
             prompt_text = _AGGRESSIVE_FILLER_PROMPT
-        return self._caption_backend.transcribe_loaded_model(
+        if selected_backend.id == "whispercpp":
+            return selected_backend.transcribe_chunk(
+                audio_path,
+                preserve_fillers=preserve_fillers,
+                model_size=model_size,
+                beam_size=beam_size,
+                condition_on_previous_text=condition_on_previous_text,
+                initial_prompt=prompt_text,
+            )
+        return selected_backend.transcribe_loaded_model(
             model,
             audio_path,
             preserve_fillers=preserve_fillers,
@@ -705,6 +737,7 @@ class SpeechCleanupService:
         cancel_check: Callable[[], bool] | None = None,
         force_windowed: bool = False,
         preserve_fillers: bool = False,
+        backend: CaptionBackend | None = None,
         model_size: str | None = None,
         beam_size: int | None = None,
         condition_on_previous_text: bool = False,
@@ -727,6 +760,7 @@ class SpeechCleanupService:
                 transcribe_detail=transcribe_detail,
                 cancel_check=cancel_check,
                 preserve_fillers=preserve_fillers or (remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE),
+                backend=backend,
                 model_size=model_size,
                 beam_size=effective_beam_size,
                 condition_on_previous_text=condition_on_previous_text,
@@ -737,16 +771,24 @@ class SpeechCleanupService:
 
         if cancel_check and cancel_check():
             raise JobCancelledError("job cancelled")
-        model = self._load_model(model_size)
+        selected_backend = backend or self._faster_whisper_backend
+        if selected_backend.id == "whispercpp":
+            model = None
+        elif selected_backend is self._faster_whisper_backend:
+            model = self._load_model(model_size)
+        else:
+            model = self._load_model(model_size, backend=selected_backend)
 
-        transcription = self._transcribe_file(
-            model,
-            audio_path,
-            preserve_fillers=preserve_fillers,
-            beam_size=effective_beam_size,
-            condition_on_previous_text=condition_on_previous_text,
-            initial_prompt=initial_prompt,
-        )
+        transcribe_kwargs = {
+            "preserve_fillers": preserve_fillers,
+            "beam_size": effective_beam_size,
+            "condition_on_previous_text": condition_on_previous_text,
+            "initial_prompt": initial_prompt,
+        }
+        if selected_backend.id == "whispercpp":
+            transcribe_kwargs["backend"] = selected_backend
+            transcribe_kwargs["model_size"] = model_size
+        transcription = self._transcribe_file(model, audio_path, **transcribe_kwargs)
         words, segments = _collect_timing_rows(
             transcription,
             window_offset_seconds=0.0,
@@ -790,6 +832,7 @@ class SpeechCleanupService:
         transcribe_detail: str = "Transcribing speech timing for cleanup.",
         cancel_check: Callable[[], bool] | None = None,
         preserve_fillers: bool = False,
+        backend: CaptionBackend | None = None,
         model_size: str | None = None,
         beam_size: int | None = None,
         condition_on_previous_text: bool = False,
@@ -799,7 +842,13 @@ class SpeechCleanupService:
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         if cancel_check and cancel_check():
             raise JobCancelledError("job cancelled")
-        model = self._load_model(model_size)
+        selected_backend = backend or self._faster_whisper_backend
+        if selected_backend.id == "whispercpp":
+            model = None
+        elif selected_backend is self._faster_whisper_backend:
+            model = self._load_model(model_size)
+        else:
+            model = self._load_model(model_size, backend=selected_backend)
         waveform, sample_rate = _read_pcm16_wav(audio_path)
         total_duration = max(0.0, float(total_duration))
         if total_duration <= 0.0:
@@ -824,14 +873,16 @@ class SpeechCleanupService:
                 end_idx = max(start_idx, min(len(waveform), int(round(window_end * sample_rate))))
                 window_path = tmp_path / f"window_{int(round(window_start * 1000)):06d}.wav"
                 _write_pcm16_wav(window_path, waveform[start_idx:end_idx], sample_rate=sample_rate)
-                transcribed_segments = self._transcribe_file(
-                    model,
-                    window_path,
-                    preserve_fillers=preserve_fillers,
-                    beam_size=beam_size,
-                    condition_on_previous_text=condition_on_previous_text,
-                    initial_prompt=initial_prompt,
-                )
+                transcribe_kwargs = {
+                    "preserve_fillers": preserve_fillers,
+                    "beam_size": beam_size,
+                    "condition_on_previous_text": condition_on_previous_text,
+                    "initial_prompt": initial_prompt,
+                }
+                if selected_backend.id == "whispercpp":
+                    transcribe_kwargs["backend"] = selected_backend
+                    transcribe_kwargs["model_size"] = model_size
+                transcribed_segments = self._transcribe_file(model, window_path, **transcribe_kwargs)
 
                 left_guard_seconds = 0.0 if window_index == 0 else resolved_overlap_seconds / 2.0
                 right_guard_seconds = 0.0 if window_end >= total_duration - 1e-6 else resolved_overlap_seconds / 2.0

@@ -83,6 +83,8 @@ def macos_launch_agent_payload(*, label: str, python_exe: Path, server_url: str,
     logs_dir = config_path.parent
     logs_dir.mkdir(parents=True, exist_ok=True)
     environment = {"PATH": default_worker_path([str(python_exe.parent)])}
+    environment.setdefault("RADCAST_RUNTIME_CONTEXT", "local_helper")
+    environment.setdefault("RADCAST_CAPTION_BACKEND", "auto")
     environment.setdefault("RADCAST_STUDIO_V18_ENHANCE_DEVICE", "cpu")
     # Apple Silicon local helpers handle reviewed captions much more reliably with a lighter
     # first-pass model and a smaller review model. The server path remains unchanged.

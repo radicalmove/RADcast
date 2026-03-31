@@ -23,6 +23,29 @@ from radcast.services.speech_cleanup import (
 )
 
 
+def test_speech_cleanup_selects_whispercpp_for_macos_local_helper(monkeypatch):
+    from radcast.services import speech_cleanup as speech_cleanup_module
+
+    monkeypatch.setenv("RADCAST_RUNTIME_CONTEXT", "local_helper")
+    monkeypatch.setenv("RADCAST_CAPTION_BACKEND", "auto")
+    monkeypatch.setattr(speech_cleanup_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        speech_cleanup_module.WhisperCppCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.FasterWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+
+    service = SpeechCleanupService()
+
+    assert service.caption_backend_id == "whispercpp"
+    assert service._caption_backend.id == "whispercpp"
+
+
 def _write_test_wav(path: Path, samples: np.ndarray, *, sample_rate: int = 16000) -> None:
     clipped = np.clip(samples, -1.0, 1.0 - (1.0 / 32768.0))
     pcm = np.round(clipped * 32767.0).astype("<i2")

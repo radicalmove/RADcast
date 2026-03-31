@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+from pathlib import Path
 from typing import cast
 from types import SimpleNamespace
 
@@ -109,3 +111,83 @@ def test_faster_whisper_backend_normalizes_transcription(monkeypatch, tmp_path):
     assert result.segments[0].text == "hello world"
     assert len(result.words) == 2
     assert result.words[0].text == "hello"
+
+
+def test_whispercpp_backend_reports_missing_binary(monkeypatch):
+    from radcast.services import caption_backends
+
+    monkeypatch.setattr(caption_backends.shutil, "which", lambda _name: None)
+    backend = caption_backends.WhisperCppCaptionBackend(
+        default_model_size="small",
+        transcribe_language="en",
+        default_beam_size=3,
+    )
+
+    available, detail = backend.capability_status()
+
+    assert available is False
+    assert "whisper.cpp" in detail
+
+
+def test_whispercpp_backend_runs_cli_and_normalizes_json(monkeypatch, tmp_path):
+    from radcast.services import caption_backends
+
+    binary_path = tmp_path / "whisper-cli"
+    binary_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    model_path = tmp_path / "ggml-small.bin"
+    model_path.write_bytes(b"demo-model")
+    recorded: dict[str, list[str]] = {}
+
+    def fake_run(cmd, capture_output, text, check):
+        recorded["cmd"] = list(cmd)
+        output_base = cmd[cmd.index("--output-file") + 1]
+        json_path = Path(output_base).with_suffix(".json")
+        json_path.write_text(
+            json.dumps(
+                {
+                    "transcription": [
+                        {
+                            "text": "hello world",
+                            "offsets": {"from": 0, "to": 120},
+                            "words": [
+                                {"text": "hello", "t0": 0, "t1": 45, "p": 0.91},
+                                {"text": "world", "t0": 45, "t1": 120, "p": 0.94},
+                            ],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(caption_backends.subprocess, "run", fake_run)
+    backend = caption_backends.WhisperCppCaptionBackend(
+        default_model_size="small",
+        transcribe_language="en",
+        default_beam_size=3,
+        binary_path=str(binary_path),
+        model_dir=str(tmp_path),
+        use_gpu=False,
+    )
+
+    result = backend.transcribe_chunk(
+        tmp_path / "sample.wav",
+        preserve_fillers=False,
+        beam_size=5,
+        initial_prompt="Prompt text",
+    )
+
+    assert recorded["cmd"][0] == str(binary_path)
+    assert "--output-json-full" in recorded["cmd"]
+    assert "--output-file" in recorded["cmd"]
+    assert "--max-context" in recorded["cmd"]
+    assert "--no-gpu" in recorded["cmd"]
+    assert "--prompt" in recorded["cmd"]
+    assert result.model_id == "small"
+    assert result.text == "hello world"
+    assert len(result.segments) == 1
+    assert result.segments[0].start == pytest.approx(0.0)
+    assert result.segments[0].end == pytest.approx(1.2)
+    assert len(result.words) == 2
+    assert result.words[1].text == "world"
