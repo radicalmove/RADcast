@@ -2180,21 +2180,26 @@ function inferComputeMode(stage, logs) {
   const joinedLogs = rows.join(" ");
   const latestLog = rows.length ? rows[rows.length - 1] : "";
   const normalizedStage = String(stage || "").toLowerCase();
+  const sawWorkerStart = joinedLogs.includes("worker ") && joinedLogs.includes("started processing");
   if (normalizedStage === "queued_remote") return "waiting_worker";
   if (normalizedStage === "cleanup") {
     if (latestLog.includes("local helper device")) return "worker";
     if (latestLog.includes("radcast server")) return "server";
+    if (sawWorkerStart) return "worker";
+    if (state.expectedRemoteWorker && state.computeMode !== "server") return "worker";
     return state.computeMode === "worker" ? "worker" : "server";
   }
   if (normalizedStage === "captions") {
     if (latestLog.includes("local helper device")) return "worker";
     if (latestLog.includes("radcast server")) return "server";
-    return "server";
+    if (sawWorkerStart) return "worker";
+    if (state.expectedRemoteWorker && state.computeMode !== "server") return "worker";
+    return state.computeMode === "worker" ? "worker" : "server";
   }
   if (normalizedStage === "worker_running") return "worker";
   if (latestLog.includes("local helper device")) return "worker";
   if (latestLog.includes("radcast server")) return "server";
-  if (joinedLogs.includes("worker ") && joinedLogs.includes("started processing")) return "worker";
+  if (sawWorkerStart) return "worker";
   if (joinedLogs.includes("local server fallback") || normalizedStage === "fallback_local") return "server";
   if (state.expectedRemoteWorker && !["completed", "failed", "cancelled"].includes(normalizedStage) && state.computeMode !== "server") {
     return "waiting_worker";
