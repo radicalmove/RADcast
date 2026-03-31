@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import re
 import shutil
@@ -41,21 +42,16 @@ _FILLER_MAX_DURATION_SECONDS = 1.35
 _CUT_CROSSFADE_SECONDS = 0.012
 _TRANSCRIBE_PROGRESS_MIN_INTERVAL_SECONDS = 0.8
 _TOKEN_RE = re.compile(r"[^a-z']+")
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _AGGRESSIVE_TRANSCRIBE_WINDOW_SECONDS = 8.0
 _AGGRESSIVE_TRANSCRIBE_OVERLAP_SECONDS = 2.0
 _CAPTION_FAST_WINDOW_SECONDS = 8.0
 _CAPTION_FAST_OVERLAP_SECONDS = 1.5
 _CAPTION_ACCURATE_WINDOW_SECONDS = 12.0
 _CAPTION_ACCURATE_OVERLAP_SECONDS = 2.5
-_CAPTION_REVIEWED_WINDOW_SECONDS = 24.0
-_CAPTION_REVIEWED_OVERLAP_SECONDS = 2.5
+_CAPTION_REVIEWED_WINDOW_SECONDS = 16.0
+_CAPTION_REVIEWED_OVERLAP_SECONDS = 3.0
 _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS = 1.8
-_CAPTION_REVIEW_MAX_FLAGS = 8
-_CAPTION_LANGUAGE_PIN_MIN_PROBABILITY = 0.9
-_DENSE_SPEECH_VAD_DISABLE_MAX_REMOVED_SECONDS = 0.6
-_DENSE_SPEECH_VAD_DISABLE_MAX_REMOVED_RATIO = 0.02
-_DENSE_SPEECH_VAD_DISABLE_REQUIRED_WINDOWS = 2
+_CAPTION_REVIEW_MAX_FLAGS = 18
 _AGGRESSIVE_FILLER_PROMPT = (
     "Transcribe all spoken disfluencies exactly, including um, ums, uh, uhh, ah, ahh, erm, mm, and hesitation sounds."
 )
@@ -160,74 +156,6 @@ _CAPTION_REVIEW_PROMPT = (
     "Review low-confidence transcript lines carefully. Prefer the spoken wording, preserve names and te reo Māori, "
     "and correct likely misheard words rather than paraphrasing."
 )
-_NZ_LEGAL_CAPTION_PROMPT = (
-    "This audio may include New Zealand legal and teaching terms. Prefer accurate forms such as Hansen, Tipping J, "
-    "Moonen, NZBORA, New Zealand Bill of Rights Act, Parliament, presumption of innocence, freedom of expression, "
-    "section 4, section 5, and section 6 when spoken clearly."
-)
-_CAPTION_MAX_LINES = 2
-_CAPTION_MAX_LINE_CHARS = 45
-_CAPTION_TARGET_LINE_CHARS = 42
-_CAPTION_MAX_BLOCK_CHARS = _CAPTION_MAX_LINE_CHARS * _CAPTION_MAX_LINES
-_BOUNDARY_DEDUPE_MAX_TOKENS = 3
-_CAPTION_FRAGMENT_MAX_GAP_SECONDS = 0.45
-_CAPTION_FRAGMENT_MIN_DURATION_SECONDS = 1.2
-_CAPTION_FRAGMENT_MAX_COMBINED_DURATION_SECONDS = 12.5
-_CAPTION_FRAGMENT_MAX_COMBINED_WORDS = 24
-_CAPTION_STUB_MAX_DURATION_SECONDS = 1.25
-_CAPTION_STUB_MAX_WORDS = 5
-_SHORT_ORPHAN_TOKENS = {"a", "an", "and", "as", "at", "by", "for", "in", "of", "on", "or", "the", "to", "with"}
-_LEADING_FRAGMENT_TOKENS = {
-    "and",
-    "as",
-    "because",
-    "but",
-    "if",
-    "in",
-    "of",
-    "or",
-    "so",
-    "that",
-    "the",
-    "then",
-    "to",
-    "when",
-    "which",
-    "with",
-}
-_TRAILING_FRAGMENT_TOKENS = {
-    "a",
-    "an",
-    "and",
-    "as",
-    "because",
-    "but",
-    "for",
-    "if",
-    "in",
-    "of",
-    "or",
-    "so",
-    "that",
-    "the",
-    "then",
-    "to",
-    "when",
-    "which",
-    "with",
-}
-
-_LEAD_REPEAT_NORMALIZE_TOKENS = {
-    "a",
-    "an",
-    "and",
-    "but",
-    "if",
-    "or",
-    "so",
-    "that",
-    "the",
-}
 
 
 @dataclass(frozen=True)
@@ -313,14 +241,6 @@ class CaptionTranscriptionProfile:
 
 
 @dataclass(frozen=True)
-class CaptionCue:
-    text: str
-    start: float
-    end: float
-    average_probability: float | None = None
-
-
-@dataclass(frozen=True)
 class FillerRemovalHeuristics:
     min_probability: float
     min_context_gap_seconds: float
@@ -371,7 +291,7 @@ class SpeechCleanupService:
     def __init__(self) -> None:
         self.cleanup_model_size = os.environ.get("RADCAST_SPEECH_CLEANUP_MODEL", "small").strip() or "small"
         self.caption_fast_model_size = os.environ.get("RADCAST_CAPTION_FAST_MODEL", self.cleanup_model_size).strip() or self.cleanup_model_size
-        self.caption_accurate_model_size = os.environ.get("RADCAST_CAPTION_ACCURATE_MODEL", "large-v3-turbo").strip() or "large-v3-turbo"
+        self.caption_accurate_model_size = os.environ.get("RADCAST_CAPTION_ACCURATE_MODEL", "medium").strip() or "medium"
         self.caption_reviewed_model_size = os.environ.get("RADCAST_CAPTION_REVIEWED_MODEL", "large-v3").strip() or "large-v3"
         self.device = os.environ.get("RADCAST_SPEECH_CLEANUP_DEVICE", "auto").strip() or "auto"
         self.compute_type = os.environ.get("RADCAST_SPEECH_CLEANUP_COMPUTE_TYPE", "int8").strip() or "int8"
@@ -391,11 +311,7 @@ class SpeechCleanupService:
     ) -> int:
         normalized_quality = _normalize_caption_quality_mode(quality_mode)
         base_seconds = estimate_caption_seconds(duration_seconds, quality_mode=normalized_quality)
-        profile = self._caption_profile_for_mode(
-            normalized_quality,
-            caption_prompt=None,
-            duration_seconds=duration_seconds,
-        )
+        profile = self._caption_profile_for_mode(normalized_quality, caption_prompt=None)
         if normalized_quality == CaptionQualityMode.REVIEWED:
             first_pass_ready = self._model_cache_ready(profile.model_size)
             review_ready = self._model_cache_ready(self.caption_reviewed_model_size)
@@ -403,7 +319,7 @@ class SpeechCleanupService:
                 return base_seconds
             cold_start_seconds = 0
             if not first_pass_ready:
-                cold_start_seconds += 65
+                cold_start_seconds += 95
             if not review_ready:
                 cold_start_seconds += 80
             return min(base_seconds + cold_start_seconds, 24 * 60)
@@ -412,7 +328,7 @@ class SpeechCleanupService:
         if normalized_quality == CaptionQualityMode.FAST:
             cold_start_seconds = 18
         elif normalized_quality == CaptionQualityMode.ACCURATE:
-            cold_start_seconds = 65
+            cold_start_seconds = 95
         else:
             cold_start_seconds = 145
         return min(base_seconds + cold_start_seconds, 22 * 60)
@@ -604,26 +520,15 @@ class SpeechCleanupService:
         input_duration = probe_duration_seconds(audio_path)
         quality_mode = _normalize_caption_quality_mode(caption_quality_mode)
         caption_prompt = _build_caption_prompt(caption_glossary)
-        profile = self._caption_profile_for_mode(
-            quality_mode,
-            caption_prompt=caption_prompt,
-            duration_seconds=input_duration,
-        )
+        profile = self._caption_profile_for_mode(quality_mode, caption_prompt=caption_prompt)
         caption_eta_seconds = self.estimate_caption_runtime_seconds(input_duration, quality_mode=quality_mode)
-        review_budget = _caption_review_flag_budget(input_duration)
         started_at = time.monotonic()
         if on_stage:
-            caption_window_count = _window_count_for_duration(
-                input_duration,
-                profile.window_seconds,
-                profile.overlap_seconds,
-            )
             detail = (
                 f"Loading {profile.model_size} caption model and transcribing speech for captions."
                 if not self._model_cache_ready(profile.model_size)
                 else "Transcribing speech for captions."
             )
-            detail = _windowed_stage_detail(detail, 1, caption_window_count)
             on_stage(0.02, detail, caption_eta_seconds)
 
         with tempfile.TemporaryDirectory(prefix="radcast_captions_") as tmp:
@@ -648,25 +553,18 @@ class SpeechCleanupService:
                 initial_prompt=profile.initial_prompt,
                 window_seconds=profile.window_seconds,
                 overlap_seconds=profile.overlap_seconds,
-                language_override="auto",
             )
             segments = _dedupe_caption_segments(segments)
 
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
 
-            if on_stage:
-                on_stage(
-                    0.72,
-                    "Analyzing caption confidence.",
-                    _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=8),
-                )
             quality_report = _build_caption_quality_report(segments)
             if profile.review_sweep and quality_report.flagged_segments:
                 if on_stage:
                     on_stage(
                         0.82,
-                        _caption_review_detail(0, min(review_budget, len(quality_report.flagged_segments))),
+                        "Reviewing low-confidence caption lines.",
                         _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=10),
                     )
                 segments = self._review_and_correct_caption_segments(
@@ -674,34 +572,21 @@ class SpeechCleanupService:
                     base_segments=segments,
                     quality_report=quality_report,
                     prompt_text=caption_prompt,
-                    on_stage=on_stage,
-                    started_at=started_at,
-                    caption_eta_seconds=caption_eta_seconds,
-                    review_budget=review_budget,
                     cancel_check=cancel_check,
                 )
                 segments = _dedupe_caption_segments(segments)
                 quality_report = _build_caption_quality_report(segments)
 
-            if on_stage:
-                on_stage(
-                    0.9,
-                    "Formatting accessible captions.",
-                    _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=4),
-                )
-            segments = _compose_accessible_caption_blocks(segments)
-            quality_report = _build_caption_quality_report(segments)
-
             output_path = audio_path.with_suffix(f".{caption_format.value}")
             review_path = None
             if on_stage:
                 on_stage(
-                    0.96,
+                    0.92,
                     f"Writing {caption_format.value.upper()} captions.",
                     _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=2),
                 )
             output_path.write_text(
-                _render_caption_document(segments, caption_format=caption_format),
+                _format_caption_document(segments, caption_format=caption_format),
                 encoding="utf-8",
             )
             if quality_report.review_recommended:
@@ -730,38 +615,20 @@ class SpeechCleanupService:
                 raise EnhancementRuntimeError(
                     "faster-whisper is required for speech cleanup. Install with 'pip install -e .'."
                 ) from exc
+            self._evict_cached_models_except(resolved_model_size)
             model = WhisperModel(resolved_model_size, device=self.device, compute_type=self.compute_type)
-            self._models[resolved_model_size] = model
+            self._models = {resolved_model_size: model}
             return model
 
-    def _transcribe_file_with_info(
-        self,
-        model,
-        audio_path: Path,
-        *,
-        preserve_fillers: bool,
-        beam_size: int | None = None,
-        condition_on_previous_text: bool = False,
-        initial_prompt: str | None = None,
-        language_override: str | None = None,
-        vad_filter_override: bool | None = None,
-    ) -> tuple[list[object], object | None]:
-        kwargs = {
-            "beam_size": max(1, int(beam_size or self.beam_size)),
-            "word_timestamps": True,
-            "vad_filter": (not preserve_fillers) if vad_filter_override is None else bool(vad_filter_override),
-            "condition_on_previous_text": condition_on_previous_text,
-        }
-        prompt_text = initial_prompt
-        if preserve_fillers and not prompt_text:
-            prompt_text = _AGGRESSIVE_FILLER_PROMPT
-        if prompt_text:
-            kwargs["initial_prompt"] = prompt_text
-        language = self.transcribe_language if language_override is None else language_override
-        if language and language != "auto":
-            kwargs["language"] = language
-        segment_iter, info = model.transcribe(str(audio_path), **kwargs)
-        return list(segment_iter), info
+    def _evict_cached_models_except(self, keep_model_size: str) -> None:
+        if not self._models:
+            return
+        stale_keys = [key for key in self._models.keys() if key != keep_model_size]
+        if not stale_keys:
+            return
+        for key in stale_keys:
+            self._models.pop(key, None)
+        gc.collect()
 
     def _transcribe_file(
         self,
@@ -772,18 +639,22 @@ class SpeechCleanupService:
         beam_size: int | None = None,
         condition_on_previous_text: bool = False,
         initial_prompt: str | None = None,
-        language_override: str | None = None,
     ):
-        segments, _info = self._transcribe_file_with_info(
-            model,
-            audio_path,
-            preserve_fillers=preserve_fillers,
-            beam_size=beam_size,
-            condition_on_previous_text=condition_on_previous_text,
-            initial_prompt=initial_prompt,
-            language_override=language_override,
-        )
-        return segments
+        kwargs = {
+            "beam_size": max(1, int(beam_size or self.beam_size)),
+            "word_timestamps": True,
+            "vad_filter": not preserve_fillers,
+            "condition_on_previous_text": condition_on_previous_text,
+        }
+        prompt_text = initial_prompt
+        if preserve_fillers and not prompt_text:
+            prompt_text = _AGGRESSIVE_FILLER_PROMPT
+        if prompt_text:
+            kwargs["initial_prompt"] = prompt_text
+        if self.transcribe_language and self.transcribe_language != "auto":
+            kwargs["language"] = self.transcribe_language
+        segment_iter, _info = model.transcribe(str(audio_path), **kwargs)
+        return segment_iter
 
     def _transcribe_timeline(
         self,
@@ -805,7 +676,6 @@ class SpeechCleanupService:
         initial_prompt: str | None = None,
         window_seconds: float | None = None,
         overlap_seconds: float | None = None,
-        language_override: str | None = None,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         normalized_mode = _normalize_filler_mode(filler_removal_mode)
         should_use_windowed = force_windowed or (remove_filler_words and normalized_mode == FillerRemovalMode.AGGRESSIVE)
@@ -828,7 +698,6 @@ class SpeechCleanupService:
                 initial_prompt=initial_prompt,
                 window_seconds=window_seconds,
                 overlap_seconds=overlap_seconds,
-                language_override=language_override,
             )
 
         if cancel_check and cancel_check():
@@ -838,18 +707,13 @@ class SpeechCleanupService:
         words: list[TranscriptWordTiming] = []
         segments: list[TranscriptSegmentTiming] = []
         last_progress_emit_at = 0.0
-        transcribe_kwargs = {
-            "preserve_fillers": preserve_fillers,
-            "beam_size": effective_beam_size,
-            "condition_on_previous_text": condition_on_previous_text,
-            "initial_prompt": initial_prompt,
-        }
-        if language_override is not None:
-            transcribe_kwargs["language_override"] = language_override
         for seg in self._transcribe_file(
             model,
             audio_path,
-            **transcribe_kwargs,
+            preserve_fillers=preserve_fillers,
+            beam_size=effective_beam_size,
+            condition_on_previous_text=condition_on_previous_text,
+            initial_prompt=initial_prompt,
         ):
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
@@ -917,7 +781,6 @@ class SpeechCleanupService:
         initial_prompt: str | None = None,
         window_seconds: float | None = None,
         overlap_seconds: float | None = None,
-        language_override: str | None = None,
     ) -> tuple[list[TranscriptWordTiming], list[TranscriptSegmentTiming]]:
         if cancel_check and cancel_check():
             raise JobCancelledError("job cancelled")
@@ -932,9 +795,6 @@ class SpeechCleanupService:
         step_seconds = max(0.5, resolved_window_seconds - resolved_overlap_seconds)
         words: list[TranscriptWordTiming] = []
         segments: list[TranscriptSegmentTiming] = []
-        window_language_override = language_override
-        window_vad_filter = not preserve_fillers
-        dense_vad_windows = 0
 
         with tempfile.TemporaryDirectory(prefix="radcast_cleanup_transcribe_") as tmp:
             tmp_path = Path(tmp)
@@ -949,27 +809,13 @@ class SpeechCleanupService:
                 end_idx = max(start_idx, min(len(waveform), int(round(window_end * sample_rate))))
                 window_path = tmp_path / f"window_{int(round(window_start * 1000)):06d}.wav"
                 _write_pcm16_wav(window_path, waveform[start_idx:end_idx], sample_rate=sample_rate)
-                transcribed_segments, transcribe_info = self._transcribe_file_with_info(
+                transcribed_segments = self._transcribe_file(
                     model,
                     window_path,
                     preserve_fillers=preserve_fillers,
                     beam_size=beam_size,
                     condition_on_previous_text=condition_on_previous_text,
                     initial_prompt=initial_prompt,
-                    language_override=window_language_override,
-                    vad_filter_override=window_vad_filter,
-                )
-                window_language_override = _next_window_language_override(
-                    requested_override=language_override,
-                    current_override=window_language_override,
-                    transcribe_info=transcribe_info,
-                )
-                window_vad_filter, dense_vad_windows = _next_window_vad_filter(
-                    current_vad_filter=window_vad_filter,
-                    preserve_fillers=preserve_fillers,
-                    total_duration=total_duration,
-                    transcribe_info=transcribe_info,
-                    dense_vad_windows=dense_vad_windows,
                 )
 
                 left_guard_seconds = 0.0 if window_index == 0 else resolved_overlap_seconds / 2.0
@@ -991,7 +837,7 @@ class SpeechCleanupService:
                     processed_windows = min(total_windows, window_index + 1)
                     on_stage(
                         progress,
-                        _windowed_stage_detail(transcribe_detail, processed_windows, total_windows),
+                        transcribe_detail,
                         _windowed_transcription_eta_seconds(
                             elapsed_seconds=max(0.0, time.monotonic() - started_at),
                             cleanup_eta_seconds=cleanup_eta_seconds,
@@ -1013,7 +859,6 @@ class SpeechCleanupService:
         caption_quality_mode: CaptionQualityMode,
         *,
         caption_prompt: str | None,
-        duration_seconds: float,
     ) -> CaptionTranscriptionProfile:
         if caption_quality_mode == CaptionQualityMode.FAST:
             return CaptionTranscriptionProfile(
@@ -1025,13 +870,11 @@ class SpeechCleanupService:
                 initial_prompt=caption_prompt,
             )
         if caption_quality_mode == CaptionQualityMode.REVIEWED:
-            reviewed_window_seconds = _reviewed_caption_window_seconds(duration_seconds)
-            reviewed_overlap_seconds = _reviewed_caption_overlap_seconds(reviewed_window_seconds)
             return CaptionTranscriptionProfile(
                 model_size=self.caption_accurate_model_size,
                 beam_size=self.caption_accurate_beam_size,
-                window_seconds=reviewed_window_seconds,
-                overlap_seconds=reviewed_overlap_seconds,
+                window_seconds=_CAPTION_REVIEWED_WINDOW_SECONDS,
+                overlap_seconds=_CAPTION_REVIEWED_OVERLAP_SECONDS,
                 condition_on_previous_text=True,
                 initial_prompt=caption_prompt,
                 review_sweep=True,
@@ -1052,10 +895,6 @@ class SpeechCleanupService:
         base_segments: list[TranscriptSegmentTiming],
         quality_report: CaptionQualityReport,
         prompt_text: str | None,
-        on_stage: CleanupStageCallback | None = None,
-        started_at: float | None = None,
-        caption_eta_seconds: int | None = None,
-        review_budget: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptSegmentTiming]:
         if not quality_report.flagged_segments:
@@ -1063,23 +902,11 @@ class SpeechCleanupService:
         model = self._load_model(self.caption_reviewed_model_size)
         waveform, sample_rate = _read_pcm16_wav(analysis_wav)
         corrected = list(base_segments)
-        review_targets = quality_report.flagged_segments[: max(1, int(review_budget or _CAPTION_REVIEW_MAX_FLAGS))]
         with tempfile.TemporaryDirectory(prefix="radcast_caption_review_") as tmp:
             tmp_path = Path(tmp)
-            for index, flag in enumerate(review_targets, start=1):
+            for flag in quality_report.flagged_segments[:_CAPTION_REVIEW_MAX_FLAGS]:
                 if cancel_check and cancel_check():
                     raise JobCancelledError("job cancelled")
-                if on_stage and started_at is not None and caption_eta_seconds is not None:
-                    on_stage(
-                        0.82 + (0.08 * ((index - 1) / max(1, len(review_targets)))),
-                        _caption_review_detail(index, len(review_targets)),
-                        _caption_review_eta_seconds(
-                            started_at=started_at,
-                            caption_eta_seconds=caption_eta_seconds,
-                            review_index=index,
-                            review_total=len(review_targets),
-                        ),
-                    )
                 matched_index = _find_segment_index(corrected, flag)
                 if matched_index is None:
                     continue
@@ -1291,7 +1118,7 @@ def _combine_prompt_parts(*parts: str | None) -> str | None:
 
 def _build_caption_prompt(custom_glossary: str | None) -> str:
     glossary_terms = _normalize_custom_glossary(custom_glossary)
-    prompt_parts = [_NZ_ENGLISH_STYLE_PROMPT, _MAORI_GLOSSARY_PROMPT, _NZ_LEGAL_CAPTION_PROMPT]
+    prompt_parts = [_NZ_ENGLISH_STYLE_PROMPT, _MAORI_GLOSSARY_PROMPT]
     if glossary_terms:
         prompt_parts.append(
             "Also prefer these course or project terms if spoken clearly: " + ", ".join(glossary_terms) + "."
@@ -1454,30 +1281,15 @@ def _windowed_transcription_eta_seconds(
         cleanup_eta_seconds=cleanup_eta_seconds,
         coverage=coverage,
     )
-    baseline_projection = max(
-        1.0,
-        (max(1.0, float(cleanup_eta_seconds)) / safe_total_windows) * remaining_windows,
-    )
-    capped_window_projection = min(
-        window_projection,
-        max(baseline_projection * 1.65, coverage_projection * 1.2),
-    )
-    remaining = max(baseline_projection, capped_window_projection, coverage_projection * 0.92)
-    remaining = min(
-        remaining,
-        max(
-            float(cleanup_eta_seconds) * 1.45,
-            baseline_projection * 1.65,
-        ),
-    )
+    remaining = max(window_projection, coverage_projection * 0.95)
     progress_ratio = safe_processed_windows / safe_total_windows
     if progress_ratio < 0.3:
-        remaining *= 1.14
+        remaining *= 1.22
     elif progress_ratio < 0.55:
-        remaining *= 1.08
+        remaining *= 1.14
     elif progress_ratio < 0.8:
-        remaining *= 1.04
-    remaining += 4.0
+        remaining *= 1.08
+    remaining += 6.0
     if remaining_windows >= 6:
         floor_seconds = 24
     elif remaining_windows >= 3:
@@ -1487,138 +1299,6 @@ def _windowed_transcription_eta_seconds(
     else:
         floor_seconds = 3
     return max(floor_seconds, int(round(max(1.0, remaining))))
-
-
-def _windowed_stage_detail(base_detail: str, processed_windows: int, total_windows: int) -> str:
-    clean_detail = str(base_detail or "").strip() or "Processing speech."
-    if total_windows <= 1:
-        return clean_detail
-    return f"{clean_detail} Window {processed_windows} of {total_windows}."
-
-
-def _window_count_for_duration(
-    duration_seconds: float,
-    window_seconds: float,
-    overlap_seconds: float,
-) -> int:
-    safe_duration = max(0.0, float(duration_seconds))
-    resolved_window_seconds = min(max(float(window_seconds), 1.0), max(safe_duration, 1.0))
-    resolved_overlap_seconds = min(float(overlap_seconds), max(0.0, resolved_window_seconds / 2.0))
-    step_seconds = max(0.5, resolved_window_seconds - resolved_overlap_seconds)
-    return max(1, int(math.ceil(max(safe_duration - resolved_window_seconds, 0.0) / step_seconds)) + 1)
-
-
-def _caption_review_flag_budget(duration_seconds: float | None) -> int:
-    safe_duration = max(1.0, float(duration_seconds or 1.0))
-    if safe_duration >= 12 * 60:
-        return 3
-    if safe_duration >= 6 * 60:
-        return 4
-    if safe_duration >= 3 * 60:
-        return 6
-    return _CAPTION_REVIEW_MAX_FLAGS
-
-
-def _reviewed_caption_window_seconds(duration_seconds: float | None) -> float:
-    safe_duration = max(1.0, float(duration_seconds or 1.0))
-    if safe_duration >= 5 * 60:
-        return 42.0
-    if safe_duration >= 3 * 60:
-        return 34.0
-    return _CAPTION_REVIEWED_WINDOW_SECONDS
-
-
-def _reviewed_caption_overlap_seconds(window_seconds: float) -> float:
-    if window_seconds >= 42.0:
-        return 1.5
-    if window_seconds >= 34.0:
-        return 1.75
-    if window_seconds >= 30.0:
-        return 2.0
-    if window_seconds >= 28.0:
-        return 2.25
-    return _CAPTION_REVIEWED_OVERLAP_SECONDS
-
-
-def _next_window_language_override(
-    *,
-    requested_override: str | None,
-    current_override: str | None,
-    transcribe_info: object | None,
-) -> str | None:
-    normalized_requested = str(requested_override or "").strip().lower()
-    if normalized_requested and normalized_requested != "auto":
-        return normalized_requested
-    normalized_current = str(current_override or "").strip().lower()
-    if normalized_current and normalized_current != "auto":
-        return normalized_current
-    detected_language = str(getattr(transcribe_info, "language", "") or "").strip().lower()
-    detected_probability = getattr(transcribe_info, "language_probability", None)
-    try:
-        probability = float(detected_probability) if detected_probability is not None else None
-    except (TypeError, ValueError):
-        probability = None
-    if detected_language and probability is not None and probability >= _CAPTION_LANGUAGE_PIN_MIN_PROBABILITY:
-        return detected_language
-    return "auto" if normalized_requested == "auto" else current_override
-
-
-def _next_window_vad_filter(
-    *,
-    current_vad_filter: bool,
-    preserve_fillers: bool,
-    total_duration: float,
-    transcribe_info: object | None,
-    dense_vad_windows: int,
-) -> tuple[bool, int]:
-    if preserve_fillers or not current_vad_filter:
-        return current_vad_filter, dense_vad_windows
-    duration_value = getattr(transcribe_info, "duration", None)
-    duration_after_vad_value = getattr(transcribe_info, "duration_after_vad", None)
-    try:
-        duration_seconds = float(duration_value) if duration_value is not None else None
-        duration_after_vad_seconds = float(duration_after_vad_value) if duration_after_vad_value is not None else None
-    except (TypeError, ValueError):
-        duration_seconds = None
-        duration_after_vad_seconds = None
-    if duration_seconds is None or duration_after_vad_seconds is None:
-        return current_vad_filter, dense_vad_windows
-    removed_seconds = max(0.0, duration_seconds - duration_after_vad_seconds)
-    removed_ratio = removed_seconds / max(1.0, duration_seconds)
-    if (
-        total_duration >= 60.0
-        and removed_seconds <= _DENSE_SPEECH_VAD_DISABLE_MAX_REMOVED_SECONDS
-        and removed_ratio <= _DENSE_SPEECH_VAD_DISABLE_MAX_REMOVED_RATIO
-    ):
-        dense_vad_windows += 1
-    else:
-        dense_vad_windows = 0
-    if dense_vad_windows >= _DENSE_SPEECH_VAD_DISABLE_REQUIRED_WINDOWS:
-        return False, dense_vad_windows
-    return current_vad_filter, dense_vad_windows
-
-
-def _caption_review_detail(review_index: int, review_total: int) -> str:
-    safe_total = max(0, int(review_total))
-    if safe_total <= 0:
-        return "Reviewing low-confidence caption lines."
-    if review_index <= 0:
-        return f"Preparing caption review sweep ({safe_total} flagged segment{'s' if safe_total != 1 else ''})."
-    return f"Reviewing difficult caption segments ({review_index} of {safe_total})."
-
-
-def _caption_review_eta_seconds(
-    *,
-    started_at: float,
-    caption_eta_seconds: int,
-    review_index: int,
-    review_total: int,
-) -> int:
-    remaining = _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=8)
-    safe_total = max(1, int(review_total))
-    safe_index = max(0, min(safe_total, int(review_index)))
-    remaining_reviews = max(0, safe_total - safe_index)
-    return max(8, min(remaining, 18 + (remaining_reviews * 9)))
 
 
 def _collect_timing_rows(
@@ -1966,15 +1646,15 @@ def _caption_review_reason(
     probability = segment.average_probability
     if probability is None:
         return "No word confidence data was available for this caption line."
-    low_threshold = 0.4
-    warn_threshold = 0.54
+    low_threshold = 0.45
+    warn_threshold = 0.58
     if average_probability is not None:
-        low_threshold = min(low_threshold, max(0.32, average_probability - 0.24))
-        warn_threshold = min(warn_threshold, max(0.44, average_probability - 0.16))
+        low_threshold = min(low_threshold, max(0.34, average_probability - 0.22))
+        warn_threshold = min(warn_threshold, max(0.46, average_probability - 0.14))
     token_count = len(text.split())
     if probability < low_threshold:
         return "Very low confidence caption line."
-    if probability < warn_threshold and token_count >= 7:
+    if probability < warn_threshold and token_count >= 5:
         return "Low confidence on a longer caption line."
     return None
 
@@ -2035,633 +1715,6 @@ def _best_overlapping_segment(
     return best_segment
 
 
-def _compose_accessible_caption_blocks(
-    segments: list[TranscriptSegmentTiming],
-) -> list[TranscriptSegmentTiming]:
-    composed: list[TranscriptSegmentTiming] = []
-    for segment in segments:
-        cleaned_text = _clean_caption_text(segment.text)
-        if not cleaned_text:
-            continue
-        sentence_units = _split_segment_into_sentence_units(segment)
-        for unit_text, unit_start, unit_end, unit_probability in sentence_units:
-            for cue in _split_sentence_unit_into_cues(
-                unit_text,
-                start=unit_start,
-                end=unit_end,
-                average_probability=unit_probability,
-            ):
-                composed.append(cue)
-    return _refine_accessible_caption_blocks(_dedupe_adjacent_caption_blocks(composed))
-
-
-def _split_segment_into_sentence_units(
-    segment: TranscriptSegmentTiming,
-) -> list[tuple[str, float, float, float | None]]:
-    cleaned_text = _clean_caption_text(segment.text)
-    if not cleaned_text:
-        return []
-    pieces = [piece.strip() for piece in _SENTENCE_SPLIT_RE.split(cleaned_text) if piece.strip()]
-    if len(pieces) <= 1:
-        return [(cleaned_text, segment.start, segment.end, segment.average_probability)]
-
-    total_chars = max(1, sum(len(piece) for piece in pieces))
-    duration = max(0.2, segment.end - segment.start)
-    cursor = segment.start
-    units: list[tuple[str, float, float, float | None]] = []
-    for index, piece in enumerate(pieces):
-        remaining_chars = sum(len(item) for item in pieces[index:])
-        if index == len(pieces) - 1 or remaining_chars <= 0:
-            piece_end = segment.end
-        else:
-            piece_duration = duration * (len(piece) / total_chars)
-            piece_end = min(segment.end, max(cursor + 0.2, cursor + piece_duration))
-        units.append((piece, cursor, piece_end, segment.average_probability))
-        cursor = piece_end
-    if units:
-        last_text, last_start, _last_end, last_probability = units[-1]
-        units[-1] = (last_text, last_start, segment.end, last_probability)
-    return units
-
-
-def _split_sentence_unit_into_cues(
-    text: str,
-    *,
-    start: float,
-    end: float,
-    average_probability: float | None,
-) -> list[TranscriptSegmentTiming]:
-    words = text.split()
-    if not words:
-        return []
-    if len(_clean_caption_text(text)) <= _CAPTION_MAX_BLOCK_CHARS:
-        return [
-            TranscriptSegmentTiming(
-                text=_wrap_caption_block_lines(text),
-                start=start,
-                end=end,
-                average_probability=average_probability,
-            )
-        ]
-
-    cues: list[TranscriptSegmentTiming] = []
-    total_words = len(words)
-    cursor = 0
-    duration = max(0.2, end - start)
-    while cursor < total_words:
-        remaining_words = total_words - cursor
-        chunk_size = _choose_caption_chunk_size(words, cursor)
-        chunk_words = words[cursor : cursor + chunk_size]
-        chunk_text = " ".join(chunk_words)
-        chunk_start = start + (duration * (cursor / total_words))
-        chunk_end = end if cursor + chunk_size >= total_words else start + (duration * ((cursor + chunk_size) / total_words))
-        chunk_end = max(chunk_start + 0.2, chunk_end)
-        cues.append(
-            TranscriptSegmentTiming(
-                text=_wrap_caption_block_lines(chunk_text),
-                start=chunk_start,
-                end=chunk_end,
-                average_probability=average_probability,
-            )
-        )
-        cursor += chunk_size
-        if remaining_words == chunk_size:
-            break
-    if cues:
-        last = cues[-1]
-        cues[-1] = TranscriptSegmentTiming(
-            text=last.text,
-            start=last.start,
-            end=end,
-            average_probability=last.average_probability,
-        )
-    return cues
-
-
-def _choose_caption_chunk_size(words: list[str], start_index: int) -> int:
-    best_index = start_index + 1
-    best_score = float("-inf")
-    char_count = 0
-    for index in range(start_index, len(words)):
-        word = words[index]
-        char_count += len(word) + (1 if index > start_index else 0)
-        chunk_size = index - start_index + 1
-        if char_count > _CAPTION_MAX_BLOCK_CHARS and chunk_size > 1:
-            break
-        score = 0.0
-        if char_count <= _CAPTION_MAX_BLOCK_CHARS:
-            score += 10.0
-        score -= abs(char_count - (_CAPTION_TARGET_LINE_CHARS * _CAPTION_MAX_LINES * 0.8)) / 12.0
-        if index < len(words) - 1 and not word.endswith((".", "!", "?", ",", ";", ":")):
-            if char_count < _CAPTION_TARGET_LINE_CHARS:
-                score -= 6.0 + ((_CAPTION_TARGET_LINE_CHARS - char_count) / 2.0)
-        if word.endswith((".", "!", "?")):
-            score += 7.0
-        elif word.endswith((",", ";", ":")):
-            score += 4.0
-        elif len(word) <= 3 and word.lower() in _SHORT_ORPHAN_TOKENS:
-            score -= 3.0
-        wrapped_preview = _wrap_caption_block_lines(" ".join(words[start_index : index + 1]))
-        score += _caption_fragment_layout_score(wrapped_preview.splitlines())
-        current_word = _normalize_token(word)
-        if current_word in _TRAILING_FRAGMENT_TOKENS and index < len(words) - 1:
-            score -= 10.0
-        if index + 1 < len(words):
-            next_word = _normalize_token(words[index + 1])
-            if next_word in _LEADING_FRAGMENT_TOKENS:
-                score -= 8.0
-        if score > best_score:
-            best_score = score
-            best_index = index + 1
-    return max(1, best_index - start_index)
-
-
-def _wrap_caption_block_lines(text: str) -> str:
-    cleaned = _clean_caption_text(text)
-    if len(cleaned) <= _CAPTION_MAX_LINE_CHARS:
-        return cleaned
-    words = cleaned.split()
-    if len(words) <= 1:
-        return cleaned
-
-    best_break = None
-    best_score = float("-inf")
-    for index in range(1, len(words)):
-        left = " ".join(words[:index])
-        right = " ".join(words[index:])
-        if len(left) > _CAPTION_MAX_LINE_CHARS or len(right) > _CAPTION_MAX_LINE_CHARS:
-            continue
-        score = 0.0
-        score -= abs(len(left) - len(right)) / 5.0
-        if words[index - 1].endswith((".", "!", "?")):
-            score += 5.0
-        elif words[index - 1].endswith((",", ";", ":")):
-            score += 3.0
-        left_last_word = _normalize_token(words[index - 1])
-        right_first_word = _normalize_token(words[index])
-        if left_last_word in _TRAILING_FRAGMENT_TOKENS:
-            score -= 8.0
-        if right_first_word in _LEADING_FRAGMENT_TOKENS and len(right.split()) <= 3:
-            score -= 3.0
-        if len(right.split()) == 1:
-            score -= 6.0
-        if words[index].lower() in _SHORT_ORPHAN_TOKENS:
-            score -= 2.0
-        if score > best_score:
-            best_score = score
-            best_break = index
-
-    if best_break is None:
-        midpoint = max(1, len(words) // 2)
-        left = " ".join(words[:midpoint])
-        right = " ".join(words[midpoint:])
-        return f"{left}\n{right}"
-
-    left = " ".join(words[:best_break])
-    right = " ".join(words[best_break:])
-    return f"{left}\n{right}"
-
-
-def _caption_fragment_layout_score(lines: list[str]) -> float:
-    score = 0.0
-    for line_index, line in enumerate(lines):
-        words = line.split()
-        if not words:
-            continue
-        last_word = _normalize_token(words[-1])
-        first_word = _normalize_token(words[0])
-        if last_word in _TRAILING_FRAGMENT_TOKENS:
-            score -= 8.0
-        if line_index > 0 and first_word in _LEADING_FRAGMENT_TOKENS and len(words) <= 3:
-            score -= 3.0
-    return score
-
-
-def _dedupe_adjacent_caption_blocks(
-    segments: list[TranscriptSegmentTiming],
-) -> list[TranscriptSegmentTiming]:
-    if not segments:
-        return []
-    deduped: list[TranscriptSegmentTiming] = []
-    for segment in sorted(segments, key=lambda item: (item.start, item.end)):
-        normalized_text = _clean_caption_text(segment.text)
-        display_text = str(segment.text or "").strip()
-        normalized_segment = TranscriptSegmentTiming(
-            text=display_text,
-            start=segment.start,
-            end=segment.end,
-            average_probability=segment.average_probability,
-        )
-        if not deduped:
-            deduped.append(normalized_segment)
-            continue
-        previous = deduped[-1]
-        overlap = _boundary_overlap_tokens(previous.text, normalized_text)
-        if overlap > 0:
-            next_words = normalized_text.split()[overlap:]
-            if next_words:
-                normalized_segment = TranscriptSegmentTiming(
-                    text=" ".join(next_words),
-                    start=normalized_segment.start,
-                    end=normalized_segment.end,
-                    average_probability=normalized_segment.average_probability,
-                )
-        if normalized_segment.text:
-            deduped.append(normalized_segment)
-    return deduped
-
-
-def _refine_accessible_caption_blocks(
-    segments: list[TranscriptSegmentTiming],
-) -> list[TranscriptSegmentTiming]:
-    merged = _merge_caption_fragments(segments)
-    refined: list[TranscriptSegmentTiming] = []
-    for segment in merged:
-        text = _clean_caption_text(segment.text)
-        if not text:
-            continue
-        if len(text) <= _CAPTION_MAX_BLOCK_CHARS:
-            refined.append(
-                TranscriptSegmentTiming(
-                    text=_wrap_caption_block_lines(text),
-                    start=segment.start,
-                    end=segment.end,
-                    average_probability=segment.average_probability,
-                )
-            )
-            continue
-        refined.extend(
-            _split_sentence_unit_into_cues(
-                text,
-                start=segment.start,
-                end=segment.end,
-                average_probability=segment.average_probability,
-            )
-        )
-    rebalanced = _rebalance_adjacent_caption_blocks(refined)
-    repaired = _merge_short_caption_stubs(rebalanced)
-    finalized: list[TranscriptSegmentTiming] = []
-    for segment in _dedupe_adjacent_caption_blocks(repaired):
-        finalized.extend(_split_or_wrap_caption_segment(segment))
-    return finalized
-
-
-def _rebalance_adjacent_caption_blocks(
-    segments: list[TranscriptSegmentTiming],
-) -> list[TranscriptSegmentTiming]:
-    if len(segments) < 2:
-        return segments
-    rebalanced = list(segments)
-    for index in range(len(rebalanced) - 1):
-        current = rebalanced[index]
-        following = rebalanced[index + 1]
-        if not _should_rebalance_caption_pair(current, following):
-            continue
-        replacement = _best_rebalanced_caption_pair(current, following)
-        if replacement is None:
-            continue
-        rebalanced[index], rebalanced[index + 1] = replacement
-    return rebalanced
-
-
-def _merge_short_caption_stubs(
-    segments: list[TranscriptSegmentTiming],
-) -> list[TranscriptSegmentTiming]:
-    if len(segments) < 2:
-        return segments
-    merged = list(segments)
-    index = 0
-    while index < len(merged):
-        current = merged[index]
-        if not _is_short_caption_stub(current):
-            index += 1
-            continue
-        if index + 1 < len(merged) and _should_attach_stub_to_next(current):
-            combined = _merge_caption_pair(current, merged[index + 1])
-            replacement = _split_or_wrap_caption_segment(combined)
-            merged[index : index + 2] = replacement
-            index = max(0, index - 1)
-            continue
-        if index > 0:
-            combined = _merge_caption_pair(merged[index - 1], current)
-            replacement = _split_or_wrap_caption_segment(combined)
-            merged[index - 1 : index + 1] = replacement
-            index = max(0, index - 2)
-            continue
-        if index + 1 < len(merged):
-            combined = _merge_caption_pair(current, merged[index + 1])
-            replacement = _split_or_wrap_caption_segment(combined)
-            merged[index : index + 2] = replacement
-            continue
-        index += 1
-    return _rebalance_adjacent_caption_blocks(merged)
-
-
-def _merge_caption_fragments(
-    segments: list[TranscriptSegmentTiming],
-) -> list[TranscriptSegmentTiming]:
-    ordered = [
-        TranscriptSegmentTiming(
-            text=_clean_caption_text(segment.text),
-            start=segment.start,
-            end=segment.end,
-            average_probability=segment.average_probability,
-        )
-        for segment in sorted(segments, key=lambda item: (item.start, item.end))
-        if _clean_caption_text(segment.text)
-    ]
-    if not ordered:
-        return []
-
-    merged: list[TranscriptSegmentTiming] = []
-    index = 0
-    while index < len(ordered):
-        current = ordered[index]
-        if index + 1 < len(ordered) and _should_attach_fragment_to_next(current, ordered[index + 1]):
-            merged.append(_merge_caption_pair(current, ordered[index + 1]))
-            index += 2
-            continue
-        if merged and _should_attach_fragment_to_previous(merged[-1], current):
-            merged[-1] = _merge_caption_pair(merged[-1], current)
-            index += 1
-            continue
-        merged.append(current)
-        index += 1
-    return merged
-
-
-def _should_attach_fragment_to_next(
-    current: TranscriptSegmentTiming,
-    following: TranscriptSegmentTiming,
-) -> bool:
-    text = _clean_caption_text(current.text)
-    if not text:
-        return False
-    words = text.split()
-    if not words:
-        return False
-    duration = max(0.0, current.end - current.start)
-    last_word = _normalize_token(words[-1])
-    following_text = _clean_caption_text(following.text)
-    looks_incomplete = (
-        last_word in _TRAILING_FRAGMENT_TOKENS
-        or text.endswith(("…", "..."))
-        or (duration < _CAPTION_FRAGMENT_MIN_DURATION_SECONDS and last_word in _TRAILING_FRAGMENT_TOKENS)
-        or (
-            duration < 2.5
-            and len(words) <= 4
-            and not text.endswith((".", "!", "?", ",", ";", ":"))
-            and following_text[:1].islower()
-        )
-    )
-    return looks_incomplete and _can_merge_caption_pair(current, following)
-
-
-def _should_attach_fragment_to_previous(
-    previous: TranscriptSegmentTiming,
-    current: TranscriptSegmentTiming,
-) -> bool:
-    previous_text = _clean_caption_text(previous.text)
-    if previous_text.endswith((".", "!", "?")):
-        return False
-    text = _clean_caption_text(current.text)
-    if not text:
-        return False
-    words = text.split()
-    if not words:
-        return False
-    duration = max(0.0, current.end - current.start)
-    first_word = _normalize_token(words[0])
-    looks_leading = (
-        first_word in _LEADING_FRAGMENT_TOKENS
-        or text[:1].islower()
-        or (duration < _CAPTION_FRAGMENT_MIN_DURATION_SECONDS and first_word in _LEADING_FRAGMENT_TOKENS)
-    )
-    return looks_leading and _can_merge_caption_pair(previous, current)
-
-
-def _can_merge_caption_pair(
-    left: TranscriptSegmentTiming,
-    right: TranscriptSegmentTiming,
-) -> bool:
-    if right.start - left.end > _CAPTION_FRAGMENT_MAX_GAP_SECONDS:
-        return False
-    combined_duration = max(0.0, right.end - left.start)
-    if combined_duration > _CAPTION_FRAGMENT_MAX_COMBINED_DURATION_SECONDS:
-        return False
-    combined_words = len(_clean_caption_text(left.text).split()) + len(_clean_caption_text(right.text).split())
-    return combined_words <= _CAPTION_FRAGMENT_MAX_COMBINED_WORDS
-
-
-def _merge_caption_pair(
-    left: TranscriptSegmentTiming,
-    right: TranscriptSegmentTiming,
-) -> TranscriptSegmentTiming:
-    probabilities = [
-        probability
-        for probability in (left.average_probability, right.average_probability)
-        if probability is not None
-    ]
-    average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
-    return TranscriptSegmentTiming(
-        text=f"{_clean_caption_text(left.text)} {_clean_caption_text(right.text)}".strip(),
-        start=left.start,
-        end=right.end,
-        average_probability=average_probability,
-    )
-
-
-def _should_rebalance_caption_pair(
-    current: TranscriptSegmentTiming,
-    following: TranscriptSegmentTiming,
-) -> bool:
-    current_text = _clean_caption_text(current.text)
-    following_text = _clean_caption_text(following.text)
-    if not current_text or not following_text:
-        return False
-    if current_text.endswith((".", "!", "?")):
-        return False
-    current_words = current_text.split()
-    following_words = following_text.split()
-    if not current_words or not following_words:
-        return False
-    current_last = _normalize_token(current_words[-1])
-    following_first = _normalize_token(following_words[0])
-    return (
-        current_last in _TRAILING_FRAGMENT_TOKENS
-        or following_first in _LEADING_FRAGMENT_TOKENS
-        or (len(current_words) <= 4 and not current_text.endswith((".", "!", "?")))
-        or (len(following_words) <= 4 and following_first in _LEADING_FRAGMENT_TOKENS)
-    )
-
-
-def _best_rebalanced_caption_pair(
-    current: TranscriptSegmentTiming,
-    following: TranscriptSegmentTiming,
-) -> tuple[TranscriptSegmentTiming, TranscriptSegmentTiming] | None:
-    combined_text = f"{_clean_caption_text(current.text)} {_clean_caption_text(following.text)}".strip()
-    words = combined_text.split()
-    if len(words) < 2:
-        return None
-
-    current_word_count = len(_clean_caption_text(current.text).split())
-    best_pair = None
-    best_score = _caption_pair_score(current.text, following.text)
-
-    for split_index in range(1, len(words)):
-        left_text = " ".join(words[:split_index])
-        right_text = " ".join(words[split_index:])
-        if not left_text or not right_text:
-            continue
-        if len(_clean_caption_text(left_text)) > _CAPTION_MAX_BLOCK_CHARS:
-            continue
-        if len(_clean_caption_text(right_text)) > _CAPTION_MAX_BLOCK_CHARS:
-            continue
-        score = _caption_pair_score(left_text, right_text)
-        score -= abs(split_index - current_word_count) / 6.0
-        if score <= best_score:
-            continue
-        best_score = score
-        best_pair = (left_text, right_text)
-
-    if best_pair is None:
-        return None
-
-    left_text, right_text = best_pair
-    left_ratio = len(left_text.split()) / max(1, len(words))
-    split_time = current.start + ((following.end - current.start) * left_ratio)
-    split_time = min(max(split_time, current.start + 0.2), following.end - 0.2)
-    probabilities = [
-        probability
-        for probability in (current.average_probability, following.average_probability)
-        if probability is not None
-    ]
-    average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
-    return (
-        TranscriptSegmentTiming(
-            text=_wrap_caption_block_lines(left_text),
-            start=current.start,
-            end=split_time,
-            average_probability=average_probability,
-        ),
-        TranscriptSegmentTiming(
-            text=_wrap_caption_block_lines(right_text),
-            start=split_time,
-            end=following.end,
-            average_probability=average_probability,
-        ),
-    )
-
-
-def _caption_pair_score(left_text: str, right_text: str) -> float:
-    return _caption_text_score(left_text) + _caption_text_score(right_text)
-
-
-def _caption_text_score(text: str) -> float:
-    cleaned = _clean_caption_text(text)
-    wrapped = _wrap_caption_block_lines(cleaned)
-    lines = [line.strip() for line in wrapped.splitlines() if line.strip()]
-    if not lines:
-        return float("-inf")
-    if len(lines) > _CAPTION_MAX_LINES:
-        return float("-inf")
-    score = 0.0
-    for line in lines:
-        if len(line) > _CAPTION_MAX_LINE_CHARS:
-            return float("-inf")
-        score -= abs(len(line) - _CAPTION_TARGET_LINE_CHARS) / 10.0
-    score += _caption_fragment_layout_score(lines)
-    words = cleaned.split()
-    if words:
-        first_word = _normalize_token(words[0])
-        last_word = _normalize_token(words[-1])
-        if first_word in _LEADING_FRAGMENT_TOKENS:
-            score -= 8.0
-        if last_word in _TRAILING_FRAGMENT_TOKENS:
-            score -= 8.0
-    if len(words) <= 3 and not cleaned.endswith((".", "!", "?")):
-        score -= 4.0
-    return score
-
-
-def _is_short_caption_stub(segment: TranscriptSegmentTiming) -> bool:
-    text = _clean_caption_text(segment.text)
-    if not text:
-        return False
-    words = text.split()
-    duration = max(0.0, segment.end - segment.start)
-    first_word = _normalize_token(words[0]) if words else ""
-    last_word = _normalize_token(words[-1]) if words else ""
-    if duration < 0.35:
-        return True
-    if re.fullmatch(r"(section\s+)?\d+[.)]?", text.strip(), flags=re.IGNORECASE):
-        return True
-    if len(words) <= 2 and re.fullmatch(r"[\d\W]+", text):
-        return True
-    if duration <= _CAPTION_STUB_MAX_DURATION_SECONDS and len(words) <= _CAPTION_STUB_MAX_WORDS:
-        if text[:1].islower() or first_word in _LEADING_FRAGMENT_TOKENS or last_word in _TRAILING_FRAGMENT_TOKENS:
-            return True
-    return False
-
-
-def _should_attach_stub_to_next(segment: TranscriptSegmentTiming) -> bool:
-    text = _clean_caption_text(segment.text)
-    if not text:
-        return False
-    words = text.split()
-    if not words:
-        return False
-    first_word = _normalize_token(words[0])
-    last_word = _normalize_token(words[-1])
-    if re.fullmatch(r"(section\s+)?\d+[.)]?", text.strip(), flags=re.IGNORECASE):
-        return False
-    return (
-        not text.endswith((".", "!", "?"))
-        or first_word in _LEADING_FRAGMENT_TOKENS
-        or last_word in _TRAILING_FRAGMENT_TOKENS
-        or text[:1].islower()
-    )
-
-
-def _split_or_wrap_caption_segment(
-    segment: TranscriptSegmentTiming,
-) -> list[TranscriptSegmentTiming]:
-    text = _clean_caption_text(segment.text)
-    if not text:
-        return []
-    if len(text) <= _CAPTION_MAX_BLOCK_CHARS:
-        return [
-            TranscriptSegmentTiming(
-                text=_wrap_caption_block_lines(text),
-                start=segment.start,
-                end=segment.end,
-                average_probability=segment.average_probability,
-            )
-        ]
-    return _split_sentence_unit_into_cues(
-        text,
-        start=segment.start,
-        end=segment.end,
-        average_probability=segment.average_probability,
-    )
-
-
-def _boundary_overlap_tokens(previous_text: str, next_text: str) -> int:
-    previous_tokens = previous_text.split()
-    next_tokens = next_text.split()
-    max_overlap = min(_BOUNDARY_DEDUPE_MAX_TOKENS, len(previous_tokens), len(next_tokens))
-    for size in range(max_overlap, 0, -1):
-        prev_tail = [_normalize_token(token) for token in previous_tokens[-size:]]
-        next_head = [_normalize_token(token) for token in next_tokens[:size]]
-        if any(not token for token in prev_tail + next_head):
-            continue
-        if prev_tail == next_head:
-            if size == 1 and previous_tokens[-1] == next_tokens[0] and previous_tokens[-1].istitle():
-                return 0
-            return size
-    return 0
-
-
 def _segment_overlap(start_a: float, end_a: float, start_b: float, end_b: float) -> float:
     overlap = max(0.0, min(end_a, end_b) - max(start_a, start_b))
     if overlap <= 0.0:
@@ -2670,14 +1723,14 @@ def _segment_overlap(start_a: float, end_a: float, start_b: float, end_b: float)
     return overlap / span
 
 
-def _render_caption_document(segments: list[TranscriptSegmentTiming], *, caption_format: CaptionFormat) -> str:
+def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption_format: CaptionFormat) -> str:
     rows = [(index, segment) for index, segment in enumerate(segments, start=1) if _clean_caption_text(segment.text)]
     if caption_format == CaptionFormat.VTT:
         blocks = ["WEBVTT", ""]
         for index, segment in rows:
             start_text = _format_caption_timestamp(segment.start, separator=".")
             end_text = _format_caption_timestamp(max(segment.end, segment.start + 0.2), separator=".")
-            text = str(segment.text or "").strip()
+            text = _clean_caption_text(segment.text)
             blocks.extend([str(index), f"{start_text} --> {end_text}", text, ""])
         return "\n".join(blocks).rstrip() + "\n"
 
@@ -2685,62 +1738,13 @@ def _render_caption_document(segments: list[TranscriptSegmentTiming], *, caption
     for index, segment in rows:
         start_text = _format_caption_timestamp(segment.start, separator=",")
         end_text = _format_caption_timestamp(max(segment.end, segment.start + 0.2), separator=",")
-        text = str(segment.text or "").strip()
+        text = _clean_caption_text(segment.text)
         blocks.extend([str(index), f"{start_text} --> {end_text}", text, ""])
     return "\n".join(blocks).rstrip() + ("\n" if blocks else "")
 
 
-def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption_format: CaptionFormat) -> str:
-    return _render_caption_document(
-        _compose_accessible_caption_blocks(segments),
-        caption_format=caption_format,
-    )
-
-
 def _clean_caption_text(text: str) -> str:
-    cleaned = " ".join(str(text or "").split()).strip()
-    if not cleaned:
-        return ""
-    cleaned = re.sub(r"\s*-\s*([A-Za-z])", r"-\1", cleaned)
-    words = cleaned.split()
-    if len(words) >= 2:
-        first = _normalize_token(words[0])
-        second = _normalize_token(words[1])
-        if first and first == second and first in _LEAD_REPEAT_NORMALIZE_TOKENS:
-            words.pop(1)
-            cleaned = " ".join(words)
-    cleaned = re.sub(r"^of that\.\s+", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(
-        r"\b[Ss]tep\s+(\d+)\s+is\s+ascertain\b",
-        r"Step \1 is to ascertain",
-        cleaned,
-    )
-    cleaned = re.sub(
-        r"\bIf that apparent inconsistency that is found at Step (\d+) ascertain\b",
-        r"If that apparent inconsistency is found at Step \1, ascertain",
-        cleaned,
-    )
-    cleaned = re.sub(
-        r"\bpresumption to be found,\s+the presumption of innocence\b",
-        "presumption of innocence",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(r"^is now justified\.\s+", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"^it is\s+(?=The apparent inconsistency\b)", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(
-        r"(?<=,)\s*it is\s+(?=The apparent inconsistency\b)",
-        " ",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    cleaned = re.sub(
-        r"^Now, if it is justified, and so this is moving to step (\d+), if the inconsistency\b",
-        r"Now, moving to step \1, if the inconsistency",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
-    return cleaned
+    return " ".join(str(text or "").split()).strip()
 
 
 def _format_caption_timestamp(seconds: float, *, separator: str) -> str:

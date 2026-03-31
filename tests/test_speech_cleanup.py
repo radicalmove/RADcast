@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import shutil
 import wave
 from pathlib import Path
@@ -14,12 +15,6 @@ from radcast.services.speech_cleanup import (
     SpeechCleanupService,
     TranscriptSegmentTiming,
     TranscriptWordTiming,
-    _caption_review_flag_budget,
-    _compose_accessible_caption_blocks,
-    _clean_caption_text,
-    _dedupe_adjacent_caption_blocks,
-    _format_caption_document,
-    _build_caption_prompt,
     _collect_timing_rows,
     _transcription_eta_seconds,
     _windowed_transcription_eta_seconds,
@@ -342,7 +337,7 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
 
     monkeypatch.setattr(service, "_load_model", lambda _model_size=None: object())
 
-    def fake_transcribe_file_with_info(
+    def fake_transcribe_file(
         _model,
         clip_path: Path,
         *,
@@ -350,8 +345,6 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
         beam_size: int | None = None,
         condition_on_previous_text: bool = False,
         initial_prompt: str | None = None,
-        language_override: str | None = None,
-        vad_filter_override: bool | None = None,
     ):
         calls.append((clip_path.name, preserve_fillers))
         if clip_path.name == "window_000000.wav":
@@ -362,7 +355,7 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
                     text="um",
                     words=[SimpleNamespace(start=1.2, end=1.45, word="um", probability=0.02)],
                 )
-            ], SimpleNamespace()
+            ]
         if clip_path.name == "window_006000.wav":
             return [
                 SimpleNamespace(
@@ -371,10 +364,10 @@ def test_transcribe_timeline_aggressive_mode_uses_windowed_prompted_pass(monkeyp
                     text="uh",
                     words=[SimpleNamespace(start=1.1, end=1.34, word="uh", probability=0.01)],
                 )
-            ], SimpleNamespace()
-        return [], SimpleNamespace()
+            ]
+        return []
 
-    monkeypatch.setattr(service, "_transcribe_file_with_info", fake_transcribe_file_with_info)
+    monkeypatch.setattr(service, "_transcribe_file", fake_transcribe_file)
 
     words, _segments = service._transcribe_timeline(
         audio_path,
@@ -513,97 +506,6 @@ def test_generate_caption_file_uses_accurate_profile_and_maori_glossary(monkeypa
     assert "organisation" in str(captured["initial_prompt"])
 
 
-def test_generate_reviewed_caption_file_uses_larger_windows_for_long_audio(monkeypatch, tmp_path: Path):
-    sample_rate = 16000
-    audio = np.zeros(int(sample_rate * 350.0), dtype=np.float32)
-    audio_path = tmp_path / "lecture.wav"
-    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
-
-    service = SpeechCleanupService()
-    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
-    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
-
-    captured: dict[str, object] = {}
-
-    def fake_transcribe_timeline(*args, **kwargs):
-        captured.update(kwargs)
-        return [], [TranscriptSegmentTiming(text="Caption text", start=0.0, end=0.9)]
-
-    monkeypatch.setattr(service, "_transcribe_timeline", fake_transcribe_timeline)
-
-    service.generate_caption_file(
-        audio_path=audio_path,
-        caption_format=CaptionFormat.VTT,
-        caption_quality_mode=CaptionQualityMode.REVIEWED,
-    )
-
-    assert captured["window_seconds"] == 42.0
-    assert captured["overlap_seconds"] == 1.5
-
-
-def test_caption_transcribe_file_does_not_force_english_when_caption_language_is_auto(monkeypatch, tmp_path: Path):
-    sample_rate = 16000
-    audio = np.zeros(int(sample_rate * 0.8), dtype=np.float32)
-    audio_path = tmp_path / "caption.wav"
-    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
-
-    service = SpeechCleanupService()
-    service.transcribe_language = "en"
-
-    captured: dict[str, object] = {}
-
-    class FakeModel:
-        def transcribe(self, path: str, **kwargs):
-            captured.update(kwargs)
-            return iter([]), SimpleNamespace()
-
-    list(
-        service._transcribe_file(
-            FakeModel(),
-            audio_path,
-            preserve_fillers=False,
-            language_override="auto",
-        )
-    )
-
-    assert "language" not in captured
-
-
-def test_transcribe_windowed_timeline_reuses_detected_language_and_disables_vad_for_dense_speech(monkeypatch, tmp_path: Path):
-    sample_rate = 16000
-    audio = np.zeros(int(sample_rate * 70.0), dtype=np.float32)
-    audio_path = tmp_path / "caption.wav"
-    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
-
-    service = SpeechCleanupService()
-    monkeypatch.setattr(service, "_load_model", lambda _model_size=None: FakeModel())
-
-    calls: list[dict[str, object]] = []
-
-    class FakeModel:
-        def transcribe(self, path: str, **kwargs):
-            calls.append(kwargs)
-            return iter([]), SimpleNamespace(language="en", language_probability=0.995, duration=20.0, duration_after_vad=19.98)
-
-    service._transcribe_windowed_timeline(
-        audio_path,
-        total_duration=70.0,
-        started_at=0.0,
-        cleanup_eta_seconds=300,
-        on_stage=None,
-        preserve_fillers=False,
-        window_seconds=20.0,
-        overlap_seconds=2.0,
-        language_override="auto",
-    )
-
-    assert len(calls) >= 3
-    assert "language" not in calls[0]
-    assert calls[0]["vad_filter"] is True
-    assert calls[1]["language"] == "en"
-    assert calls[2]["vad_filter"] is False
-
-
 def test_generate_caption_file_dedupes_overlapping_duplicate_lines(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     audio = np.zeros(int(sample_rate * 3.5), dtype=np.float32)
@@ -632,469 +534,6 @@ def test_generate_caption_file_dedupes_overlapping_duplicate_lines(monkeypatch, 
     text = result.caption_path.read_text(encoding="utf-8")
     assert text.count("Kia ora and welcome everyone") == 1
     assert "We will start with tikanga." in text
-
-
-def test_format_caption_document_wraps_long_line_into_two_readable_lines():
-    segments = [
-        TranscriptSegmentTiming(
-            text="This sentence should wrap near a comma, rather than becoming one long caption line.",
-            start=0.0,
-            end=4.2,
-            average_probability=0.91,
-        )
-    ]
-
-    text = _format_caption_document(segments, caption_format=CaptionFormat.VTT)
-
-    assert "This sentence should wrap near a comma,\nrather than becoming one long caption line." in text
-
-
-def test_clean_caption_text_normalizes_hyphen_spaced_compounds():
-    assert _clean_caption_text("step -by -step methodology") == "step-by-step methodology"
-
-
-def test_clean_caption_text_dedupes_accidental_repeated_first_word():
-    assert _clean_caption_text("If If that apparent inconsistency is found") == "If that apparent inconsistency is found"
-
-
-def test_clean_caption_text_joins_in_this_case_fragment_to_following_clause():
-    assert (
-        _clean_caption_text("In this case, it touches upon the presumption to be found, the presumption of innocence")
-        == "In this case, it touches upon the presumption of innocence"
-    )
-
-
-def test_clean_caption_text_removes_bad_it_is_the_join():
-    assert (
-        _clean_caption_text("it is The apparent inconsistency at step 2 is legitimised and Parliament's")
-        == "The apparent inconsistency at step 2 is legitimised and Parliament's"
-    )
-
-
-def test_clean_caption_text_removes_bad_it_is_the_join_mid_sentence():
-    assert (
-        _clean_caption_text(
-            "is a justified limit, and you have made that argument, it is The apparent inconsistency at step 2 is legitimised"
-        )
-        == "is a justified limit, and you have made that argument, The apparent inconsistency at step 2 is legitimised"
-    )
-
-
-def test_clean_caption_text_fixes_step_two_ascertain_phrase():
-    assert (
-        _clean_caption_text(
-            "If that apparent inconsistency that is found at Step 2 ascertain whether that inconsistency is nevertheless justified."
-        )
-        == "If that apparent inconsistency is found at Step 2, ascertain whether that inconsistency is nevertheless justified."
-    )
-
-
-def test_clean_caption_text_simplifies_step_four_transition_phrase():
-    assert (
-        _clean_caption_text(
-            "Now, if it is justified, and so this is moving to step 4, if the inconsistency is a justified limit"
-        )
-        == "Now, moving to step 4, if the inconsistency is a justified limit"
-    )
-
-
-def test_format_caption_document_normalizes_transcript_artifacts_before_render():
-    segments = [
-        TranscriptSegmentTiming(
-            text="is he sets out a step -by -step methodology for approaching any inconsistency with NZBORA.",
-            start=0.0,
-            end=5.0,
-            average_probability=0.88,
-        ),
-        TranscriptSegmentTiming(
-            text="If If that apparent inconsistency that is found at Step 2 ascertain whether it is justified.",
-            start=5.1,
-            end=10.2,
-            average_probability=0.84,
-        ),
-    ]
-
-    text = _format_caption_document(segments, caption_format=CaptionFormat.VTT)
-
-    assert "step-by-step" in text
-    assert "If If" not in text
-
-
-def test_dedupe_adjacent_caption_blocks_trims_boundary_overlap_only():
-    segments = [
-        TranscriptSegmentTiming(text="This section explains accessible", start=0.0, end=1.8, average_probability=0.9),
-        TranscriptSegmentTiming(text="accessible captions for learners", start=1.8, end=3.4, average_probability=0.9),
-    ]
-
-    deduped = _dedupe_adjacent_caption_blocks(segments)
-
-    assert deduped[0].text == "This section explains accessible"
-    assert deduped[1].text == "captions for learners"
-
-
-def test_compose_accessible_caption_blocks_merges_connector_fragment_with_previous_cue():
-    segments = [
-        TranscriptSegmentTiming(
-            text="In a tikanga Māori space, the victim has a very important role in the process of utu,",
-            start=0.88,
-            end=8.32,
-            average_probability=0.91,
-        ),
-        TranscriptSegmentTiming(
-            text="or the process of rebalancing.",
-            start=8.42,
-            end=10.02,
-            average_probability=0.91,
-        ),
-    ]
-
-    composed = _compose_accessible_caption_blocks(segments)
-
-    rendered_text = " ".join(segment.text.replace("\n", " ") for segment in composed)
-
-    assert rendered_text == (
-        "In a tikanga Māori space, the victim has a very important role in the process of utu, "
-        "or the process of rebalancing."
-    )
-    assert all(not segment.text.startswith("or ") for segment in composed)
-
-
-def test_compose_accessible_caption_blocks_merges_short_leadin_with_following_clause():
-    segments = [
-        TranscriptSegmentTiming(text="So coming to", start=26.32, end=27.5, average_probability=0.93),
-        TranscriptSegmentTiming(
-            text="an agreement as to how it is best to rehabilitate and rebalance the harm",
-            start=27.5,
-            end=38.1,
-            average_probability=0.93,
-        ),
-        TranscriptSegmentTiming(text="that was done.", start=38.1, end=38.78, average_probability=0.93),
-    ]
-
-    composed = _compose_accessible_caption_blocks(segments)
-
-    rendered_text = " ".join(segment.text.replace("\n", " ") for segment in composed)
-
-    assert rendered_text == (
-        "So coming to an agreement as to how it is best to rehabilitate and rebalance the harm "
-        "that was done."
-    )
-    assert all(segment.text != "So coming to" for segment in composed)
-    assert all(segment.text != "that was done." for segment in composed)
-
-
-def test_compose_accessible_caption_blocks_avoids_dangling_trailing_line_fragments():
-    segments = [
-        TranscriptSegmentTiming(
-            text=(
-                "In a tikanga Māori space, the victim has a very important role in the process of utu, "
-                "or the process of rebalancing."
-            ),
-            start=0.88,
-            end=10.02,
-            average_probability=0.91,
-        ),
-        TranscriptSegmentTiming(
-            text=(
-                "there is a… collective involvement of the victim and the community with both the perpetrator "
-                "and the perpetrator's community in rebalancing and restoring balance."
-            ),
-            start=13.94,
-            end=26.32,
-            average_probability=0.92,
-        ),
-        TranscriptSegmentTiming(
-            text=(
-                "So coming to an agreement as to how it is best to rehabilitate and rebalance "
-                "the harm that was done."
-            ),
-            start=26.32,
-            end=38.78,
-            average_probability=0.93,
-        ),
-    ]
-
-    composed = _compose_accessible_caption_blocks(segments)
-
-    lines = [
-        line.strip()
-        for segment in composed
-        for line in segment.text.splitlines()
-        if line.strip()
-    ]
-    trailing_words = {line.split()[-1].lower() for line in lines}
-
-    assert "the" not in trailing_words
-    assert "with" not in trailing_words
-    assert "that" not in trailing_words
-    assert "in" not in trailing_words
-    assert all(segment.text != "was done." for segment in composed)
-    assert all(segment.text != "both the perpetrator" for segment in composed)
-    assert all(segment.text != "there is a… collective" for segment in composed)
-
-
-def test_compose_accessible_caption_blocks_does_not_merge_new_sentence_into_previous_period():
-    segments = [
-        TranscriptSegmentTiming(
-            text="the perpetrator's community in rebalancing and restoring balance.",
-            start=21.68,
-            end=26.26,
-            average_probability=0.92,
-        ),
-        TranscriptSegmentTiming(
-            text="So coming to an agreement as to how it is best to rehabilitate and rebalance the harm that was done.",
-            start=26.32,
-            end=38.78,
-            average_probability=0.93,
-        ),
-    ]
-
-    composed = _compose_accessible_caption_blocks(segments)
-
-    assert all("balance.\nSo coming" not in segment.text for segment in composed)
-    rendered_text = " ".join(segment.text.replace("\n", " ") for segment in composed)
-    assert "balance. So coming" in rendered_text
-
-
-def test_compose_accessible_caption_blocks_rebalances_continuation_starts():
-    segments = [
-        TranscriptSegmentTiming(
-            text="there is a… collective involvement of the victim and the community",
-            start=13.949,
-            end=20.381,
-            average_probability=0.92,
-        ),
-        TranscriptSegmentTiming(
-            text="with both the perpetrator",
-            start=20.381,
-            end=22.720,
-            average_probability=0.92,
-        ),
-        TranscriptSegmentTiming(
-            text="and the perpetrator's community in rebalancing and restoring balance.",
-            start=22.720,
-            end=26.320,
-            average_probability=0.92,
-        ),
-        TranscriptSegmentTiming(
-            text="So coming to an agreement as to how it is best to rehabilitate",
-            start=26.320,
-            end=34.419,
-            average_probability=0.93,
-        ),
-        TranscriptSegmentTiming(
-            text="and rebalance the harm that was done.",
-            start=34.419,
-            end=38.780,
-            average_probability=0.93,
-        ),
-    ]
-
-    composed = _compose_accessible_caption_blocks(segments)
-    texts = [segment.text.replace("\n", " ") for segment in composed]
-
-    assert all(not text.startswith("with ") for text in texts)
-    assert all(not text.startswith("and ") for text in texts)
-
-
-def test_compose_accessible_caption_blocks_merges_numeric_stub_cue():
-    segments = [
-        TranscriptSegmentTiming(
-            text="five, which is if Parliament's intended meaning represents an unjustified limit under section",
-            start=39.40,
-            end=40.82,
-            average_probability=0.92,
-        ),
-        TranscriptSegmentTiming(text="5.", start=40.82, end=41.02, average_probability=0.92),
-        TranscriptSegmentTiming(
-            text="The court must examine So only now, after that Section 5 analysis, do we move on.",
-            start=41.02,
-            end=49.48,
-            average_probability=0.92,
-        ),
-    ]
-
-    composed = _compose_accessible_caption_blocks(segments)
-    texts = [segment.text.replace("\n", " ") for segment in composed]
-
-    assert all(text != "5." for text in texts)
-    assert any("section 5." in text.lower() for text in texts)
-
-
-def test_compose_accessible_caption_blocks_keeps_step_transition_with_legal_sentence():
-    segments = [
-        TranscriptSegmentTiming(
-            text="against any adverse sort of depiction.",
-            start=48.92,
-            end=51.51,
-            average_probability=0.9,
-        ),
-        TranscriptSegmentTiming(
-            text="of that. Step 2 is ascertain whether that meaning is apparently",
-            start=52.62,
-            end=58.28,
-            average_probability=0.88,
-        ),
-        TranscriptSegmentTiming(
-            text="inconsistent with a relevant right or freedom.",
-            start=58.28,
-            end=61.88,
-            average_probability=0.9,
-        ),
-    ]
-
-    composed = _compose_accessible_caption_blocks(segments)
-    texts = [segment.text.replace("\n", " ") for segment in composed]
-
-    assert all(not text.startswith("of that.") for text in texts)
-    assert any("Step 2" in text and "ascertain" in text for text in texts)
-
-
-def test_compose_accessible_caption_blocks_merges_justified_tail_fragment():
-    segments = [
-        TranscriptSegmentTiming(
-            text="society, or it is justified.",
-            start=169.95,
-            end=172.30,
-            average_probability=0.9,
-        ),
-        TranscriptSegmentTiming(
-            text="is now justified. The apparent inconsistency at step 2 is legitimised and Parliament's",
-            start=181.37,
-            end=187.02,
-            average_probability=0.88,
-        ),
-        TranscriptSegmentTiming(
-            text="intended meaning prevails.",
-            start=187.02,
-            end=188.39,
-            average_probability=0.9,
-        ),
-    ]
-
-    composed = _compose_accessible_caption_blocks(segments)
-    texts = [segment.text.replace("\n", " ") for segment in composed]
-
-    assert all(not text.startswith("is now justified.") for text in texts)
-    assert any("The apparent inconsistency at step 2 is legitimised" in text for text in texts)
-
-
-def test_format_caption_document_cleans_remaining_legal_phrase_artifacts():
-    segments = [
-        TranscriptSegmentTiming(
-            text="In this case, it",
-            start=84.40,
-            end=86.42,
-            average_probability=0.9,
-        ),
-        TranscriptSegmentTiming(
-            text="touches upon the presumption to be found, the presumption of innocence",
-            start=86.42,
-            end=91.98,
-            average_probability=0.88,
-        ),
-        TranscriptSegmentTiming(
-            text="until found guilty.",
-            start=91.98,
-            end=93.49,
-            average_probability=0.9,
-        ),
-        TranscriptSegmentTiming(
-            text="it is The apparent inconsistency at step 2 is legitimised and Parliament's",
-            start=181.55,
-            end=187.15,
-            average_probability=0.88,
-        ),
-        TranscriptSegmentTiming(
-            text="intended meaning prevails.",
-            start=187.15,
-            end=188.58,
-            average_probability=0.9,
-        ),
-    ]
-
-    text = _format_caption_document(segments, caption_format=CaptionFormat.VTT)
-
-    assert "presumption to be found" not in text
-    assert "In this case, it touches upon the presumption" in text
-    assert "of innocence until found guilty." in text
-    assert "it is The apparent inconsistency" not in text
-    assert "The apparent inconsistency at step" in text
-    assert "2 is legitimised and Parliament's" in text
-
-
-def test_format_caption_document_cleans_remaining_hansen_step_phrases():
-    segments = [
-        TranscriptSegmentTiming(
-            text="If that apparent inconsistency that is found at Step 2 ascertain",
-            start=103.91,
-            end=109.22,
-            average_probability=0.88,
-        ),
-        TranscriptSegmentTiming(
-            text="whether that inconsistency is nevertheless justified in terms of section 5.",
-            start=109.22,
-            end=114.51,
-            average_probability=0.9,
-        ),
-        TranscriptSegmentTiming(
-            text="Now, if it is justified, and so this is moving to step 4, if the inconsistency",
-            start=172.86,
-            end=177.73,
-            average_probability=0.88,
-        ),
-        TranscriptSegmentTiming(
-            text="is a justified limit, and you have made that argument.",
-            start=177.73,
-            end=183.20,
-            average_probability=0.9,
-        ),
-    ]
-
-    text = _format_caption_document(segments, caption_format=CaptionFormat.VTT)
-
-    assert "that is found at Step 2 ascertain" not in text
-    assert "is found at Step 2," in text
-    assert "ascertain whether that inconsistency" in text
-    assert "and so this is moving to step 4" not in text
-    assert "Now, moving to step 4" in text
-
-
-def test_format_caption_document_removes_embedded_it_is_the_join():
-    segments = [
-        TranscriptSegmentTiming(
-            text="Now, moving to step 4, if the inconsistency is a justified limit, and you have made that argument,",
-            start=172.86,
-            end=180.52,
-            average_probability=0.9,
-        ),
-        TranscriptSegmentTiming(
-            text="it is The apparent inconsistency at step 2 is legitimised and Parliament's",
-            start=180.52,
-            end=186.15,
-            average_probability=0.88,
-        ),
-        TranscriptSegmentTiming(
-            text="intended meaning prevails.",
-            start=186.15,
-            end=187.58,
-            average_probability=0.9,
-        ),
-    ]
-
-    text = _format_caption_document(segments, caption_format=CaptionFormat.VTT)
-
-    assert "it is The apparent" not in text
-    assert ", The" in text
-    assert "inconsistency at step 2 is" in text
-
-
-def test_build_caption_prompt_includes_nz_legal_terms():
-    prompt = _build_caption_prompt(None)
-
-    assert "NZBORA" in prompt
-    assert "Tipping J" in prompt
-    assert "Moonen" in prompt
 
 
 def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossary(monkeypatch, tmp_path: Path):
@@ -1146,8 +585,8 @@ def test_generate_caption_file_reviewed_mode_uses_review_sweep_and_custom_glossa
     assert captured["model_size"] == service.caption_accurate_model_size
     assert captured["beam_size"] == service.caption_accurate_beam_size
     assert captured["condition_on_previous_text"] is True
-    assert captured["window_seconds"] == 24.0
-    assert captured["overlap_seconds"] == 2.5
+    assert captured["window_seconds"] == 16.0
+    assert captured["overlap_seconds"] == 3.0
     assert captured["review_called"] is True
     assert "organisation" in str(captured["initial_prompt"])
     assert "Te Tiriti o Waitangi" in str(captured["initial_prompt"])
@@ -1169,7 +608,7 @@ def test_generate_caption_file_writes_review_notes_for_low_confidence_segments(m
         lambda *args, **kwargs: (
             [],
             [
-                TranscriptSegmentTiming(text="This line should be checked", start=0.0, end=1.4, average_probability=0.31),
+                TranscriptSegmentTiming(text="This line should be checked", start=0.0, end=1.4, average_probability=0.39),
                 TranscriptSegmentTiming(text="This line is okay", start=1.6, end=2.2, average_probability=0.83),
             ],
         ),
@@ -1199,12 +638,6 @@ def test_estimate_caption_runtime_seconds_adds_cold_start_for_uncached_accurate_
     assert cold_seconds > warm_seconds
 
 
-def test_caption_accurate_model_defaults_to_large_v3_turbo():
-    service = SpeechCleanupService()
-
-    assert service.caption_accurate_model_size == "large-v3-turbo"
-
-
 def test_estimate_caption_runtime_seconds_for_reviewed_mode_accounts_for_review_model_cache(monkeypatch):
     service = SpeechCleanupService()
     monkeypatch.setattr(
@@ -1219,6 +652,26 @@ def test_estimate_caption_runtime_seconds_for_reviewed_mode_accounts_for_review_
     warm_seconds = service.estimate_caption_runtime_seconds(120, quality_mode=CaptionQualityMode.REVIEWED)
 
     assert cold_seconds > warm_seconds
+
+
+def test_load_model_evicts_other_cached_models(monkeypatch):
+    service = SpeechCleanupService()
+
+    class FakeWhisperModel:
+        def __init__(self, model_size: str, device: str | None = None, compute_type: str | None = None):
+            self.model_size = model_size
+            self.device = device
+            self.compute_type = compute_type
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel))
+
+    medium_model = service._load_model("medium")
+    assert service._models.keys() == {"medium"}
+
+    large_model = service._load_model("large-v3")
+    assert service._models.keys() == {"large-v3"}
+    assert medium_model is not large_model
+    assert service._load_model("large-v3") is large_model
 
 
 def test_transcription_eta_stays_conservative_until_late_caption_stage():
@@ -1241,85 +694,6 @@ def test_windowed_transcription_eta_stays_conservative_across_tail():
         total_windows=12,
         coverage=0.94,
     ) >= 8
-
-
-def test_windowed_transcription_eta_does_not_explode_from_one_slow_early_window():
-    eta = _windowed_transcription_eta_seconds(
-        elapsed_seconds=300,
-        cleanup_eta_seconds=900,
-        processed_windows=1,
-        total_windows=8,
-        coverage=0.13,
-    )
-
-    assert eta <= 1500
-
-
-def test_review_budget_shrinks_for_long_reviewed_caption_jobs():
-    assert _caption_review_flag_budget(90) >= _caption_review_flag_budget(300)
-    assert _caption_review_flag_budget(300) >= _caption_review_flag_budget(900)
-    assert _caption_review_flag_budget(900) <= 4
-
-
-def test_generate_caption_file_seeds_window_detail_before_first_window_finishes(monkeypatch, tmp_path: Path):
-    sample_rate = 16000
-    audio = np.zeros(int(sample_rate * 65.0), dtype=np.float32)
-    audio_path = tmp_path / "lecture.wav"
-    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
-
-    service = SpeechCleanupService()
-    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
-    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
-
-    progress_updates: list[tuple[float, str, int | None]] = []
-
-    def fake_transcribe_timeline(*args, **kwargs):
-        return [], [TranscriptSegmentTiming(text="Caption text", start=0.0, end=1.0)]
-
-    monkeypatch.setattr(service, "_transcribe_timeline", fake_transcribe_timeline)
-
-    service.generate_caption_file(
-        audio_path=audio_path,
-        caption_format=CaptionFormat.VTT,
-        caption_quality_mode=CaptionQualityMode.REVIEWED,
-        on_stage=lambda progress, detail, eta: progress_updates.append((progress, detail, eta)),
-    )
-
-    assert progress_updates
-    initial_detail = progress_updates[0][1]
-    assert "Window 1 of" in initial_detail
-
-
-def test_generate_caption_file_emits_post_transcription_analysis_and_formatting_stages(monkeypatch, tmp_path: Path):
-    sample_rate = 16000
-    audio = np.zeros(int(sample_rate * 90.0), dtype=np.float32)
-    audio_path = tmp_path / "lecture.wav"
-    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
-
-    service = SpeechCleanupService()
-    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
-    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
-    monkeypatch.setattr(
-        service,
-        "_transcribe_timeline",
-        lambda *args, **kwargs: (
-            [],
-            [TranscriptSegmentTiming(text="Caption text", start=0.0, end=1.0, average_probability=0.95)],
-        ),
-    )
-
-    progress_updates: list[tuple[float, str, int | None]] = []
-
-    service.generate_caption_file(
-        audio_path=audio_path,
-        caption_format=CaptionFormat.VTT,
-        caption_quality_mode=CaptionQualityMode.REVIEWED,
-        on_stage=lambda progress, detail, eta: progress_updates.append((progress, detail, eta)),
-    )
-
-    details = [detail for _, detail, _ in progress_updates]
-    assert any("Analyzing caption confidence." in detail for detail in details)
-    assert any("Formatting accessible captions." in detail for detail in details)
 
 
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):
