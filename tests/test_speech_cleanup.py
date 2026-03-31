@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import shutil
 import wave
 from pathlib import Path
@@ -1372,3 +1373,23 @@ def test_cleanup_result_summary_text_formats_counts():
     result = SpeechCleanupResult(applied=True, removed_pause_count=2, removed_filler_count=1, duration_seconds=9.5)
 
     assert result.summary_text() == "Shortened 2 long pauses, removed 1 filler word."
+
+
+def test_load_model_evicts_other_cached_models(monkeypatch):
+    service = SpeechCleanupService()
+
+    class FakeWhisperModel:
+        def __init__(self, model_size: str, device: str | None = None, compute_type: str | None = None):
+            self.model_size = model_size
+            self.device = device
+            self.compute_type = compute_type
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel))
+
+    medium_model = service._load_model("medium")
+    assert service._models.keys() == {"medium"}
+
+    large_model = service._load_model("large-v3")
+    assert service._models.keys() == {"large-v3"}
+    assert medium_model is not large_model
+    assert service._load_model("large-v3") is large_model
