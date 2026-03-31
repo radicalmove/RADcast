@@ -318,8 +318,8 @@ class SpeechCleanupService:
         self.transcribe_language = os.environ.get("RADCAST_SPEECH_CLEANUP_LANGUAGE", "en").strip().lower() or "en"
         self.beam_size = max(1, int(os.environ.get("RADCAST_SPEECH_CLEANUP_BEAM_SIZE", "3")))
         self.caption_fast_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_FAST_BEAM_SIZE", str(self.beam_size))))
-        self.caption_accurate_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_ACCURATE_BEAM_SIZE", "5")))
-        self.caption_reviewed_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_REVIEWED_BEAM_SIZE", "7")))
+        self.caption_accurate_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_ACCURATE_BEAM_SIZE", "3")))
+        self.caption_reviewed_beam_size = max(1, int(os.environ.get("RADCAST_CAPTION_REVIEWED_BEAM_SIZE", "5")))
         self._models: dict[str, object] = {}
         self._model_lock = threading.Lock()
 
@@ -985,7 +985,7 @@ class SpeechCleanupService:
             model,
             snippet_path,
             preserve_fillers=False,
-            beam_size=self.caption_reviewed_beam_size + 1,
+            beam_size=self.caption_reviewed_beam_size,
             condition_on_previous_text=True,
             initial_prompt=_combine_prompt_parts(prompt_text, _CAPTION_REVIEW_PROMPT),
         )
