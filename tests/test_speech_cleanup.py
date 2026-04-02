@@ -46,6 +46,56 @@ def test_speech_cleanup_selects_whispercpp_for_macos_local_helper(monkeypatch):
     assert service._caption_backend.id == "whispercpp"
 
 
+def test_generate_caption_file_reports_caption_backend_and_model(monkeypatch, tmp_path: Path):
+    from radcast.services import speech_cleanup as speech_cleanup_module
+
+    sample_rate = 16000
+    tone_t = np.linspace(0.0, 0.5, int(sample_rate * 0.5), endpoint=False)
+    audio = (0.2 * np.sin(2.0 * np.pi * 220.0 * tone_t)).astype(np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    monkeypatch.setenv("RADCAST_RUNTIME_CONTEXT", "local_helper")
+    monkeypatch.setenv("RADCAST_CAPTION_BACKEND", "auto")
+    monkeypatch.setenv("RADCAST_CAPTION_ACCURATE_MODEL", "small")
+    monkeypatch.setenv("RADCAST_CAPTION_REVIEWED_MODEL", "medium")
+    monkeypatch.setattr(speech_cleanup_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        speech_cleanup_module.WhisperCppCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.FasterWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst, *, audio_filters=None: shutil.copy2(src, dst))
+    monkeypatch.setattr("radcast.services.speech_cleanup.probe_duration_seconds", _wav_duration_seconds)
+
+    service = SpeechCleanupService()
+    stage_updates: list[tuple[float, str, int | None]] = []
+
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda _path, **kwargs: (
+            [],
+            [TranscriptSegmentTiming(text="hello world", start=0.0, end=0.4, average_probability=0.95)],
+        ),
+    )
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+        on_stage=lambda progress, detail, eta: stage_updates.append((progress, detail, eta)),
+    )
+
+    assert result.caption_path.exists()
+    assert any("whisper.cpp" in detail and "small" in detail for _progress, detail, _eta in stage_updates)
+
+
 def _write_test_wav(path: Path, samples: np.ndarray, *, sample_rate: int = 16000) -> None:
     clipped = np.clip(samples, -1.0, 1.0 - (1.0 / 32768.0))
     pcm = np.round(clipped * 32767.0).astype("<i2")
@@ -863,7 +913,9 @@ def test_generate_caption_file_announces_first_window_before_transcription(monke
     assert result.caption_path.exists()
     assert stages[0][0] == 0.02
     assert "Loading" in stages[0][1]
-    assert "caption model and transcribing speech for captions." in stages[0][1]
+    assert "caption model and transcribing speech for captions with" in stages[0][1]
+    assert "faster-whisper" in stages[0][1]
+    assert "(medium)" in stages[0][1]
     assert "Window 1 of 1." in stages[0][1]
     assert stages[0][2] == 90
 

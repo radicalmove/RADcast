@@ -53,6 +53,16 @@ def test_ui_homepage_renders():
     assert "Caption quality" not in response.text
 
 
+def test_ui_homepage_exposes_app_env_for_theme_overrides(monkeypatch):
+    client = TestClient(app)
+    monkeypatch.setattr(radcast_api, "APP_ENV", "development")
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'data-app-env="development"' in response.text
+
+
 def test_ui_homepage_renders_help_modal_shell():
     client = TestClient(app)
     response = client.get("/")

@@ -115,6 +115,7 @@ WORKER_INSTALL_SPEC = (
     or "git+https://github.com/radicalmove/RADcast.git"
 )
 MACOS_HELPER_TORCH_INSTALL = "torch==2.1.1 torchaudio==2.1.1 torchvision==0.16.1"
+APP_ENV = os.environ.get("RADCAST_APP_ENV", "production").strip().lower() or "production"
 
 
 app = FastAPI(title="RADcast API", version="0.1.0")
@@ -1203,6 +1204,7 @@ def home(request: Request):
         request=request,
         name="index.html",
         context={
+            "app_env": APP_ENV,
             "auth_required": AUTH_REQUIRED,
             "current_user": _current_user(request),
             "psychek_app_url": PSYCHEK_APP_URL,

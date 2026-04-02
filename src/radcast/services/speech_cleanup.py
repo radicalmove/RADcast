@@ -250,6 +250,20 @@ def _windowed_stage_detail(detail: str, *, current_window: int, total_windows: i
     return f"{base}. Window {max(1, int(current_window))} of {max(1, int(total_windows))}."
 
 
+def _caption_backend_display_name(backend: CaptionBackend) -> str:
+    if backend.id == "whispercpp":
+        return "whisper.cpp"
+    if backend.id == "faster_whisper":
+        return "faster-whisper"
+    return backend.id
+
+
+def _caption_stage_detail(*, action: str, backend: CaptionBackend, model_size: str) -> str:
+    backend_label = _caption_backend_display_name(backend)
+    model_label = str(model_size or "").strip() or backend.default_model_size
+    return f"{action} with {backend_label} ({model_label})"
+
+
 @dataclass(frozen=True)
 class CaptionExportResult:
     caption_path: Path
@@ -592,10 +606,15 @@ class SpeechCleanupService:
         )
         started_at = time.monotonic()
         if on_stage:
+            backend_detail = _caption_stage_detail(
+                action="Transcribing speech for captions",
+                backend=self._caption_backend,
+                model_size=profile.model_size,
+            )
             detail = (
-                f"Loading {profile.model_size} caption model and transcribing speech for captions."
+                f"Loading {profile.model_size} caption model and {backend_detail.lower()}."
                 if not self._model_cache_ready(profile.model_size)
-                else "Transcribing speech for captions."
+                else backend_detail
             )
             on_stage(
                 0.02,
@@ -615,7 +634,11 @@ class SpeechCleanupService:
                 on_stage=on_stage,
                 remove_filler_words=False,
                 filler_removal_mode=FillerRemovalMode.AGGRESSIVE,
-                transcribe_detail="Transcribing speech for captions.",
+                transcribe_detail=_caption_stage_detail(
+                    action="Transcribing speech for captions",
+                    backend=self._caption_backend,
+                    model_size=profile.model_size,
+                ),
                 cancel_check=cancel_check,
                 force_windowed=True,
                 preserve_fillers=False,
@@ -637,7 +660,11 @@ class SpeechCleanupService:
                 if on_stage:
                     on_stage(
                         0.82,
-                        "Reviewing low-confidence caption lines.",
+                        _caption_stage_detail(
+                            action="Reviewing low-confidence caption lines",
+                            backend=self._faster_whisper_backend,
+                            model_size=self.caption_reviewed_model_size,
+                        ),
                         _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=10),
                     )
                 segments = self._review_and_correct_caption_segments(
