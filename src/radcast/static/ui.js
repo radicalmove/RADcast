@@ -2082,7 +2082,7 @@ function currentEtaRemainingSeconds() {
 
 function syncEtaFromJob(nextStage, nextEtaSeconds) {
   if (!Number.isFinite(nextEtaSeconds) || nextEtaSeconds <= 0) {
-    if (state.etaStage !== nextStage) {
+    if (state.etaStage !== nextStage || flexibleEtaStages.has(nextStage)) {
       state.etaSeconds = null;
       state.etaUpdatedAtMs = null;
       state.etaStage = nextStage;

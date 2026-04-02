@@ -62,6 +62,10 @@ _CAPTION_REVIEWED_WINDOW_SECONDS = 16.0
 _CAPTION_REVIEWED_OVERLAP_SECONDS = 3.0
 _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS = 1.8
 _CAPTION_REVIEW_MAX_FLAGS = 18
+_CAPTION_MAX_CUE_DURATION_SECONDS = 6.0
+_CAPTION_MAX_CUE_CHARACTERS = 84
+_CAPTION_MAX_CUE_WORDS = 14
+_CAPTION_MAX_LINE_CHARACTERS = 42
 _AGGRESSIVE_FILLER_PROMPT = (
     "Transcribe all spoken disfluencies exactly, including um, ums, uh, uhh, ah, ahh, erm, mm, and hesitation sounds."
 )
@@ -264,6 +268,11 @@ def _caption_stage_detail(*, action: str, backend: CaptionBackend, model_size: s
     return f"{action} with {backend_label} ({model_label})"
 
 
+def _indexed_stage_detail(detail: str, *, current_item: int, total_items: int) -> str:
+    base = str(detail or "").strip().rstrip(".")
+    return f"{base}. {max(1, int(current_item))} of {max(1, int(total_items))}."
+
+
 @dataclass(frozen=True)
 class CaptionExportResult:
     caption_path: Path
@@ -333,6 +342,8 @@ _AGGRESSIVE_FILLER_HEURISTICS = FillerRemovalHeuristics(
 
 class SpeechCleanupService:
     def __init__(self) -> None:
+        self.runtime_context = os.environ.get("RADCAST_RUNTIME_CONTEXT", "server").strip().lower() or "server"
+        self.platform_name = platform.system()
         self.cleanup_model_size = os.environ.get("RADCAST_SPEECH_CLEANUP_MODEL", "small").strip() or "small"
         self.caption_fast_model_size = os.environ.get("RADCAST_CAPTION_FAST_MODEL", self.cleanup_model_size).strip() or self.cleanup_model_size
         self.caption_accurate_model_size = os.environ.get("RADCAST_CAPTION_ACCURATE_MODEL", "medium").strip() or "medium"
@@ -368,8 +379,8 @@ class SpeechCleanupService:
         try:
             self.caption_backend_id = resolve_caption_backend_id(
                 os.environ.get("RADCAST_CAPTION_BACKEND", "auto"),
-                platform_name=platform.system(),
-                runtime_context=os.environ.get("RADCAST_RUNTIME_CONTEXT", "server"),
+                platform_name=self.platform_name,
+                runtime_context=self.runtime_context,
                 available_backends=available_backends,
             )
         except CaptionBackendSelectionError as exc:
@@ -421,6 +432,15 @@ class SpeechCleanupService:
             "Speech cleanup and caption export are available with faster-whisper "
             f"(cleanup: {self.cleanup_model_size}, captions: {self.caption_accurate_model_size}, review: {self.caption_reviewed_model_size})."
         )
+
+    def _caption_review_backend_config(self) -> tuple[CaptionBackend, str]:
+        if (
+            self.runtime_context == "local_helper"
+            and self.platform_name.lower() == "darwin"
+            and self.caption_backend_id == "whispercpp"
+        ):
+            return self._caption_backend, self.caption_accurate_model_size
+        return self._faster_whisper_backend, self.caption_reviewed_model_size
 
     def estimate_runtime_seconds(
         self,
@@ -598,6 +618,7 @@ class SpeechCleanupService:
         quality_mode = _normalize_caption_quality_mode(caption_quality_mode)
         caption_prompt = _build_caption_prompt(caption_glossary)
         profile = self._caption_profile_for_mode(quality_mode, caption_prompt=caption_prompt)
+        review_backend, review_model_size = self._caption_review_backend_config()
         caption_eta_seconds = self.estimate_caption_runtime_seconds(input_duration, quality_mode=quality_mode)
         total_windows = _estimate_window_count(
             total_duration=input_duration,
@@ -662,20 +683,28 @@ class SpeechCleanupService:
                         0.82,
                         _caption_stage_detail(
                             action="Reviewing low-confidence caption lines",
-                            backend=self._faster_whisper_backend,
-                            model_size=self.caption_reviewed_model_size,
+                            backend=review_backend,
+                            model_size=review_model_size,
                         ),
-                        _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=10),
+                        None,
                     )
                 segments = self._review_and_correct_caption_segments(
                     analysis_wav=analysis_wav,
                     base_segments=segments,
                     quality_report=quality_report,
                     prompt_text=caption_prompt,
+                    on_stage=on_stage,
+                    started_at=started_at,
+                    caption_eta_seconds=caption_eta_seconds,
+                    review_backend=review_backend,
+                    review_model_size=review_model_size,
                     cancel_check=cancel_check,
                 )
                 segments = _dedupe_caption_segments(segments)
-                quality_report = _build_caption_quality_report(segments)
+
+            export_segments = _shape_caption_segments_for_accessibility(segments)
+            export_segments = _dedupe_caption_segments(export_segments)
+            quality_report = _build_caption_quality_report(export_segments)
 
             output_path = audio_path.with_suffix(f".{caption_format.value}")
             review_path = None
@@ -686,7 +715,7 @@ class SpeechCleanupService:
                     _remaining_cleanup_eta(started_at, caption_eta_seconds, floor_seconds=2),
                 )
             output_path.write_text(
-                _format_caption_document(segments, caption_format=caption_format),
+                _format_caption_document(export_segments, caption_format=caption_format),
                 encoding="utf-8",
             )
             if quality_report.review_recommended:
@@ -695,7 +724,7 @@ class SpeechCleanupService:
         return CaptionExportResult(
             caption_path=output_path,
             caption_format=caption_format,
-            segment_count=len([segment for segment in segments if _clean_caption_text(segment.text)]),
+            segment_count=len([segment for segment in export_segments if _clean_caption_text(segment.text)]),
             review_path=review_path,
             quality_report=quality_report,
         )
@@ -992,18 +1021,49 @@ class SpeechCleanupService:
         base_segments: list[TranscriptSegmentTiming],
         quality_report: CaptionQualityReport,
         prompt_text: str | None,
+        on_stage: CleanupStageCallback | None = None,
+        started_at: float | None = None,
+        caption_eta_seconds: int | None = None,
+        review_backend: CaptionBackend | None = None,
+        review_model_size: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptSegmentTiming]:
         if not quality_report.flagged_segments:
             return base_segments
-        model = self._load_model(self.caption_reviewed_model_size)
+        selected_backend = review_backend or self._faster_whisper_backend
+        resolved_review_model_size = str(review_model_size or self.caption_reviewed_model_size).strip() or self.caption_reviewed_model_size
+        if selected_backend.id == "whispercpp":
+            model = None
+        else:
+            model = self._load_model(resolved_review_model_size, backend=selected_backend)
         waveform, sample_rate = _read_pcm16_wav(analysis_wav)
         corrected = list(base_segments)
+        flags = quality_report.flagged_segments[:_CAPTION_REVIEW_MAX_FLAGS]
+        total_flags = len(flags)
+        review_started_at = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="radcast_caption_review_") as tmp:
             tmp_path = Path(tmp)
-            for flag in quality_report.flagged_segments[:_CAPTION_REVIEW_MAX_FLAGS]:
+            for flag_index, flag in enumerate(flags, start=1):
                 if cancel_check and cancel_check():
                     raise JobCancelledError("job cancelled")
+                if on_stage:
+                    on_stage(
+                        0.82 + (((flag_index - 1) / max(1, total_flags)) * 0.08),
+                        _indexed_stage_detail(
+                            _caption_stage_detail(
+                                action="Reviewing low-confidence caption lines",
+                                backend=selected_backend,
+                                model_size=resolved_review_model_size,
+                            ),
+                            current_item=flag_index,
+                            total_items=total_flags,
+                        ),
+                        _review_sweep_eta_seconds(
+                            elapsed_seconds=max(0.0, time.monotonic() - review_started_at),
+                            processed_flags=flag_index - 1,
+                            total_flags=total_flags,
+                        ),
+                    )
                 matched_index = _find_segment_index(corrected, flag)
                 if matched_index is None:
                     continue
@@ -1014,6 +1074,8 @@ class SpeechCleanupService:
                     flag=flag,
                     prompt_text=prompt_text,
                     tmp_path=tmp_path,
+                    review_backend=selected_backend,
+                    review_model_size=resolved_review_model_size,
                 )
                 if candidate_segment is None:
                     continue
@@ -1023,6 +1085,27 @@ class SpeechCleanupService:
                 if next_probability + 0.03 < current_probability:
                     continue
                 corrected[matched_index] = candidate_segment
+                if on_stage:
+                    elapsed = max(0.0, time.monotonic() - review_started_at)
+                    overall_elapsed = max(0.0, time.monotonic() - float(started_at or review_started_at))
+                    on_stage(
+                        0.82 + ((flag_index / max(1, total_flags)) * 0.08),
+                        _indexed_stage_detail(
+                            _caption_stage_detail(
+                                action="Reviewing low-confidence caption lines",
+                                backend=selected_backend,
+                                model_size=resolved_review_model_size,
+                            ),
+                            current_item=flag_index,
+                            total_items=total_flags,
+                        ),
+                        _review_sweep_eta_seconds(
+                            elapsed_seconds=elapsed,
+                            processed_flags=flag_index,
+                            total_flags=total_flags,
+                        )
+                        or _remaining_cleanup_eta(float(started_at or review_started_at), int(caption_eta_seconds or max(30, int(overall_elapsed + 8))), floor_seconds=4),
+                    )
         return corrected
 
     def _review_caption_flag(
@@ -1034,6 +1117,8 @@ class SpeechCleanupService:
         flag: CaptionReviewFlag,
         prompt_text: str | None,
         tmp_path: Path,
+        review_backend: CaptionBackend | None = None,
+        review_model_size: str | None = None,
     ) -> TranscriptSegmentTiming | None:
         snippet_start = max(0.0, flag.start - _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS)
         snippet_end = max(snippet_start + 0.5, flag.end + _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS)
@@ -1045,6 +1130,7 @@ class SpeechCleanupService:
             return None
         snippet_path = tmp_path / f"caption_review_{int(round(flag.start * 1000))}.wav"
         _write_pcm16_wav(snippet_path, waveform[start_idx:end_idx], sample_rate=sample_rate)
+        selected_backend = review_backend or self._faster_whisper_backend
         review_segments = self._transcribe_file(
             model,
             snippet_path,
@@ -1052,6 +1138,8 @@ class SpeechCleanupService:
             beam_size=self.caption_reviewed_beam_size,
             condition_on_previous_text=True,
             initial_prompt=_combine_prompt_parts(prompt_text, _CAPTION_REVIEW_PROMPT),
+            backend=selected_backend,
+            model_size=review_model_size,
         )
         _, candidate_segments = _collect_timing_rows(
             review_segments,
@@ -1392,6 +1480,30 @@ def _windowed_transcription_eta_seconds(
         floor_seconds = 8
     else:
         floor_seconds = 3
+    return max(floor_seconds, int(round(max(1.0, remaining))))
+
+
+def _review_sweep_eta_seconds(
+    *,
+    elapsed_seconds: float,
+    processed_flags: int,
+    total_flags: int,
+) -> int | None:
+    safe_total_flags = max(1, int(total_flags))
+    safe_processed_flags = max(0, int(processed_flags))
+    if safe_processed_flags < 1:
+        return None
+    remaining_flags = max(0, safe_total_flags - safe_processed_flags)
+    average_flag_seconds = max(1.0, float(elapsed_seconds) / safe_processed_flags)
+    remaining = (remaining_flags * average_flag_seconds) + 4.0
+    if remaining_flags >= 6:
+        floor_seconds = 18
+    elif remaining_flags >= 3:
+        floor_seconds = 10
+    elif remaining_flags >= 1:
+        floor_seconds = 5
+    else:
+        floor_seconds = 2
     return max(floor_seconds, int(round(max(1.0, remaining))))
 
 
@@ -1869,7 +1981,7 @@ def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption
         for index, segment in rows:
             start_text = _format_caption_timestamp(segment.start, separator=".")
             end_text = _format_caption_timestamp(max(segment.end, segment.start + 0.2), separator=".")
-            text = _clean_caption_text(segment.text)
+            text = _wrap_caption_lines(_clean_caption_text(segment.text))
             blocks.extend([str(index), f"{start_text} --> {end_text}", text, ""])
         return "\n".join(blocks).rstrip() + "\n"
 
@@ -1877,9 +1989,125 @@ def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption
     for index, segment in rows:
         start_text = _format_caption_timestamp(segment.start, separator=",")
         end_text = _format_caption_timestamp(max(segment.end, segment.start + 0.2), separator=",")
-        text = _clean_caption_text(segment.text)
+        text = _wrap_caption_lines(_clean_caption_text(segment.text))
         blocks.extend([str(index), f"{start_text} --> {end_text}", text, ""])
     return "\n".join(blocks).rstrip() + ("\n" if blocks else "")
+
+
+def _shape_caption_segments_for_accessibility(segments: list[TranscriptSegmentTiming]) -> list[TranscriptSegmentTiming]:
+    shaped: list[TranscriptSegmentTiming] = []
+    for segment in segments:
+        cleaned_text = _clean_caption_text(segment.text)
+        if not cleaned_text:
+            continue
+        words = cleaned_text.split()
+        duration = max(0.2, float(segment.end) - float(segment.start))
+        target_chunks = max(
+            1,
+            int(math.ceil(duration / _CAPTION_MAX_CUE_DURATION_SECONDS)),
+            int(math.ceil(len(cleaned_text) / _CAPTION_MAX_CUE_CHARACTERS)),
+            int(math.ceil(len(words) / _CAPTION_MAX_CUE_WORDS)),
+        )
+        if target_chunks <= 1:
+            shaped.append(
+                TranscriptSegmentTiming(
+                    text=cleaned_text,
+                    start=segment.start,
+                    end=max(segment.end, segment.start + 0.2),
+                    average_probability=segment.average_probability,
+                )
+            )
+            continue
+        token_groups = _split_caption_tokens_into_cues(words, target_chunks=target_chunks)
+        consumed_tokens = 0
+        total_tokens = max(1, len(words))
+        for group_index, group in enumerate(token_groups):
+            if not group:
+                continue
+            group_text = " ".join(group).strip()
+            group_size = len(group)
+            cue_start = segment.start + (duration * (consumed_tokens / total_tokens))
+            cue_end = segment.start + (duration * ((consumed_tokens + group_size) / total_tokens))
+            consumed_tokens += group_size
+            if group_index == len(token_groups) - 1:
+                cue_end = max(cue_end, segment.end)
+            shaped.append(
+                TranscriptSegmentTiming(
+                    text=group_text,
+                    start=cue_start,
+                    end=max(cue_end, cue_start + 0.2),
+                    average_probability=segment.average_probability,
+                )
+            )
+    return shaped
+
+
+def _split_caption_tokens_into_cues(tokens: list[str], *, target_chunks: int) -> list[list[str]]:
+    if not tokens:
+        return []
+    chunks: list[list[str]] = []
+    start_index = 0
+    total_tokens = len(tokens)
+    for chunk_index in range(max(1, target_chunks)):
+        remaining_tokens = total_tokens - start_index
+        remaining_chunks = max(1, target_chunks - chunk_index)
+        if remaining_tokens <= 0:
+            break
+        target_size = max(1, int(math.ceil(remaining_tokens / remaining_chunks)))
+        max_end = min(total_tokens, start_index + max(_CAPTION_MAX_CUE_WORDS, target_size + 2))
+        best_end = None
+        best_penalty = None
+        for end_index in range(start_index + 1, max_end + 1):
+            candidate_tokens = tokens[start_index:end_index]
+            candidate_text = " ".join(candidate_tokens)
+            if len(candidate_text) > _CAPTION_MAX_CUE_CHARACTERS and end_index > start_index + 1:
+                break
+            penalty = abs(len(candidate_tokens) - target_size)
+            if candidate_tokens[-1].endswith((".", "!", "?", ",", ";", ":")):
+                penalty -= 0.6
+            if best_penalty is None or penalty < best_penalty:
+                best_end = end_index
+                best_penalty = penalty
+        if best_end is None:
+            best_end = min(total_tokens, start_index + target_size)
+        chunks.append(tokens[start_index:best_end])
+        start_index = best_end
+    if start_index < total_tokens:
+        remainder = tokens[start_index:]
+        if chunks:
+            chunks[-1].extend(remainder)
+        else:
+            chunks.append(remainder)
+    return chunks
+
+
+def _wrap_caption_lines(text: str) -> str:
+    cleaned = _clean_caption_text(text)
+    if len(cleaned) <= _CAPTION_MAX_LINE_CHARACTERS:
+        return cleaned
+    words = cleaned.split()
+    best_break_index = None
+    best_score = None
+    for break_index in range(1, len(words)):
+        first_line = " ".join(words[:break_index])
+        second_line = " ".join(words[break_index:])
+        longest_line = max(len(first_line), len(second_line))
+        total_chars = len(first_line) + len(second_line)
+        if total_chars > _CAPTION_MAX_CUE_CHARACTERS:
+            continue
+        imbalance = abs(len(first_line) - len(second_line))
+        score = longest_line + (imbalance * 0.1)
+        if best_score is None or score < best_score:
+            best_break_index = break_index
+            best_score = score
+    if best_break_index is None:
+        return cleaned
+    return "\n".join(
+        [
+            " ".join(words[:best_break_index]).strip(),
+            " ".join(words[best_break_index:]).strip(),
+        ]
+    ).strip()
 
 
 def _clean_caption_text(text: str) -> str:

@@ -207,3 +207,29 @@ test("caption stage still shows server when server fallback is explicit", () => 
     "Audio processing is done. Generating captions on the RADcast server (Mac mini)."
   );
 });
+
+test("caption stage clears numeric eta when later same-stage updates switch back to estimating", () => {
+  const context = buildContext();
+  const progressEtaNode = context.document.getElementById("progress-eta");
+
+  context.updateFromJob({
+    stage: "captions",
+    logs: ["Transcribing speech for captions with whisper.cpp (small). Window 1 of 27."],
+    progress: 0.26,
+    eta_seconds: 700,
+    status: "running",
+  });
+  context.updateProgressVisuals();
+  assert.match(progressEtaNode.textContent, /11:4\d|11:3\d/);
+
+  context.updateFromJob({
+    stage: "captions",
+    logs: ["Transcribing speech for captions with whisper.cpp (small). Window 1 of 27."],
+    progress: 0.27,
+    eta_seconds: null,
+    status: "running",
+  });
+  context.updateProgressVisuals();
+
+  assert.equal(progressEtaNode.textContent, "Time left to process: estimating...");
+});
