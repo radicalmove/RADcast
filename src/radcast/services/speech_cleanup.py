@@ -727,6 +727,7 @@ class SpeechCleanupService:
 
             export_segments = _shape_caption_segments_for_accessibility(segments)
             export_segments = _dedupe_caption_segments(export_segments)
+            export_report = build_caption_quality_report(export_segments)
 
             output_path = audio_path.with_suffix(f".{caption_format.value}")
             review_path = None
@@ -748,7 +749,7 @@ class SpeechCleanupService:
             caption_format=caption_format,
             segment_count=len([segment for segment in export_segments if _clean_caption_text(segment.text)]),
             review_path=review_path,
-            quality_report=review_report,
+            quality_report=export_report,
         )
 
     def _load_model(self, model_size: str | None = None, *, backend: CaptionBackend | None = None):
@@ -1175,7 +1176,7 @@ class SpeechCleanupService:
             return None
         if not _clean_caption_text(best.text):
             return None
-        if is_review_system_text(best.text) or is_review_system_text(flag.text):
+        if is_review_system_text(best.text):
             return None
         if _clean_caption_text(best.text) == _clean_caption_text(flag.text) and (
             best.average_probability is None

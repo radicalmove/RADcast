@@ -1226,19 +1226,38 @@ def test_review_caption_flag_rejects_review_system_boilerplate(monkeypatch, tmp_
     waveform = np.zeros((sample_rate * 2, 1), dtype=np.float32)
     review_tmp = tmp_path / "review"
     review_tmp.mkdir()
-    flag = SimpleNamespace(start=0.2, end=0.8, text="hello world", average_probability=0.3)
-    boilerplate = "Review low-confidence transcript lines carefully. Prefer the spoken wording, preserve names and te reo Māori, and correct likely misheard words rather than paraphrasing."
+    flag = SimpleNamespace(
+        start=0.2,
+        end=0.8,
+        text=(
+            "Review low-confidence transcript lines carefully. Prefer the spoken wording, preserve names and te reo Māori, "
+            "and correct likely misheard words rather than paraphrasing."
+        ),
+        average_probability=0.3,
+    )
+    spoken = "hello better world"
 
     monkeypatch.setattr(
         service,
         "_transcribe_file",
-        lambda _model, _snippet_path, **kwargs: [SimpleNamespace(text=boilerplate, start=0.0, end=0.7, words=[])],
+        lambda _model, _snippet_path, **kwargs: [
+            SimpleNamespace(
+                text=spoken,
+                start=0.0,
+                end=0.7,
+                words=[
+                    SimpleNamespace(word="hello", start=0.0, end=0.2, probability=0.92),
+                    SimpleNamespace(word="better", start=0.2, end=0.45, probability=0.91),
+                    SimpleNamespace(word="world", start=0.45, end=0.7, probability=0.93),
+                ],
+            )
+        ],
     )
     monkeypatch.setattr(
         "radcast.services.speech_cleanup._collect_timing_rows",
         lambda _segments, **kwargs: (
             [],
-            [TranscriptSegmentTiming(text=boilerplate, start=0.0, end=0.7, average_probability=0.91)],
+            [TranscriptSegmentTiming(text=spoken, start=0.0, end=0.7, average_probability=0.91)],
         ),
     )
     monkeypatch.setattr(
@@ -1255,7 +1274,8 @@ def test_review_caption_flag_rejects_review_system_boilerplate(monkeypatch, tmp_
         tmp_path=review_tmp,
     )
 
-    assert result is None
+    assert result is not None
+    assert result.text == spoken
 
 
 def test_generate_caption_file_uses_pre_shape_review_report_for_review_notes(monkeypatch, tmp_path: Path):
@@ -1285,7 +1305,8 @@ def test_generate_caption_file_uses_pre_shape_review_report_for_review_notes(mon
     monkeypatch.setattr(
         "radcast.services.speech_cleanup._shape_caption_segments_for_accessibility",
         lambda segments: [
-            TranscriptSegmentTiming(text="This line is now clean and high confidence", start=0.0, end=1.4, average_probability=0.96),
+            TranscriptSegmentTiming(text="This line is now clean and high confidence", start=0.0, end=0.7, average_probability=0.96),
+            TranscriptSegmentTiming(text="A second shaped cue", start=0.7, end=1.4, average_probability=0.94),
         ],
     )
 
@@ -1298,7 +1319,10 @@ def test_generate_caption_file_uses_pre_shape_review_report_for_review_notes(mon
     assert result.review_path is not None
     assert result.review_path.exists()
     assert result.quality_report is not None
-    assert result.quality_report.low_confidence_segment_count == 1
+    assert result.quality_report.review_recommended is False
+    assert result.quality_report.low_confidence_segment_count == 0
+    assert result.quality_report.total_segment_count == 2
+    assert result.quality_report.average_probability == pytest.approx(0.95, abs=0.001)
     review_text = result.review_path.read_text(encoding="utf-8")
     assert "This line should be checked" in review_text
     assert "This line is now clean and high confidence" not in review_text
