@@ -98,7 +98,7 @@ def resolve_caption_quality_policy(
             first_pass_model_size=normalized_first_pass_model_size,
             first_pass_beam_size=normalized_first_pass_beam_size,
             review_backend_id="whispercpp",
-            review_model_size=normalized_review_model_size,
+            review_model_size=normalized_first_pass_model_size,
             review_beam_size=normalized_review_beam_size,
             review_strategy_id="targeted_review",
             cue_shaping_strategy_id="lecture_friendly",

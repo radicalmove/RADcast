@@ -404,9 +404,12 @@ class SpeechCleanupService:
         normalized_quality = _normalize_caption_quality_mode(quality_mode)
         base_seconds = estimate_caption_seconds(duration_seconds, quality_mode=normalized_quality)
         profile = self._caption_profile_for_mode(normalized_quality, caption_prompt=None)
+        policy = self.caption_quality_policy_for_mode(normalized_quality)
         if normalized_quality == CaptionQualityMode.REVIEWED:
-            first_pass_ready = self._model_cache_ready(profile.model_size)
-            review_ready = self._model_cache_ready(self.caption_reviewed_model_size)
+            first_pass_backend = self._caption_backend_for_id(policy.first_pass_backend_id)
+            review_backend = self._caption_backend_for_id(policy.review_backend_id)
+            first_pass_ready = self._model_cache_ready(profile.model_size, backend=first_pass_backend)
+            review_ready = self._model_cache_ready(policy.review_model_size, backend=review_backend)
             if first_pass_ready and review_ready:
                 return base_seconds
             cold_start_seconds = 0
@@ -423,6 +426,9 @@ class SpeechCleanupService:
             cold_start_seconds = 95
         else:
             cold_start_seconds = 145
+        first_pass_backend = self._caption_backend_for_id(policy.first_pass_backend_id)
+        if self._model_cache_ready(profile.model_size, backend=first_pass_backend):
+            return base_seconds
         return min(base_seconds + cold_start_seconds, 22 * 60)
 
     @staticmethod
@@ -432,9 +438,10 @@ class SpeechCleanupService:
     def capability_status(self) -> tuple[bool, str]:
         if find_spec("faster_whisper") is None:
             return False, "Install faster-whisper to enable long-silence trimming, filler-word cleanup, and caption export."
+        reviewed_policy = self.caption_quality_policy_for_mode(CaptionQualityMode.REVIEWED)
         return True, (
             "Speech cleanup and caption export are available with faster-whisper "
-            f"(cleanup: {self.cleanup_model_size}, captions: {self.caption_accurate_model_size}, review: {self.caption_reviewed_model_size})."
+            f"(cleanup: {self.cleanup_model_size}, captions: {self.caption_accurate_model_size}, review: {reviewed_policy.review_model_size})."
         )
 
     def caption_quality_policy_for_mode(self, caption_quality_mode: CaptionQualityMode) -> CaptionQualityPolicy:
@@ -452,10 +459,7 @@ class SpeechCleanupService:
         else:
             first_pass_model_size = self.caption_accurate_model_size
             first_pass_beam_size = self.caption_accurate_beam_size
-            if self.runtime_context == "local_helper" and self.platform_name.lower() == "darwin" and self.caption_backend_id == "whispercpp":
-                review_model_size = self.caption_accurate_model_size
-            else:
-                review_model_size = self.caption_reviewed_model_size
+            review_model_size = self.caption_reviewed_model_size
             review_beam_size = self.caption_reviewed_beam_size
         return resolve_caption_quality_policy(
             quality_mode=normalized_quality,
@@ -470,11 +474,8 @@ class SpeechCleanupService:
 
     def _caption_review_backend_config(self, caption_quality_mode: CaptionQualityMode) -> tuple[CaptionBackend, str]:
         policy = self.caption_quality_policy_for_mode(caption_quality_mode)
-        if policy.review_backend_id == self._caption_backend.id:
-            return self._caption_backend, policy.review_model_size
-        if policy.review_backend_id == self._faster_whisper_backend.id:
-            return self._faster_whisper_backend, policy.review_model_size
-        return self._caption_backend, policy.review_model_size
+        review_backend = self._caption_backend_for_id(policy.review_backend_id)
+        return review_backend, policy.review_model_size
 
     def estimate_runtime_seconds(
         self,
@@ -489,11 +490,20 @@ class SpeechCleanupService:
             filler_removal_mode=_normalize_filler_mode(filler_removal_mode),
         )
 
-    def _model_cache_ready(self, model_size: str | None) -> bool:
+    def _caption_backend_for_id(self, backend_id: str) -> CaptionBackend:
+        normalized_backend_id = str(backend_id or "").strip().lower()
+        if normalized_backend_id == self._caption_backend.id:
+            return self._caption_backend
+        if normalized_backend_id == self._faster_whisper_backend.id:
+            return self._faster_whisper_backend
+        raise EnhancementRuntimeError(f"Unsupported caption review backend '{backend_id}'")
+
+    def _model_cache_ready(self, model_size: str | None, *, backend: CaptionBackend | None = None) -> bool:
+        selected_backend = backend or self._caption_backend
         resolved_model_size = str(model_size or "").strip()
         if not resolved_model_size:
             return False
-        if resolved_model_size in self._caption_backend._models:
+        if resolved_model_size in selected_backend._models:
             return True
         if "/" in resolved_model_size:
             owner, repo = resolved_model_size.split("/", 1)

@@ -8,7 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
+from radcast.exceptions import EnhancementRuntimeError
 from radcast.models import CaptionFormat, CaptionQualityMode, FillerRemovalMode, OutputFormat
 from radcast.services.speech_cleanup import (
     CaptionExportResult,
@@ -44,6 +46,67 @@ def test_speech_cleanup_selects_whispercpp_for_macos_local_helper(monkeypatch):
 
     assert service.caption_backend_id == "whispercpp"
     assert service._caption_backend.id == "whispercpp"
+
+
+def test_estimate_caption_runtime_seconds_uses_policy_review_model_for_macos_local_helper(monkeypatch):
+    from radcast.services import speech_cleanup as speech_cleanup_module
+
+    monkeypatch.setenv("RADCAST_RUNTIME_CONTEXT", "local_helper")
+    monkeypatch.setenv("RADCAST_CAPTION_BACKEND", "auto")
+    monkeypatch.setattr(speech_cleanup_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        speech_cleanup_module.WhisperCppCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.FasterWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(speech_cleanup_module, "estimate_caption_seconds", lambda duration_seconds, quality_mode: 180)
+
+    service = SpeechCleanupService()
+    cache_checks: list[tuple[str, str | None]] = []
+
+    def fake_model_cache_ready(model_size: str | None, *, backend=None):
+        cache_checks.append((str(model_size), getattr(backend, "id", None)))
+        return str(model_size) == "medium"
+
+    monkeypatch.setattr(service, "_model_cache_ready", fake_model_cache_ready)
+
+    result = service.estimate_caption_runtime_seconds(60.0, quality_mode=CaptionQualityMode.REVIEWED)
+
+    assert result == 180
+    assert cache_checks == [("medium", "whispercpp"), ("medium", "whispercpp")]
+
+
+def test_caption_review_backend_config_fails_fast_for_unknown_backend(monkeypatch):
+    from radcast.services import speech_cleanup as speech_cleanup_module
+
+    monkeypatch.setenv("RADCAST_RUNTIME_CONTEXT", "server")
+    monkeypatch.setenv("RADCAST_CAPTION_BACKEND", "auto")
+    monkeypatch.setattr(speech_cleanup_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        speech_cleanup_module.WhisperCppCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.FasterWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(
+        service,
+        "caption_quality_policy_for_mode",
+        lambda _mode: SimpleNamespace(review_backend_id="bogus", review_model_size="model"),
+    )
+
+    with pytest.raises(EnhancementRuntimeError, match="bogus"):
+        service._caption_review_backend_config(CaptionQualityMode.REVIEWED)
 
 
 def test_caption_quality_policy_for_mode_uses_local_helper_lecture_policy(monkeypatch):
@@ -926,11 +989,11 @@ def test_generate_caption_file_writes_review_notes_for_low_confidence_segments(m
 
 def test_estimate_caption_runtime_seconds_adds_cold_start_for_uncached_accurate_model(monkeypatch):
     service = SpeechCleanupService()
-    monkeypatch.setattr(service, "_model_cache_ready", lambda model_size: False)
+    monkeypatch.setattr(service, "_model_cache_ready", lambda model_size, *, backend=None: False)
 
     cold_seconds = service.estimate_caption_runtime_seconds(120, quality_mode=CaptionQualityMode.ACCURATE)
 
-    monkeypatch.setattr(service, "_model_cache_ready", lambda model_size: True)
+    monkeypatch.setattr(service, "_model_cache_ready", lambda model_size, *, backend=None: True)
     warm_seconds = service.estimate_caption_runtime_seconds(120, quality_mode=CaptionQualityMode.ACCURATE)
 
     assert cold_seconds > warm_seconds
@@ -941,12 +1004,12 @@ def test_estimate_caption_runtime_seconds_for_reviewed_mode_accounts_for_review_
     monkeypatch.setattr(
         service,
         "_model_cache_ready",
-        lambda model_size: model_size != service.caption_reviewed_model_size,
+        lambda model_size, *, backend=None: model_size != service.caption_reviewed_model_size,
     )
 
     cold_seconds = service.estimate_caption_runtime_seconds(120, quality_mode=CaptionQualityMode.REVIEWED)
 
-    monkeypatch.setattr(service, "_model_cache_ready", lambda model_size: True)
+    monkeypatch.setattr(service, "_model_cache_ready", lambda model_size, *, backend=None: True)
     warm_seconds = service.estimate_caption_runtime_seconds(120, quality_mode=CaptionQualityMode.REVIEWED)
 
     assert cold_seconds > warm_seconds
@@ -1058,7 +1121,7 @@ def test_generate_caption_file_announces_first_window_before_transcription(monke
     service = SpeechCleanupService()
     stages: list[tuple[float, str, int | None]] = []
 
-    monkeypatch.setattr(service, "_model_cache_ready", lambda _model_size: False)
+    monkeypatch.setattr(service, "_model_cache_ready", lambda _model_size, *, backend=None: False)
     monkeypatch.setattr(service, "estimate_caption_runtime_seconds", lambda *_args, **_kwargs: 90)
     monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst, *, audio_filters=None: shutil.copy2(src, dst))
     monkeypatch.setattr(service, "_transcribe_timeline", lambda *_args, **_kwargs: ([], []))
@@ -1090,7 +1153,7 @@ def test_generate_caption_file_defers_eta_for_multiwindow_caption_runs(monkeypat
     service = SpeechCleanupService()
     stages: list[tuple[float, str, int | None]] = []
 
-    monkeypatch.setattr(service, "_model_cache_ready", lambda _model_size: False)
+    monkeypatch.setattr(service, "_model_cache_ready", lambda _model_size, *, backend=None: False)
     monkeypatch.setattr(service, "estimate_caption_runtime_seconds", lambda *_args, **_kwargs: 700)
     monkeypatch.setattr("radcast.services.speech_cleanup.probe_duration_seconds", lambda _path: 349.5)
     monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst, *, audio_filters=None: shutil.copy2(src, dst))
