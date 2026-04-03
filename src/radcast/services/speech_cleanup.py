@@ -25,6 +25,10 @@ from radcast.services.caption_backend_selection import (
     CaptionBackendSelectionError,
     resolve_caption_backend_id,
 )
+from radcast.services.caption_quality_policy import (
+    CaptionQualityPolicy,
+    resolve_caption_quality_policy,
+)
 from radcast.services.caption_backends import (
     CaptionBackend,
     CaptionTranscriptionResult,
@@ -433,14 +437,44 @@ class SpeechCleanupService:
             f"(cleanup: {self.cleanup_model_size}, captions: {self.caption_accurate_model_size}, review: {self.caption_reviewed_model_size})."
         )
 
-    def _caption_review_backend_config(self) -> tuple[CaptionBackend, str]:
-        if (
-            self.runtime_context == "local_helper"
-            and self.platform_name.lower() == "darwin"
-            and self.caption_backend_id == "whispercpp"
-        ):
-            return self._caption_backend, self.caption_accurate_model_size
-        return self._faster_whisper_backend, self.caption_reviewed_model_size
+    def caption_quality_policy_for_mode(self, caption_quality_mode: CaptionQualityMode) -> CaptionQualityPolicy:
+        normalized_quality = _normalize_caption_quality_mode(caption_quality_mode)
+        if normalized_quality == CaptionQualityMode.FAST:
+            first_pass_model_size = self.caption_fast_model_size
+            first_pass_beam_size = self.caption_fast_beam_size
+            review_model_size = self.caption_fast_model_size
+            review_beam_size = self.caption_fast_beam_size
+        elif normalized_quality == CaptionQualityMode.ACCURATE:
+            first_pass_model_size = self.caption_accurate_model_size
+            first_pass_beam_size = self.caption_accurate_beam_size
+            review_model_size = self.caption_reviewed_model_size
+            review_beam_size = self.caption_reviewed_beam_size
+        else:
+            first_pass_model_size = self.caption_accurate_model_size
+            first_pass_beam_size = self.caption_accurate_beam_size
+            if self.runtime_context == "local_helper" and self.platform_name.lower() == "darwin" and self.caption_backend_id == "whispercpp":
+                review_model_size = self.caption_accurate_model_size
+            else:
+                review_model_size = self.caption_reviewed_model_size
+            review_beam_size = self.caption_reviewed_beam_size
+        return resolve_caption_quality_policy(
+            quality_mode=normalized_quality,
+            runtime_context=self.runtime_context,
+            platform_name=self.platform_name,
+            backend_id=self.caption_backend_id,
+            first_pass_model_size=first_pass_model_size,
+            first_pass_beam_size=first_pass_beam_size,
+            review_model_size=review_model_size,
+            review_beam_size=review_beam_size,
+        )
+
+    def _caption_review_backend_config(self, caption_quality_mode: CaptionQualityMode) -> tuple[CaptionBackend, str]:
+        policy = self.caption_quality_policy_for_mode(caption_quality_mode)
+        if policy.review_backend_id == self._caption_backend.id:
+            return self._caption_backend, policy.review_model_size
+        if policy.review_backend_id == self._faster_whisper_backend.id:
+            return self._faster_whisper_backend, policy.review_model_size
+        return self._caption_backend, policy.review_model_size
 
     def estimate_runtime_seconds(
         self,
@@ -616,9 +650,10 @@ class SpeechCleanupService:
 
         input_duration = probe_duration_seconds(audio_path)
         quality_mode = _normalize_caption_quality_mode(caption_quality_mode)
+        policy = self.caption_quality_policy_for_mode(quality_mode)
         caption_prompt = _build_caption_prompt(caption_glossary)
         profile = self._caption_profile_for_mode(quality_mode, caption_prompt=caption_prompt)
-        review_backend, review_model_size = self._caption_review_backend_config()
+        review_backend, review_model_size = self._caption_review_backend_config(quality_mode)
         caption_eta_seconds = self.estimate_caption_runtime_seconds(input_duration, quality_mode=quality_mode)
         total_windows = _estimate_window_count(
             total_duration=input_duration,
@@ -632,11 +667,11 @@ class SpeechCleanupService:
                 backend=self._caption_backend,
                 model_size=profile.model_size,
             )
-            detail = (
-                f"Loading {profile.model_size} caption model and {backend_detail.lower()}."
-                if not self._model_cache_ready(profile.model_size)
-                else backend_detail
-            )
+            detail = backend_detail
+            if policy.policy_id == "quality_local_lecture":
+                detail = f"{policy.progress_label}: {detail}"
+            if not self._model_cache_ready(profile.model_size):
+                detail = f"Loading {profile.model_size} caption model and {detail.lower()}."
             on_stage(
                 0.02,
                 _windowed_stage_detail(detail, current_window=1, total_windows=total_windows),
@@ -986,10 +1021,11 @@ class SpeechCleanupService:
         *,
         caption_prompt: str | None,
     ) -> CaptionTranscriptionProfile:
+        policy = self.caption_quality_policy_for_mode(caption_quality_mode)
         if caption_quality_mode == CaptionQualityMode.FAST:
             return CaptionTranscriptionProfile(
-                model_size=self.caption_fast_model_size,
-                beam_size=self.caption_fast_beam_size,
+                model_size=policy.first_pass_model_size,
+                beam_size=policy.first_pass_beam_size,
                 window_seconds=_CAPTION_FAST_WINDOW_SECONDS,
                 overlap_seconds=_CAPTION_FAST_OVERLAP_SECONDS,
                 condition_on_previous_text=False,
@@ -997,8 +1033,8 @@ class SpeechCleanupService:
             )
         if caption_quality_mode == CaptionQualityMode.REVIEWED:
             return CaptionTranscriptionProfile(
-                model_size=self.caption_accurate_model_size,
-                beam_size=self.caption_accurate_beam_size,
+                model_size=policy.first_pass_model_size,
+                beam_size=policy.first_pass_beam_size,
                 window_seconds=_CAPTION_REVIEWED_WINDOW_SECONDS,
                 overlap_seconds=_CAPTION_REVIEWED_OVERLAP_SECONDS,
                 condition_on_previous_text=True,
@@ -1006,8 +1042,8 @@ class SpeechCleanupService:
                 review_sweep=True,
             )
         return CaptionTranscriptionProfile(
-            model_size=self.caption_accurate_model_size,
-            beam_size=self.caption_accurate_beam_size,
+            model_size=policy.first_pass_model_size,
+            beam_size=policy.first_pass_beam_size,
             window_seconds=_CAPTION_ACCURATE_WINDOW_SECONDS,
             overlap_seconds=_CAPTION_ACCURATE_OVERLAP_SECONDS,
             condition_on_previous_text=True,

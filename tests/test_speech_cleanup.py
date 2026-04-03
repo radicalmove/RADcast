@@ -46,6 +46,31 @@ def test_speech_cleanup_selects_whispercpp_for_macos_local_helper(monkeypatch):
     assert service._caption_backend.id == "whispercpp"
 
 
+def test_caption_quality_policy_for_mode_uses_local_helper_lecture_policy(monkeypatch):
+    from radcast.services import speech_cleanup as speech_cleanup_module
+
+    monkeypatch.setenv("RADCAST_RUNTIME_CONTEXT", "local_helper")
+    monkeypatch.setenv("RADCAST_CAPTION_BACKEND", "auto")
+    monkeypatch.setattr(speech_cleanup_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        speech_cleanup_module.WhisperCppCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.FasterWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+
+    service = SpeechCleanupService()
+    policy = service.caption_quality_policy_for_mode(CaptionQualityMode.REVIEWED)
+
+    assert policy.policy_id == "quality_local_lecture"
+    assert policy.first_pass_backend_id == "whispercpp"
+    assert policy.review_backend_id == "whispercpp"
+
+
 def test_generate_caption_file_reports_caption_backend_and_model(monkeypatch, tmp_path: Path):
     from radcast.services import speech_cleanup as speech_cleanup_module
 
