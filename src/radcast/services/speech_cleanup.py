@@ -25,6 +25,7 @@ from radcast.services.caption_backend_selection import (
     CaptionBackendSelectionError,
     resolve_caption_backend_id,
 )
+from radcast.services.caption_cue_shaping import shape_lecture_caption_cues
 from radcast.services.caption_quality_policy import (
     CaptionQualityPolicy,
     resolve_caption_quality_policy,
@@ -726,7 +727,10 @@ class SpeechCleanupService:
                 )
                 segments = _dedupe_caption_segments(segments)
 
-            export_segments = _shape_caption_segments_for_accessibility(segments)
+            try:
+                export_segments = shape_lecture_caption_cues(segments)
+            except Exception:
+                export_segments = segments
             export_segments = _dedupe_caption_segments(export_segments)
             export_report = build_caption_quality_report(export_segments)
             outward_quality_report = build_caption_export_quality_report(
@@ -1942,93 +1946,6 @@ def _format_caption_document(segments: list[TranscriptSegmentTiming], *, caption
         text = _wrap_caption_lines(_clean_caption_text(segment.text))
         blocks.extend([str(index), f"{start_text} --> {end_text}", text, ""])
     return "\n".join(blocks).rstrip() + ("\n" if blocks else "")
-
-
-def _shape_caption_segments_for_accessibility(segments: list[TranscriptSegmentTiming]) -> list[TranscriptSegmentTiming]:
-    shaped: list[TranscriptSegmentTiming] = []
-    for segment in segments:
-        cleaned_text = _clean_caption_text(segment.text)
-        if not cleaned_text:
-            continue
-        words = cleaned_text.split()
-        duration = max(0.2, float(segment.end) - float(segment.start))
-        target_chunks = max(
-            1,
-            int(math.ceil(duration / _CAPTION_MAX_CUE_DURATION_SECONDS)),
-            int(math.ceil(len(cleaned_text) / _CAPTION_MAX_CUE_CHARACTERS)),
-            int(math.ceil(len(words) / _CAPTION_MAX_CUE_WORDS)),
-        )
-        if target_chunks <= 1:
-            shaped.append(
-                TranscriptSegmentTiming(
-                    text=cleaned_text,
-                    start=segment.start,
-                    end=max(segment.end, segment.start + 0.2),
-                    average_probability=segment.average_probability,
-                )
-            )
-            continue
-        token_groups = _split_caption_tokens_into_cues(words, target_chunks=target_chunks)
-        consumed_tokens = 0
-        total_tokens = max(1, len(words))
-        for group_index, group in enumerate(token_groups):
-            if not group:
-                continue
-            group_text = " ".join(group).strip()
-            group_size = len(group)
-            cue_start = segment.start + (duration * (consumed_tokens / total_tokens))
-            cue_end = segment.start + (duration * ((consumed_tokens + group_size) / total_tokens))
-            consumed_tokens += group_size
-            if group_index == len(token_groups) - 1:
-                cue_end = max(cue_end, segment.end)
-            shaped.append(
-                TranscriptSegmentTiming(
-                    text=group_text,
-                    start=cue_start,
-                    end=max(cue_end, cue_start + 0.2),
-                    average_probability=segment.average_probability,
-                )
-            )
-    return shaped
-
-
-def _split_caption_tokens_into_cues(tokens: list[str], *, target_chunks: int) -> list[list[str]]:
-    if not tokens:
-        return []
-    chunks: list[list[str]] = []
-    start_index = 0
-    total_tokens = len(tokens)
-    for chunk_index in range(max(1, target_chunks)):
-        remaining_tokens = total_tokens - start_index
-        remaining_chunks = max(1, target_chunks - chunk_index)
-        if remaining_tokens <= 0:
-            break
-        target_size = max(1, int(math.ceil(remaining_tokens / remaining_chunks)))
-        max_end = min(total_tokens, start_index + max(_CAPTION_MAX_CUE_WORDS, target_size + 2))
-        best_end = None
-        best_penalty = None
-        for end_index in range(start_index + 1, max_end + 1):
-            candidate_tokens = tokens[start_index:end_index]
-            candidate_text = " ".join(candidate_tokens)
-            if len(candidate_text) > _CAPTION_MAX_CUE_CHARACTERS and end_index > start_index + 1:
-                break
-            penalty = abs(len(candidate_tokens) - target_size)
-            if candidate_tokens[-1].endswith((".", "!", "?", ",", ";", ":")):
-                penalty -= 0.6
-            if best_penalty is None or penalty < best_penalty:
-                best_end = end_index
-                best_penalty = penalty
-        if best_end is None:
-            best_end = min(total_tokens, start_index + target_size)
-        chunks.append(tokens[start_index:best_end])
-        start_index = best_end
-    if start_index < total_tokens:
-        remainder = tokens[start_index:]
-        if chunks:
-            chunks[-1].extend(remainder)
-        else:
-            chunks.append(remainder)
-    return chunks
 
 
 def _wrap_caption_lines(text: str) -> str:

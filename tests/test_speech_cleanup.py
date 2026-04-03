@@ -1342,7 +1342,7 @@ def test_generate_caption_file_uses_pre_shape_review_report_for_review_notes(mon
         ],
     )
     monkeypatch.setattr(
-        "radcast.services.speech_cleanup._shape_caption_segments_for_accessibility",
+        "radcast.services.speech_cleanup.shape_lecture_caption_cues",
         lambda segments: [
             TranscriptSegmentTiming(text="This line is now clean and high confidence", start=0.0, end=0.7, average_probability=0.96),
             TranscriptSegmentTiming(text="A second shaped cue", start=0.7, end=1.4, average_probability=0.94),
@@ -1385,7 +1385,7 @@ def test_generate_caption_file_surfaces_export_only_review_flags_in_outward_qual
         ),
     )
     monkeypatch.setattr(
-        "radcast.services.speech_cleanup._shape_caption_segments_for_accessibility",
+        "radcast.services.speech_cleanup.shape_lecture_caption_cues",
         lambda segments: [
             TranscriptSegmentTiming(text="We need to", start=0.0, end=1.4, average_probability=0.96),
         ],
@@ -1403,6 +1403,44 @@ def test_generate_caption_file_surfaces_export_only_review_flags_in_outward_qual
     assert result.quality_report.low_confidence_segment_count == 0
     assert result.quality_report.total_segment_count == 1
     assert [flag.reason for flag in result.quality_report.flagged_segments] == ["probable truncation"]
+
+
+def test_generate_caption_file_falls_back_to_stabilized_segments_when_cue_shaping_raises(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda *args, **kwargs: (
+            [],
+            [TranscriptSegmentTiming(text="This stabilized transcript should still export cleanly.", start=0.0, end=1.4, average_probability=0.96)],
+        ),
+    )
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup.shape_lecture_caption_cues",
+        lambda segments: (_ for _ in ()).throw(RuntimeError("shape failure")),
+    )
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+    )
+
+    assert result.caption_path.exists()
+    assert result.segment_count == 1
+    assert (
+        "This stabilized transcript should still export cleanly."
+        in " ".join(result.caption_path.read_text(encoding="utf-8").split())
+    )
+    assert result.quality_report is not None
+    assert result.quality_report.total_segment_count == 1
 
 
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):
