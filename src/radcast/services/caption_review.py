@@ -80,7 +80,8 @@ class CaptionQualityReport:
             return "No caption segments were generated."
         if not self.review_recommended:
             return "Caption confidence looked stable."
-        return f"Caption review suggested: {self.low_confidence_segment_count} flagged segment{'s' if self.low_confidence_segment_count != 1 else ''}."
+        flagged_segment_count = len(self.flagged_segments)
+        return f"Caption review suggested: {flagged_segment_count} flagged segment{'s' if flagged_segment_count != 1 else ''}."
 
 
 def _clean_caption_text(text: str) -> str:
@@ -100,12 +101,16 @@ def is_review_system_text(text: str) -> bool:
     if not normalized:
         return False
     normalized_without_trailing_punctuation = normalized.rstrip(" .,!?:;")
-    if normalized.startswith("radcast caption review"):
+    if normalized_without_trailing_punctuation.startswith("radcast caption review"):
         return True
-    if normalized_without_trailing_punctuation in _REVIEW_SYSTEM_PHRASES:
+    if any(normalized_without_trailing_punctuation.startswith(phrase) for phrase in _REVIEW_SYSTEM_PHRASES):
         return True
     matches = sum(1 for phrase in _REVIEW_SYSTEM_PHRASES if phrase in normalized)
     return matches >= 2
+
+
+def _count_probable_low_confidence_flags(flags: Sequence[CaptionReviewFlag]) -> int:
+    return sum(1 for flag in flags if flag.reason == "probable low confidence")
 
 
 def build_caption_export_quality_report(
@@ -123,9 +128,10 @@ def build_caption_export_quality_report(
         seen_keys.add(key)
         if len(merged_flags) >= _CAPTION_REVIEW_MAX_FLAGS:
             break
+    low_confidence_segment_count = _count_probable_low_confidence_flags(merged_flags)
     return CaptionQualityReport(
         average_probability=export_report.average_probability,
-        low_confidence_segment_count=len(merged_flags),
+        low_confidence_segment_count=low_confidence_segment_count,
         total_segment_count=export_report.total_segment_count,
         flagged_segments=merged_flags,
         review_recommended=bool(merged_flags),
@@ -222,9 +228,10 @@ def build_caption_quality_report(segments: Sequence[CaptionSegmentLike]) -> Capt
     average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
     all_flagged_segments = _select_review_candidates(clean_segments, limit=None)
     flagged_segments = all_flagged_segments[:_CAPTION_REVIEW_MAX_FLAGS]
+    low_confidence_segment_count = _count_probable_low_confidence_flags(flagged_segments)
     return CaptionQualityReport(
         average_probability=average_probability,
-        low_confidence_segment_count=len(flagged_segments),
+        low_confidence_segment_count=low_confidence_segment_count,
         total_segment_count=len(clean_segments),
         flagged_segments=flagged_segments,
         review_recommended=bool(flagged_segments),
@@ -235,7 +242,7 @@ def format_caption_review_document(report: CaptionQualityReport) -> str:
     lines = ["RADcast Caption Review", ""]
     if report.average_probability is not None:
         lines.append(f"Average word confidence: {report.average_probability:.0%}")
-    lines.append(f"Flagged caption lines: {report.low_confidence_segment_count}")
+    lines.append(f"Flagged caption lines: {len(report.flagged_segments)}")
     lines.append(f"Total caption lines: {report.total_segment_count}")
     lines.append("")
     if not report.flagged_segments:

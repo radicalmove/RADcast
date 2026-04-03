@@ -48,21 +48,48 @@ def test_build_caption_quality_report_and_document_include_only_flagged_segments
     report = build_caption_quality_report(segments)
 
     assert report.total_segment_count == 5
-    assert report.low_confidence_segment_count == 3
+    assert report.low_confidence_segment_count == 1
     assert report.review_recommended is True
     assert [flag.reason for flag in report.flagged_segments] == [
         "probable duplication",
         "probable truncation",
         "probable low confidence",
     ]
+    assert report.summary_text() == "Caption review suggested: 3 flagged segments."
 
     review_text = format_caption_review_document(report)
 
+    assert "Flagged caption lines: 3" in review_text
     assert "probable duplication" in review_text
     assert "probable truncation" in review_text
     assert "probable low confidence" in review_text
     assert "confidence unknown" not in review_text
     assert "Welcome to the lecture" not in review_text
+
+
+def test_caption_quality_report_summary_and_document_use_actual_flag_count():
+    report = CaptionQualityReport(
+        average_probability=0.82,
+        low_confidence_segment_count=0,
+        total_segment_count=1,
+        flagged_segments=[
+            CaptionReviewFlag(
+                start=0.0,
+                end=1.0,
+                text="We need to",
+                average_probability=0.92,
+                reason="probable truncation",
+            )
+        ],
+        review_recommended=True,
+    )
+
+    assert report.summary_text() == "Caption review suggested: 1 flagged segment."
+
+    review_text = format_caption_review_document(report)
+
+    assert "Flagged caption lines: 1" in review_text
+    assert "probable truncation" in review_text
 
 
 def test_build_caption_quality_report_counts_all_flags_but_caps_review_output_at_18():
@@ -83,8 +110,8 @@ def test_build_caption_quality_report_counts_all_flags_but_caps_review_output_at
     assert len(select_review_candidates(segments)) == 18
 
 
-def test_is_review_system_text_rejects_single_prompt_echo_line():
-    assert is_review_system_text("Review low-confidence transcript lines carefully.") is True
+def test_is_review_system_text_rejects_mixed_prompt_echo_line():
+    assert is_review_system_text("Review low-confidence transcript lines carefully hello world") is True
 
 
 def test_build_caption_export_quality_report_keeps_review_flags_with_export_metrics():
@@ -123,7 +150,7 @@ def test_build_caption_export_quality_report_keeps_review_flags_with_export_metr
     assert report.flagged_segments == review_report.flagged_segments
 
 
-def test_build_caption_export_quality_report_includes_export_only_flags():
+def test_build_caption_export_quality_report_counts_only_low_confidence_flags():
     review_report = CaptionQualityReport(
         average_probability=0.92,
         low_confidence_segment_count=0,
@@ -152,7 +179,7 @@ def test_build_caption_export_quality_report_includes_export_only_flags():
     )
 
     assert report.review_recommended is True
-    assert report.low_confidence_segment_count == 1
+    assert report.low_confidence_segment_count == 0
     assert report.total_segment_count == 2
     assert report.average_probability == 0.95
     assert report.flagged_segments == [export_flag]

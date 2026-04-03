@@ -1297,7 +1297,7 @@ def test_review_caption_flag_rejects_single_prompt_echo_candidate(monkeypatch, t
         "radcast.services.speech_cleanup._collect_timing_rows",
         lambda _segments, **kwargs: (
             [],
-            [TranscriptSegmentTiming(text=echoed_instruction, start=0.0, end=0.7, average_probability=0.91)],
+            [TranscriptSegmentTiming(text=f"{echoed_instruction} hello world", start=0.0, end=0.7, average_probability=0.91)],
         ),
     )
     monkeypatch.setattr(
@@ -1400,7 +1400,7 @@ def test_generate_caption_file_surfaces_export_only_review_flags_in_outward_qual
     assert result.review_path is None
     assert result.quality_report is not None
     assert result.quality_report.review_recommended is True
-    assert result.quality_report.low_confidence_segment_count == 1
+    assert result.quality_report.low_confidence_segment_count == 0
     assert result.quality_report.total_segment_count == 1
     assert [flag.reason for flag in result.quality_report.flagged_segments] == ["probable truncation"]
 
