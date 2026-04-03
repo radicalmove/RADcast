@@ -1367,6 +1367,44 @@ def test_generate_caption_file_uses_pre_shape_review_report_for_review_notes(mon
     assert "This line is now clean and high confidence" not in review_text
 
 
+def test_generate_caption_file_surfaces_export_only_review_flags_in_outward_quality_report(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda *args, **kwargs: (
+            [],
+            [TranscriptSegmentTiming(text="This line is complete", start=0.0, end=1.4, average_probability=0.96)],
+        ),
+    )
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup._shape_caption_segments_for_accessibility",
+        lambda segments: [
+            TranscriptSegmentTiming(text="We need to", start=0.0, end=1.4, average_probability=0.96),
+        ],
+    )
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+    )
+
+    assert result.review_path is None
+    assert result.quality_report is not None
+    assert result.quality_report.review_recommended is True
+    assert result.quality_report.low_confidence_segment_count == 1
+    assert result.quality_report.total_segment_count == 1
+    assert [flag.reason for flag in result.quality_report.flagged_segments] == ["probable truncation"]
+
+
 def test_cleanup_audio_file_removes_adjacent_filler_pair_as_single_hesitation(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     tone_t = np.linspace(0.0, 0.28, int(sample_rate * 0.28), endpoint=False)

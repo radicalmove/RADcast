@@ -78,7 +78,7 @@ def test_build_caption_quality_report_counts_all_flags_but_caps_review_output_at
 
     report = build_caption_quality_report(segments)
 
-    assert report.low_confidence_segment_count == 20
+    assert report.low_confidence_segment_count == 18
     assert len(report.flagged_segments) == 18
     assert len(select_review_candidates(segments)) == 18
 
@@ -121,3 +121,38 @@ def test_build_caption_export_quality_report_keeps_review_flags_with_export_metr
     assert report.total_segment_count == 2
     assert report.average_probability == 0.95
     assert report.flagged_segments == review_report.flagged_segments
+
+
+def test_build_caption_export_quality_report_includes_export_only_flags():
+    review_report = CaptionQualityReport(
+        average_probability=0.92,
+        low_confidence_segment_count=0,
+        total_segment_count=1,
+        flagged_segments=[],
+        review_recommended=False,
+    )
+    export_flag = CaptionReviewFlag(
+        start=0.0,
+        end=1.0,
+        text="We need to",
+        average_probability=0.96,
+        reason="probable truncation",
+    )
+    export_report = CaptionQualityReport(
+        average_probability=0.95,
+        low_confidence_segment_count=1,
+        total_segment_count=2,
+        flagged_segments=[export_flag],
+        review_recommended=True,
+    )
+
+    report = build_caption_export_quality_report(
+        review_report=review_report,
+        export_report=export_report,
+    )
+
+    assert report.review_recommended is True
+    assert report.low_confidence_segment_count == 1
+    assert report.total_segment_count == 2
+    assert report.average_probability == 0.95
+    assert report.flagged_segments == [export_flag]

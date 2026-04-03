@@ -113,12 +113,22 @@ def build_caption_export_quality_report(
     review_report: CaptionQualityReport,
     export_report: CaptionQualityReport,
 ) -> CaptionQualityReport:
+    merged_flags: list[CaptionReviewFlag] = []
+    seen_keys: set[tuple[float, float, str, str]] = set()
+    for flag in [*review_report.flagged_segments, *export_report.flagged_segments]:
+        key = (float(flag.start), float(flag.end), str(flag.text), str(flag.reason))
+        if key in seen_keys:
+            continue
+        merged_flags.append(flag)
+        seen_keys.add(key)
+        if len(merged_flags) >= _CAPTION_REVIEW_MAX_FLAGS:
+            break
     return CaptionQualityReport(
         average_probability=export_report.average_probability,
-        low_confidence_segment_count=review_report.low_confidence_segment_count,
+        low_confidence_segment_count=len(merged_flags),
         total_segment_count=export_report.total_segment_count,
-        flagged_segments=review_report.flagged_segments,
-        review_recommended=review_report.review_recommended,
+        flagged_segments=merged_flags,
+        review_recommended=bool(merged_flags),
     )
 
 
@@ -214,10 +224,10 @@ def build_caption_quality_report(segments: Sequence[CaptionSegmentLike]) -> Capt
     flagged_segments = all_flagged_segments[:_CAPTION_REVIEW_MAX_FLAGS]
     return CaptionQualityReport(
         average_probability=average_probability,
-        low_confidence_segment_count=len(all_flagged_segments),
+        low_confidence_segment_count=len(flagged_segments),
         total_segment_count=len(clean_segments),
         flagged_segments=flagged_segments,
-        review_recommended=bool(all_flagged_segments),
+        review_recommended=bool(flagged_segments),
     )
 
 
