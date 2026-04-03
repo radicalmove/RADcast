@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Protocol, Sequence
 
 _TOKEN_RE = re.compile(r"[^a-z']+")
-_CAPTION_REVIEW_MAX_FLAGS = 24
+_CAPTION_REVIEW_MAX_FLAGS = 18
 _LOW_CONFIDENCE_THRESHOLD = 0.45
 _TRUNCATION_ENDINGS = {
     "a",
@@ -138,7 +138,11 @@ def _caption_review_reason(
     return None
 
 
-def select_review_candidates(segments: Sequence[CaptionSegmentLike]) -> list[CaptionReviewFlag]:
+def _select_review_candidates(
+    segments: Sequence[CaptionSegmentLike],
+    *,
+    limit: int | None,
+) -> list[CaptionReviewFlag]:
     clean_segments = [segment for segment in segments if _clean_caption_text(segment.text)]
     flagged_segments: list[CaptionReviewFlag] = []
     for index, segment in enumerate(clean_segments):
@@ -154,20 +158,27 @@ def select_review_candidates(segments: Sequence[CaptionSegmentLike]) -> list[Cap
                 reason=reason,
             )
         )
-    return flagged_segments[:_CAPTION_REVIEW_MAX_FLAGS]
+    if limit is None:
+        return flagged_segments
+    return flagged_segments[:max(0, int(limit))]
+
+
+def select_review_candidates(segments: Sequence[CaptionSegmentLike]) -> list[CaptionReviewFlag]:
+    return _select_review_candidates(segments, limit=_CAPTION_REVIEW_MAX_FLAGS)
 
 
 def build_caption_quality_report(segments: Sequence[CaptionSegmentLike]) -> CaptionQualityReport:
     clean_segments = [segment for segment in segments if _clean_caption_text(segment.text)]
     probabilities = [segment.average_probability for segment in clean_segments if segment.average_probability is not None]
     average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
-    flagged_segments = select_review_candidates(clean_segments)
+    all_flagged_segments = _select_review_candidates(clean_segments, limit=None)
+    flagged_segments = all_flagged_segments[:_CAPTION_REVIEW_MAX_FLAGS]
     return CaptionQualityReport(
         average_probability=average_probability,
-        low_confidence_segment_count=len(flagged_segments),
+        low_confidence_segment_count=len(all_flagged_segments),
         total_segment_count=len(clean_segments),
         flagged_segments=flagged_segments,
-        review_recommended=bool(flagged_segments),
+        review_recommended=bool(all_flagged_segments),
     )
 
 

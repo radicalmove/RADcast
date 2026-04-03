@@ -56,3 +56,20 @@ def test_build_caption_quality_report_and_document_include_only_flagged_segments
     assert "confidence unknown" not in review_text
     assert "Welcome to the lecture" not in review_text
 
+
+def test_build_caption_quality_report_counts_all_flags_but_caps_review_output_at_18():
+    segments = [
+        TranscriptSegmentTiming(
+            text=f"Potentially low confidence line {index}",
+            start=float(index),
+            end=float(index) + 0.6,
+            average_probability=0.39,
+        )
+        for index in range(20)
+    ]
+
+    report = build_caption_quality_report(segments)
+
+    assert report.low_confidence_segment_count == 20
+    assert len(report.flagged_segments) == 18
+    assert len(select_review_candidates(segments)) == 18
