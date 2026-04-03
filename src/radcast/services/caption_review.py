@@ -9,6 +9,14 @@ from typing import Protocol, Sequence
 _TOKEN_RE = re.compile(r"[^a-z']+")
 _CAPTION_REVIEW_MAX_FLAGS = 18
 _LOW_CONFIDENCE_THRESHOLD = 0.45
+_REVIEW_SYSTEM_PHRASES = (
+    "review low-confidence transcript lines carefully",
+    "prefer the spoken wording",
+    "preserve names and te reo maori",
+    "correct likely misheard words rather than paraphrasing",
+    "radcast caption review",
+    "review these timestamp ranges",
+)
 _TRUNCATION_ENDINGS = {
     "a",
     "an",
@@ -79,8 +87,22 @@ def _clean_caption_text(text: str) -> str:
     return " ".join(str(text or "").split()).strip()
 
 
+def _normalize_caption_text(text: str) -> str:
+    return _clean_caption_text(text).lower().replace("māori", "maori")
+
+
 def _caption_tokens(text: str) -> list[str]:
-    return [token for token in _TOKEN_RE.split(_clean_caption_text(text).lower()) if token]
+    return [token for token in _TOKEN_RE.split(_normalize_caption_text(text)) if token]
+
+
+def is_review_system_text(text: str) -> bool:
+    normalized = _normalize_caption_text(text)
+    if not normalized:
+        return False
+    if normalized.startswith("radcast caption review"):
+        return True
+    matches = sum(1 for phrase in _REVIEW_SYSTEM_PHRASES if phrase in normalized)
+    return matches >= 2
 
 
 def _segment_overlap(start_a: float, end_a: float, start_b: float, end_b: float) -> float:

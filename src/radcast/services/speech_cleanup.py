@@ -34,6 +34,7 @@ from radcast.services.caption_review import (
     CaptionReviewFlag,
     build_caption_quality_report,
     format_caption_review_document,
+    is_review_system_text,
 )
 from radcast.services.caption_backends import (
     CaptionBackend,
@@ -698,8 +699,8 @@ class SpeechCleanupService:
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
 
-            quality_report = build_caption_quality_report(segments)
-            if profile.review_sweep and quality_report.flagged_segments:
+            review_report = build_caption_quality_report(segments)
+            if profile.review_sweep and review_report.flagged_segments:
                 if on_stage:
                     on_stage(
                         0.82,
@@ -713,7 +714,7 @@ class SpeechCleanupService:
                 segments = self._review_and_correct_caption_segments(
                     analysis_wav=analysis_wav,
                     base_segments=segments,
-                    quality_report=quality_report,
+                    quality_report=review_report,
                     prompt_text=caption_prompt,
                     on_stage=on_stage,
                     started_at=started_at,
@@ -726,7 +727,6 @@ class SpeechCleanupService:
 
             export_segments = _shape_caption_segments_for_accessibility(segments)
             export_segments = _dedupe_caption_segments(export_segments)
-            quality_report = build_caption_quality_report(export_segments)
 
             output_path = audio_path.with_suffix(f".{caption_format.value}")
             review_path = None
@@ -740,15 +740,15 @@ class SpeechCleanupService:
                 _format_caption_document(export_segments, caption_format=caption_format),
                 encoding="utf-8",
             )
-            if quality_report.review_recommended:
+            if review_report.review_recommended:
                 review_path = output_path.parent / f"{output_path.name}.review.txt"
-                review_path.write_text(format_caption_review_document(quality_report), encoding="utf-8")
+                review_path.write_text(format_caption_review_document(review_report), encoding="utf-8")
         return CaptionExportResult(
             caption_path=output_path,
             caption_format=caption_format,
             segment_count=len([segment for segment in export_segments if _clean_caption_text(segment.text)]),
             review_path=review_path,
-            quality_report=quality_report,
+            quality_report=review_report,
         )
 
     def _load_model(self, model_size: str | None = None, *, backend: CaptionBackend | None = None):
@@ -1174,6 +1174,8 @@ class SpeechCleanupService:
         if best is None:
             return None
         if not _clean_caption_text(best.text):
+            return None
+        if is_review_system_text(best.text) or is_review_system_text(flag.text):
             return None
         if _clean_caption_text(best.text) == _clean_caption_text(flag.text) and (
             best.average_probability is None
