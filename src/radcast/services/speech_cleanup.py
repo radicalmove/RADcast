@@ -29,6 +29,12 @@ from radcast.services.caption_quality_policy import (
     CaptionQualityPolicy,
     resolve_caption_quality_policy,
 )
+from radcast.services.caption_review import (
+    CaptionQualityReport,
+    CaptionReviewFlag,
+    build_caption_quality_report,
+    format_caption_review_document,
+)
 from radcast.services.caption_backends import (
     CaptionBackend,
     CaptionTranscriptionResult,
@@ -65,7 +71,6 @@ _CAPTION_ACCURATE_OVERLAP_SECONDS = 2.5
 _CAPTION_REVIEWED_WINDOW_SECONDS = 16.0
 _CAPTION_REVIEWED_OVERLAP_SECONDS = 3.0
 _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS = 1.8
-_CAPTION_REVIEW_MAX_FLAGS = 18
 _CAPTION_MAX_CUE_DURATION_SECONDS = 6.0
 _CAPTION_MAX_CUE_CHARACTERS = 84
 _CAPTION_MAX_CUE_WORDS = 14
@@ -190,34 +195,6 @@ class TranscriptSegmentTiming:
     start: float
     end: float
     average_probability: float | None = None
-
-
-@dataclass(frozen=True)
-class CaptionReviewFlag:
-    start: float
-    end: float
-    text: str
-    average_probability: float | None
-    reason: str
-
-
-@dataclass(frozen=True)
-class CaptionQualityReport:
-    average_probability: float | None
-    low_confidence_segment_count: int
-    total_segment_count: int
-    flagged_segments: list[CaptionReviewFlag]
-    review_recommended: bool
-
-    def summary_text(self) -> str:
-        if not self.total_segment_count:
-            return "No caption segments were generated."
-        if not self.review_recommended:
-            return "Caption confidence looked stable."
-        return (
-            f"Caption review suggested: {self.low_confidence_segment_count} "
-            f"low-confidence segment{'s' if self.low_confidence_segment_count != 1 else ''}."
-        )
 
 
 @dataclass(frozen=True)
@@ -721,7 +698,7 @@ class SpeechCleanupService:
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
 
-            quality_report = _build_caption_quality_report(segments)
+            quality_report = build_caption_quality_report(segments)
             if profile.review_sweep and quality_report.flagged_segments:
                 if on_stage:
                     on_stage(
@@ -749,7 +726,7 @@ class SpeechCleanupService:
 
             export_segments = _shape_caption_segments_for_accessibility(segments)
             export_segments = _dedupe_caption_segments(export_segments)
-            quality_report = _build_caption_quality_report(export_segments)
+            quality_report = build_caption_quality_report(export_segments)
 
             output_path = audio_path.with_suffix(f".{caption_format.value}")
             review_path = None
@@ -765,7 +742,7 @@ class SpeechCleanupService:
             )
             if quality_report.review_recommended:
                 review_path = output_path.parent / f"{output_path.name}.review.txt"
-                review_path.write_text(_format_caption_review_document(quality_report), encoding="utf-8")
+                review_path.write_text(format_caption_review_document(quality_report), encoding="utf-8")
         return CaptionExportResult(
             caption_path=output_path,
             caption_format=caption_format,
@@ -1084,7 +1061,7 @@ class SpeechCleanupService:
             model = self._load_model(resolved_review_model_size, backend=selected_backend)
         waveform, sample_rate = _read_pcm16_wav(analysis_wav)
         corrected = list(base_segments)
-        flags = quality_report.flagged_segments[:_CAPTION_REVIEW_MAX_FLAGS]
+        flags = quality_report.flagged_segments
         total_flags = len(flags)
         review_started_at = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="radcast_caption_review_") as tmp:
@@ -1898,87 +1875,6 @@ def _splice_waveform(
         blended = (result[-overlap:] * fade_out) + (chunk[:overlap] * fade_in)
         result = np.concatenate([result[:-overlap], blended, chunk[overlap:]], axis=0)
     return result
-
-
-def _build_caption_quality_report(segments: list[TranscriptSegmentTiming]) -> CaptionQualityReport:
-    clean_segments = [segment for segment in segments if _clean_caption_text(segment.text)]
-    probabilities = [segment.average_probability for segment in clean_segments if segment.average_probability is not None]
-    average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
-    flagged_segments: list[CaptionReviewFlag] = []
-    for segment in clean_segments:
-        text = _clean_caption_text(segment.text)
-        reason = _caption_review_reason(segment, average_probability=average_probability)
-        if not reason:
-            continue
-        flagged_segments.append(
-            CaptionReviewFlag(
-                start=segment.start,
-                end=segment.end,
-                text=text,
-                average_probability=segment.average_probability,
-                reason=reason,
-            )
-        )
-    low_confidence_segment_count = len(flagged_segments)
-    review_recommended = low_confidence_segment_count > 0 or (
-        average_probability is not None and average_probability < 0.72 and len(clean_segments) >= 4
-    )
-    return CaptionQualityReport(
-        average_probability=average_probability,
-        low_confidence_segment_count=low_confidence_segment_count,
-        total_segment_count=len(clean_segments),
-        flagged_segments=flagged_segments[:24],
-        review_recommended=review_recommended,
-    )
-
-
-def _caption_review_reason(
-    segment: TranscriptSegmentTiming,
-    *,
-    average_probability: float | None,
-) -> str | None:
-    text = _clean_caption_text(segment.text)
-    if not text:
-        return None
-    probability = segment.average_probability
-    if probability is None:
-        return "No word confidence data was available for this caption line."
-    low_threshold = 0.45
-    warn_threshold = 0.58
-    if average_probability is not None:
-        low_threshold = min(low_threshold, max(0.34, average_probability - 0.22))
-        warn_threshold = min(warn_threshold, max(0.46, average_probability - 0.14))
-    token_count = len(text.split())
-    if probability < low_threshold:
-        return "Very low confidence caption line."
-    if probability < warn_threshold and token_count >= 5:
-        return "Low confidence on a longer caption line."
-    return None
-
-
-def _format_caption_review_document(report: CaptionQualityReport) -> str:
-    lines = ["RADcast Caption Review", ""]
-    if report.average_probability is not None:
-        lines.append(f"Average word confidence: {report.average_probability:.0%}")
-    lines.append(f"Low-confidence caption lines: {report.low_confidence_segment_count}")
-    lines.append(f"Total caption lines: {report.total_segment_count}")
-    lines.append("")
-    if not report.flagged_segments:
-        lines.append("No specific caption lines were flagged.")
-        return "\n".join(lines).rstrip() + "\n"
-    lines.append("Review these timestamp ranges:")
-    lines.append("")
-    for flag in report.flagged_segments:
-        start_text = _format_caption_timestamp(flag.start, separator=".")
-        end_text = _format_caption_timestamp(max(flag.end, flag.start + 0.2), separator=".")
-        confidence_text = (
-            f"{flag.average_probability:.0%}" if flag.average_probability is not None else "unknown"
-        )
-        lines.append(f"{start_text} --> {end_text} | confidence {confidence_text}")
-        lines.append(f"Reason: {flag.reason}")
-        lines.append(flag.text)
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
 
 
 def _find_segment_index(segments: list[TranscriptSegmentTiming], flag: CaptionReviewFlag) -> int | None:

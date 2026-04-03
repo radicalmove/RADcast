@@ -983,8 +983,10 @@ def test_generate_caption_file_writes_review_notes_for_low_confidence_segments(m
     assert result.quality_report.review_recommended is True
     assert result.quality_report.low_confidence_segment_count == 1
     review_text = result.review_path.read_text(encoding="utf-8")
-    assert "low-confidence" in review_text.lower()
+    assert "probable low confidence" in review_text
+    assert "confidence unknown" not in review_text
     assert "This line should be checked" in review_text
+    assert "This line is okay" not in review_text
 
 
 def test_estimate_caption_runtime_seconds_adds_cold_start_for_uncached_accurate_model(monkeypatch):
