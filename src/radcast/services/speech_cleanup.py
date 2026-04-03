@@ -32,6 +32,7 @@ from radcast.services.caption_quality_policy import (
 from radcast.services.caption_review import (
     CaptionQualityReport,
     CaptionReviewFlag,
+    build_caption_export_quality_report,
     build_caption_quality_report,
     format_caption_review_document,
     is_review_system_text,
@@ -728,6 +729,10 @@ class SpeechCleanupService:
             export_segments = _shape_caption_segments_for_accessibility(segments)
             export_segments = _dedupe_caption_segments(export_segments)
             export_report = build_caption_quality_report(export_segments)
+            outward_quality_report = build_caption_export_quality_report(
+                review_report=review_report,
+                export_report=export_report,
+            )
 
             output_path = audio_path.with_suffix(f".{caption_format.value}")
             review_path = None
@@ -749,7 +754,7 @@ class SpeechCleanupService:
             caption_format=caption_format,
             segment_count=len([segment for segment in export_segments if _clean_caption_text(segment.text)]),
             review_path=review_path,
-            quality_report=export_report,
+            quality_report=outward_quality_report,
         )
 
     def _load_model(self, model_size: str | None = None, *, backend: CaptionBackend | None = None):

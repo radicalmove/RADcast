@@ -1278,6 +1278,45 @@ def test_review_caption_flag_rejects_review_system_boilerplate(monkeypatch, tmp_
     assert result.text == spoken
 
 
+def test_review_caption_flag_rejects_single_prompt_echo_candidate(monkeypatch, tmp_path: Path):
+    service = SpeechCleanupService()
+
+    sample_rate = 16000
+    waveform = np.zeros((sample_rate * 2, 1), dtype=np.float32)
+    review_tmp = tmp_path / "review"
+    review_tmp.mkdir()
+    flag = SimpleNamespace(start=0.2, end=0.8, text="hello world", average_probability=0.3)
+    echoed_instruction = "Review low-confidence transcript lines carefully."
+
+    monkeypatch.setattr(
+        service,
+        "_transcribe_file",
+        lambda _model, _snippet_path, **kwargs: [SimpleNamespace(text=echoed_instruction, start=0.0, end=0.7, words=[])],
+    )
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup._collect_timing_rows",
+        lambda _segments, **kwargs: (
+            [],
+            [TranscriptSegmentTiming(text=echoed_instruction, start=0.0, end=0.7, average_probability=0.91)],
+        ),
+    )
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup._best_overlapping_segment",
+        lambda segments, _flag: segments[0] if segments else None,
+    )
+
+    result = service._review_caption_flag(
+        model=object(),
+        waveform=waveform,
+        sample_rate=sample_rate,
+        flag=flag,
+        prompt_text="prompt",
+        tmp_path=review_tmp,
+    )
+
+    assert result is None
+
+
 def test_generate_caption_file_uses_pre_shape_review_report_for_review_notes(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
@@ -1319,8 +1358,8 @@ def test_generate_caption_file_uses_pre_shape_review_report_for_review_notes(mon
     assert result.review_path is not None
     assert result.review_path.exists()
     assert result.quality_report is not None
-    assert result.quality_report.review_recommended is False
-    assert result.quality_report.low_confidence_segment_count == 0
+    assert result.quality_report.review_recommended is True
+    assert result.quality_report.low_confidence_segment_count == 1
     assert result.quality_report.total_segment_count == 2
     assert result.quality_report.average_probability == pytest.approx(0.95, abs=0.001)
     review_text = result.review_path.read_text(encoding="utf-8")

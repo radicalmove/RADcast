@@ -99,10 +99,27 @@ def is_review_system_text(text: str) -> bool:
     normalized = _normalize_caption_text(text)
     if not normalized:
         return False
+    normalized_without_trailing_punctuation = normalized.rstrip(" .,!?:;")
     if normalized.startswith("radcast caption review"):
+        return True
+    if normalized_without_trailing_punctuation in _REVIEW_SYSTEM_PHRASES:
         return True
     matches = sum(1 for phrase in _REVIEW_SYSTEM_PHRASES if phrase in normalized)
     return matches >= 2
+
+
+def build_caption_export_quality_report(
+    *,
+    review_report: CaptionQualityReport,
+    export_report: CaptionQualityReport,
+) -> CaptionQualityReport:
+    return CaptionQualityReport(
+        average_probability=export_report.average_probability,
+        low_confidence_segment_count=review_report.low_confidence_segment_count,
+        total_segment_count=export_report.total_segment_count,
+        flagged_segments=review_report.flagged_segments,
+        review_recommended=review_report.review_recommended,
+    )
 
 
 def _segment_overlap(start_a: float, end_a: float, start_b: float, end_b: float) -> float:

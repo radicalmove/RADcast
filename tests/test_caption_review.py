@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from radcast.services.caption_review import build_caption_quality_report, format_caption_review_document, select_review_candidates
+from radcast.services.caption_review import (
+    CaptionQualityReport,
+    CaptionReviewFlag,
+    build_caption_export_quality_report,
+    build_caption_quality_report,
+    format_caption_review_document,
+    is_review_system_text,
+    select_review_candidates,
+)
 from radcast.services.speech_cleanup import TranscriptSegmentTiming
 
 
@@ -73,3 +81,43 @@ def test_build_caption_quality_report_counts_all_flags_but_caps_review_output_at
     assert report.low_confidence_segment_count == 20
     assert len(report.flagged_segments) == 18
     assert len(select_review_candidates(segments)) == 18
+
+
+def test_is_review_system_text_rejects_single_prompt_echo_line():
+    assert is_review_system_text("Review low-confidence transcript lines carefully.") is True
+
+
+def test_build_caption_export_quality_report_keeps_review_flags_with_export_metrics():
+    review_report = CaptionQualityReport(
+        average_probability=0.39,
+        low_confidence_segment_count=1,
+        total_segment_count=1,
+        flagged_segments=[
+            CaptionReviewFlag(
+                start=0.0,
+                end=1.4,
+                text="This line should be checked",
+                average_probability=0.39,
+                reason="probable low confidence",
+            )
+        ],
+        review_recommended=True,
+    )
+    export_report = CaptionQualityReport(
+        average_probability=0.95,
+        low_confidence_segment_count=0,
+        total_segment_count=2,
+        flagged_segments=[],
+        review_recommended=False,
+    )
+
+    report = build_caption_export_quality_report(
+        review_report=review_report,
+        export_report=export_report,
+    )
+
+    assert report.review_recommended is True
+    assert report.low_confidence_segment_count == 1
+    assert report.total_segment_count == 2
+    assert report.average_probability == 0.95
+    assert report.flagged_segments == review_report.flagged_segments
