@@ -9,6 +9,7 @@ from typing import Protocol, Sequence
 _TOKEN_RE = re.compile(r"[^a-z']+")
 _CAPTION_REVIEW_MAX_FLAGS = 18
 _LOW_CONFIDENCE_THRESHOLD = 0.45
+_FINAL_REVIEW_RESULT_LINE = "this is the final result of the review"
 _REVIEW_SYSTEM_PHRASES = (
     "review low-confidence transcript lines carefully",
     "prefer the spoken wording",
@@ -96,17 +97,95 @@ def _caption_tokens(text: str) -> list[str]:
     return [token for token in _TOKEN_RE.split(_normalize_caption_text(text)) if token]
 
 
+def _split_final_review_result_prefix(text: str) -> tuple[bool, str, str | None]:
+    cleaned = _clean_caption_text(text)
+    if not cleaned:
+        return False, "", None
+    lowered = cleaned.lower()
+    if lowered == _FINAL_REVIEW_RESULT_LINE:
+        return True, "", "exact"
+    if not lowered.startswith(_FINAL_REVIEW_RESULT_LINE):
+        return False, cleaned, None
+    next_index = len(_FINAL_REVIEW_RESULT_LINE)
+    if next_index >= len(cleaned):
+        return True, "", "exact"
+    next_char = cleaned[next_index]
+    if next_char.isalnum() or next_char == "'":
+        return False, cleaned, None
+    remainder = cleaned[next_index:].lstrip(" .,!?:;-")
+    boundary = "sentence" if next_char in ".!?" else "continuation"
+    return True, _clean_caption_text(remainder), boundary
+
+
 def is_review_system_text(text: str) -> bool:
     normalized = _normalize_caption_text(text)
     if not normalized:
         return False
     normalized_without_trailing_punctuation = normalized.rstrip(" .,!?:;")
+    if normalized_without_trailing_punctuation == _FINAL_REVIEW_RESULT_LINE:
+        return True
     if normalized_without_trailing_punctuation.startswith("radcast caption review"):
         return True
     if any(normalized_without_trailing_punctuation.startswith(phrase) for phrase in _REVIEW_SYSTEM_PHRASES):
         return True
-    matches = sum(1 for phrase in _REVIEW_SYSTEM_PHRASES if phrase in normalized)
+    matches = int(_FINAL_REVIEW_RESULT_LINE in normalized) + sum(1 for phrase in _REVIEW_SYSTEM_PHRASES if phrase in normalized)
     return matches >= 2
+
+
+def is_review_echo_candidate(text: str, *, reference_text: str | None = None) -> bool:
+    if is_review_system_text(text):
+        return True
+    has_prefix, remainder, boundary = _split_final_review_result_prefix(text)
+    if not has_prefix:
+        return False
+    if not remainder:
+        return True
+    _, stripped_reference, _ = _split_final_review_result_prefix(reference_text or "")
+    comparison_reference = stripped_reference or _clean_caption_text(reference_text or "")
+    reference_tokens = set(_caption_tokens(comparison_reference))
+    if not reference_tokens:
+        return boundary == "sentence"
+    remainder_tokens = set(_caption_tokens(remainder))
+    return not bool(remainder_tokens & reference_tokens)
+
+
+def sanitize_review_candidate_text(text: str, *, reference_text: str | None = None) -> str | None:
+    cleaned_text = _clean_caption_text(text)
+    if not cleaned_text:
+        return None
+    if is_review_system_text(cleaned_text):
+        return None
+    cleaned_reference = _clean_caption_text(reference_text)
+    has_prefix, stripped, boundary = _split_final_review_result_prefix(cleaned_text)
+    if not has_prefix:
+        return cleaned_text
+    if not stripped:
+        return None
+    if is_review_system_text(stripped):
+        return None
+    reference_has_prefix, stripped_reference, _ = _split_final_review_result_prefix(reference_text or "")
+    comparison_reference = stripped_reference or cleaned_reference
+    overlap = bool(comparison_reference and set(_caption_tokens(stripped)) & set(_caption_tokens(comparison_reference)))
+    if reference_has_prefix:
+        if cleaned_reference and cleaned_text == cleaned_reference:
+            return cleaned_text if boundary == "continuation" else stripped
+        if overlap:
+            return stripped
+        if boundary == "continuation":
+            return cleaned_text
+        if is_review_echo_candidate(cleaned_text, reference_text=reference_text):
+            return None
+        return stripped
+    if boundary == "continuation":
+        # Continuation-form matches are too ambiguous to strip safely on clean
+        # lecture text; only sentence-boundary echoes or already-polluted
+        # sources get automatic prefix removal.
+        return cleaned_text
+    if overlap:
+        return stripped
+    if is_review_echo_candidate(cleaned_text, reference_text=reference_text):
+        return None
+    return stripped
 
 
 def _count_probable_low_confidence_flags(flags: Sequence[CaptionReviewFlag]) -> int:
@@ -223,7 +302,11 @@ def select_review_candidates(segments: Sequence[CaptionSegmentLike]) -> list[Cap
 
 
 def build_caption_quality_report(segments: Sequence[CaptionSegmentLike]) -> CaptionQualityReport:
-    clean_segments = [segment for segment in segments if _clean_caption_text(segment.text)]
+    clean_segments = [
+        segment
+        for segment in segments
+        if _clean_caption_text(segment.text) and not is_review_system_text(segment.text)
+    ]
     probabilities = [segment.average_probability for segment in clean_segments if segment.average_probability is not None]
     average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
     all_flagged_segments = _select_review_candidates(clean_segments, limit=None)

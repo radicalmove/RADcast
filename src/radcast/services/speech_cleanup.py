@@ -36,6 +36,7 @@ from radcast.services.caption_review import (
     build_caption_export_quality_report,
     build_caption_quality_report,
     format_caption_review_document,
+    sanitize_review_candidate_text,
     is_review_system_text,
 )
 from radcast.services.caption_backends import (
@@ -1186,15 +1187,16 @@ class SpeechCleanupService:
             return None
         if not _clean_caption_text(best.text):
             return None
-        if is_review_system_text(best.text):
+        candidate_text = sanitize_review_candidate_text(best.text, reference_text=flag.text)
+        if not candidate_text:
             return None
-        if _clean_caption_text(best.text) == _clean_caption_text(flag.text) and (
+        if _clean_caption_text(candidate_text) == _clean_caption_text(flag.text) and (
             best.average_probability is None
             or (flag.average_probability is not None and best.average_probability <= flag.average_probability + 0.01)
         ):
             return None
         return TranscriptSegmentTiming(
-            text=best.text,
+            text=candidate_text,
             start=flag.start,
             end=max(flag.end, flag.start + 0.2),
             average_probability=best.average_probability,

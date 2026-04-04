@@ -7,6 +7,7 @@ from radcast.services.caption_review import (
     build_caption_quality_report,
     format_caption_review_document,
     is_review_system_text,
+    sanitize_review_candidate_text,
     select_review_candidates,
 )
 from radcast.services.speech_cleanup import TranscriptSegmentTiming
@@ -111,7 +112,104 @@ def test_build_caption_quality_report_counts_all_flags_but_caps_review_output_at
 
 
 def test_is_review_system_text_rejects_mixed_prompt_echo_line():
-    assert is_review_system_text("Review low-confidence transcript lines carefully hello world") is True
+    assert is_review_system_text("This is the final result of the review. Review these timestamp ranges and adjust them.") is True
+
+
+def test_is_review_system_text_only_matches_the_exact_final_result_line():
+    assert is_review_system_text("This is the final result of the review") is True
+    assert is_review_system_text("This is the final result of the review committee report") is False
+    assert is_review_system_text("This is the final result of the review. hello better world") is False
+    assert is_review_system_text("This is the final result of the review. Review these timestamp ranges and adjust them.") is True
+
+
+def test_sanitize_review_candidate_text_strips_prompt_echo_prefix_when_remainder_matches_reference():
+    assert sanitize_review_candidate_text(
+        "This is the final result of the review. hello better world",
+        reference_text="hello world",
+    ) == "hello better world"
+
+
+def test_sanitize_review_candidate_text_uses_stripped_reference_when_source_was_already_polluted():
+    assert sanitize_review_candidate_text(
+        "This is the final result of the review. hello better world",
+        reference_text="This is the final result of the review. hello world",
+    ) == "hello better world"
+
+
+def test_sanitize_review_candidate_text_strips_polluted_candidate_even_when_source_matches_verbatim():
+    assert sanitize_review_candidate_text(
+        "This is the final result of the review. hello world",
+        reference_text="This is the final result of the review. hello world",
+    ) == "hello world"
+
+
+def test_sanitize_review_candidate_text_keeps_legitimate_prefixed_lecture_text_when_overlap_is_weak():
+    assert sanitize_review_candidate_text(
+        "This is the final result of the review committee report",
+        reference_text="hello world",
+    ) == "This is the final result of the review committee report"
+
+
+def test_sanitize_review_candidate_text_keeps_exact_clean_source_continuation_text():
+    assert sanitize_review_candidate_text(
+        "This is the final result of the review committee report",
+        reference_text="This is the final result of the review committee report",
+    ) == "This is the final result of the review committee report"
+    assert sanitize_review_candidate_text(
+        "This is the final result of the review and then we continue",
+        reference_text="This is the final result of the review and then we continue",
+    ) == "This is the final result of the review and then we continue"
+
+
+def test_sanitize_review_candidate_text_keeps_legitimate_prefixed_lecture_text_when_overlap_is_only_in_tail():
+    assert sanitize_review_candidate_text(
+        "This is the final result of the review committee report",
+        reference_text="committee report",
+    ) == "This is the final result of the review committee report"
+
+
+def test_sanitize_review_candidate_text_keeps_legitimate_colon_prefixed_lecture_text_when_overlap_is_weak():
+    assert sanitize_review_candidate_text(
+        "This is the final result of the review: committee report",
+        reference_text="hello world",
+    ) == "This is the final result of the review: committee report"
+
+
+def test_build_caption_quality_report_reports_explicit_reasons_when_confidence_is_missing():
+    segments = [
+        TranscriptSegmentTiming(text="Thank you for watching", start=0.0, end=1.0, average_probability=None),
+        TranscriptSegmentTiming(text="Thank you for watching", start=1.08, end=2.0, average_probability=None),
+        TranscriptSegmentTiming(text="We need to", start=2.2, end=2.6, average_probability=None),
+    ]
+
+    report = build_caption_quality_report(segments)
+
+    assert report.average_probability is None
+    assert [flag.reason for flag in report.flagged_segments] == [
+        "probable duplication",
+        "probable truncation",
+    ]
+
+    review_text = format_caption_review_document(report)
+
+    assert "Reason: probable duplication" in review_text
+    assert "Reason: probable truncation" in review_text
+    assert "confidence unknown" not in review_text
+
+
+def test_build_caption_quality_report_excludes_review_system_segments():
+    segments = [
+        TranscriptSegmentTiming(text="This is the final result of the review", start=0.0, end=1.0, average_probability=0.12),
+        TranscriptSegmentTiming(text="Thank you for watching", start=1.1, end=2.0, average_probability=0.93),
+        TranscriptSegmentTiming(text="Thank you for watching", start=2.05, end=3.0, average_probability=0.94),
+    ]
+
+    report = build_caption_quality_report(segments)
+
+    assert report.total_segment_count == 2
+    assert [flag.reason for flag in report.flagged_segments] == ["probable duplication"]
+    review_text = format_caption_review_document(report)
+    assert "final result of the review" not in review_text.lower()
 
 
 def test_build_caption_export_quality_report_keeps_review_flags_with_export_metrics():

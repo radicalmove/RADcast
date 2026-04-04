@@ -5,19 +5,28 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
+from radcast.services.caption_review import _is_probable_duplication, is_review_system_text
+
 if TYPE_CHECKING:
     from radcast.services.speech_cleanup import TranscriptSegmentTiming
 
 _CAPTION_MAX_CUE_DURATION_SECONDS = 6.0
 _CAPTION_MAX_CUE_CHARACTERS = 84
 _CAPTION_MAX_CUE_WORDS = 14
+_WEAK_TRAILING_WORDS = {"and", "or", "so", "than", "that", "the", "then", "to", "with"}
 
 
 def shape_lecture_caption_cues(segments: list[TranscriptSegmentTiming]) -> list[TranscriptSegmentTiming]:
     shaped: list[TranscriptSegmentTiming] = []
+    previous_segment: TranscriptSegmentTiming | None = None
     for segment in segments:
         cleaned_text = _clean_caption_text(segment.text)
         if not cleaned_text:
+            continue
+        if is_review_system_text(cleaned_text):
+            continue
+        if previous_segment is not None and _is_probable_duplication(previous_segment, segment):
+            previous_segment = segment
             continue
         words = cleaned_text.split()
         duration = max(0.2, float(segment.end) - float(segment.start))
@@ -36,6 +45,7 @@ def shape_lecture_caption_cues(segments: list[TranscriptSegmentTiming]) -> list[
                     average_probability=segment.average_probability,
                 )
             )
+            previous_segment = segment
             continue
 
         token_groups = _split_caption_tokens_into_cues(words, target_chunks=target_chunks)
@@ -65,6 +75,7 @@ def shape_lecture_caption_cues(segments: list[TranscriptSegmentTiming]) -> list[
                 end=max(segment.end, shaped[-1].end),
                 average_probability=shaped[-1].average_probability,
             )
+        previous_segment = segment
     return shaped
 
 
@@ -98,6 +109,9 @@ def _split_caption_tokens_into_cues(tokens: list[str], *, target_chunks: int) ->
                 break
 
             penalty = abs(len(candidate_tokens) - target_size)
+            trailing_word = candidate_tokens[-1].lower().rstrip(".,!?;:")
+            if end_index < total_tokens and trailing_word in _WEAK_TRAILING_WORDS:
+                penalty += 1.5
             if candidate_tokens[-1].endswith((".", "!", "?", ",", ";", ":")):
                 penalty -= 0.6
             if best_penalty is None or penalty < best_penalty:
