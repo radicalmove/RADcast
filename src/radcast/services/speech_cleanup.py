@@ -43,6 +43,7 @@ from radcast.services.caption_backends import (
     CaptionBackend,
     CaptionTranscriptionResult,
     FasterWhisperCaptionBackend,
+    MlxWhisperCaptionBackend,
     WhisperCppCaptionBackend,
 )
 from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_convert
@@ -244,6 +245,8 @@ def _caption_backend_display_name(backend: CaptionBackend) -> str:
         return "whisper.cpp"
     if backend.id == "faster_whisper":
         return "faster-whisper"
+    if backend.id == "mlx_whisper":
+        return "mlx-whisper"
     return backend.id
 
 
@@ -352,9 +355,14 @@ class SpeechCleanupService:
             transcribe_language=self.transcribe_language,
             default_beam_size=self.beam_size,
         )
+        mlx_backend = MlxWhisperCaptionBackend(
+            default_model_size=self.caption_reviewed_model_size,
+            transcribe_language=self.transcribe_language,
+        )
         self._caption_backends: dict[str, CaptionBackend] = {
             faster_backend.id: faster_backend,
             whispercpp_backend.id: whispercpp_backend,
+            mlx_backend.id: mlx_backend,
         }
         available_backends = {
             backend_id
@@ -372,6 +380,7 @@ class SpeechCleanupService:
             raise EnhancementRuntimeError(str(exc)) from exc
         self._caption_backend = self._caption_backends[self.caption_backend_id]
         self._faster_whisper_backend = faster_backend
+        self._mlx_whisper_backend = mlx_backend
         # Preserve the existing cache inspection surface while the orchestration layer
         # is being migrated to backend-owned transcription.
         self._models = getattr(self._caption_backend, "_models", {})
@@ -442,11 +451,19 @@ class SpeechCleanupService:
             first_pass_beam_size = self.caption_accurate_beam_size
             review_model_size = self.caption_reviewed_model_size
             review_beam_size = self.caption_reviewed_beam_size
+        policy_backend_id = self.caption_backend_id
+        if (
+            normalized_quality == CaptionQualityMode.REVIEWED
+            and self.runtime_context == "local_helper"
+            and self.platform_name.lower() == "darwin"
+            and self._mlx_whisper_backend.capability_status()[0]
+        ):
+            policy_backend_id = self._mlx_whisper_backend.id
         return resolve_caption_quality_policy(
             quality_mode=normalized_quality,
             runtime_context=self.runtime_context,
             platform_name=self.platform_name,
-            backend_id=self.caption_backend_id,
+            backend_id=policy_backend_id,
             first_pass_model_size=first_pass_model_size,
             first_pass_beam_size=first_pass_beam_size,
             review_model_size=review_model_size,
@@ -477,6 +494,8 @@ class SpeechCleanupService:
             return self._caption_backend
         if normalized_backend_id == self._faster_whisper_backend.id:
             return self._faster_whisper_backend
+        if normalized_backend_id == self._mlx_whisper_backend.id:
+            return self._mlx_whisper_backend
         raise EnhancementRuntimeError(f"Unsupported caption review backend '{backend_id}'")
 
     def _model_cache_ready(self, model_size: str | None, *, backend: CaptionBackend | None = None) -> bool:
@@ -770,8 +789,9 @@ class SpeechCleanupService:
             self._models = getattr(selected_backend, "_models", {})
             return model
         except RuntimeError as exc:
+            backend_label = _caption_backend_display_name(selected_backend)
             raise EnhancementRuntimeError(
-                "faster-whisper is required for speech cleanup. Install with 'pip install -e .'."
+                f"{backend_label} is required for this caption path. Install the missing runtime dependency in the helper environment."
             ) from exc
 
     def _evict_cached_models_except(self, keep_model_size: str) -> None:
@@ -875,7 +895,7 @@ class SpeechCleanupService:
             "condition_on_previous_text": condition_on_previous_text,
             "initial_prompt": initial_prompt,
         }
-        if selected_backend.id == "whispercpp":
+        if selected_backend is not self._faster_whisper_backend:
             transcribe_kwargs["backend"] = selected_backend
             transcribe_kwargs["model_size"] = model_size
         transcription = self._transcribe_file(model, audio_path, **transcribe_kwargs)
@@ -969,7 +989,7 @@ class SpeechCleanupService:
                     "condition_on_previous_text": condition_on_previous_text,
                     "initial_prompt": initial_prompt,
                 }
-                if selected_backend.id == "whispercpp":
+                if selected_backend is not self._faster_whisper_backend:
                     transcribe_kwargs["backend"] = selected_backend
                     transcribe_kwargs["model_size"] = model_size
                 transcribed_segments = self._transcribe_file(model, window_path, **transcribe_kwargs)

@@ -36,6 +36,15 @@ def _normalize_mode(quality_mode: CaptionQualityMode | str) -> CaptionQualityMod
         raise ValueError(f"Unsupported caption quality mode: {quality_mode!r}") from exc
 
 
+def _supports_mlx_model_size(model_size: str) -> bool:
+    resolved = str(model_size or "").strip().lower()
+    if not resolved:
+        return False
+    if "/" in resolved:
+        return True
+    return resolved in {"tiny", "base", "small", "medium", "large"}
+
+
 def resolve_caption_quality_policy(
     *,
     quality_mode: CaptionQualityMode | str,
@@ -60,7 +69,7 @@ def resolve_caption_quality_policy(
     is_quality_local_lecture = (
         normalized_mode == CaptionQualityMode.REVIEWED
         and is_macos_local_helper
-        and normalized_backend == "whispercpp"
+        and normalized_backend in {"whispercpp", "mlx_whisper"}
     )
 
     if normalized_mode == CaptionQualityMode.FAST:
@@ -92,13 +101,19 @@ def resolve_caption_quality_policy(
         )
 
     if is_quality_local_lecture:
+        resolved_quality_model_size = normalized_review_model_size
+        if normalized_backend == "mlx_whisper" and not _supports_mlx_model_size(resolved_quality_model_size):
+            if _supports_mlx_model_size(normalized_first_pass_model_size):
+                resolved_quality_model_size = normalized_first_pass_model_size
+            else:
+                resolved_quality_model_size = "medium"
         return CaptionQualityPolicy(
             policy_id="quality_local_lecture",
             first_pass_backend_id=normalized_backend,
-            first_pass_model_size=normalized_first_pass_model_size,
+            first_pass_model_size=resolved_quality_model_size,
             first_pass_beam_size=normalized_first_pass_beam_size,
-            review_backend_id="whispercpp",
-            review_model_size=normalized_first_pass_model_size,
+            review_backend_id=normalized_backend,
+            review_model_size=resolved_quality_model_size,
             review_beam_size=normalized_review_beam_size,
             review_strategy_id="targeted_review",
             cue_shaping_strategy_id="lecture_friendly",

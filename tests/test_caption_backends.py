@@ -191,3 +191,67 @@ def test_whispercpp_backend_runs_cli_and_normalizes_json(monkeypatch, tmp_path):
     assert result.segments[0].end == pytest.approx(1.2)
     assert len(result.words) == 2
     assert result.words[1].text == "world"
+
+
+def test_mlx_whisper_backend_reports_missing_dependency(monkeypatch):
+    from radcast.services import caption_backends
+
+    monkeypatch.setattr(caption_backends, "find_spec", lambda _name: None)
+    backend = caption_backends.MlxWhisperCaptionBackend(
+        default_model_size="medium",
+        transcribe_language="en",
+    )
+
+    available, detail = backend.capability_status()
+
+    assert available is False
+    assert "mlx-whisper" in detail
+
+
+def test_mlx_whisper_backend_normalizes_transcription(monkeypatch, tmp_path):
+    from radcast.services import caption_backends
+
+    def fake_transcribe(audio_path, *, path_or_hf_repo, word_timestamps, language, initial_prompt, condition_on_previous_text):
+        assert str(audio_path).endswith("sample.wav")
+        assert path_or_hf_repo == "mlx-community/whisper-medium"
+        assert word_timestamps is True
+        assert language == "en"
+        assert initial_prompt == "Prompt text"
+        assert condition_on_previous_text is True
+        return {
+            "text": "hello world",
+            "segments": [
+                {
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "hello world",
+                    "avg_logprob": -0.2,
+                    "words": [
+                        {"word": "hello", "start": 0.0, "end": 0.4, "probability": 0.92},
+                        {"word": "world", "start": 0.4, "end": 1.0, "probability": 0.94},
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setitem(sys.modules, "mlx_whisper", SimpleNamespace(transcribe=fake_transcribe))
+    monkeypatch.setattr(caption_backends, "find_spec", lambda _name: object())
+
+    backend = caption_backends.MlxWhisperCaptionBackend(
+        default_model_size="medium",
+        transcribe_language="en",
+    )
+    result = backend.transcribe_chunk(
+        tmp_path / "sample.wav",
+        preserve_fillers=False,
+        model_size="medium",
+        condition_on_previous_text=True,
+        initial_prompt="Prompt text",
+    )
+
+    assert result.model_id == "medium"
+    assert result.text == "hello world"
+    assert len(result.segments) == 1
+    assert result.segments[0].text == "hello world"
+    assert len(result.words) == 2
+    assert result.words[0].text == "hello"

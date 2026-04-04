@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from importlib.util import find_spec
@@ -355,3 +356,143 @@ class WhisperCppCaptionBackend:
         if value is None:
             return 0.0
         return max(0.0, float(value) / 100.0)
+
+
+class MlxWhisperCaptionBackend:
+    id = "mlx_whisper"
+
+    def __init__(
+        self,
+        *,
+        default_model_size: str,
+        transcribe_language: str,
+    ) -> None:
+        self.default_model_size = str(default_model_size or "").strip() or "medium"
+        self.transcribe_language = str(transcribe_language or "").strip().lower() or "en"
+        self._models: dict[str, object] = {}
+
+    def capability_status(self) -> tuple[bool, str]:
+        if find_spec("mlx_whisper") is None:
+            return False, "Install mlx-whisper to enable quality-first Apple Silicon captions."
+        return True, "mlx-whisper is available."
+
+    def transcribe_chunk(
+        self,
+        audio_path: Path,
+        *,
+        preserve_fillers: bool,
+        model_size: str | None = None,
+        beam_size: int | None = None,
+        condition_on_previous_text: bool = False,
+        initial_prompt: str | None = None,
+    ) -> CaptionTranscriptionResult:
+        del beam_size
+        resolved_model_size = str(model_size or self.default_model_size).strip() or self.default_model_size
+        model = self.load_model(resolved_model_size)
+        return self.transcribe_loaded_model(
+            model,
+            audio_path,
+            preserve_fillers=preserve_fillers,
+            model_id=resolved_model_size,
+            condition_on_previous_text=condition_on_previous_text,
+            initial_prompt=initial_prompt,
+        )
+
+    def load_model(self, model_size: str | None = None):
+        resolved_model_size = str(model_size or self.default_model_size).strip() or self.default_model_size
+        cached = self._models.get(resolved_model_size)
+        if cached is not None:
+            return cached
+        repo_id = self._resolve_model_repo(resolved_model_size)
+        self._models = {resolved_model_size: repo_id}
+        return repo_id
+
+    def transcribe_loaded_model(
+        self,
+        model,
+        audio_path: Path,
+        *,
+        preserve_fillers: bool,
+        model_id: str | None = None,
+        beam_size: int | None = None,
+        condition_on_previous_text: bool = False,
+        initial_prompt: str | None = None,
+    ) -> CaptionTranscriptionResult:
+        del preserve_fillers, beam_size
+        try:
+            from mlx_whisper import transcribe
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("mlx-whisper is required for Apple Silicon quality-first captions") from exc
+        payload = transcribe(
+            str(audio_path),
+            path_or_hf_repo=str(model),
+            word_timestamps=True,
+            language=self.transcribe_language,
+            initial_prompt=initial_prompt,
+            condition_on_previous_text=condition_on_previous_text,
+        )
+        return self._parse_payload(payload, model_id=str(model_id or self.default_model_size))
+
+    def _resolve_model_repo(self, model_size: str) -> str:
+        resolved_model_size = str(model_size or self.default_model_size).strip() or self.default_model_size
+        if "/" in resolved_model_size:
+            return resolved_model_size
+        return f"mlx-community/whisper-{resolved_model_size}"
+
+    def _parse_payload(self, payload: dict[str, object], *, model_id: str) -> CaptionTranscriptionResult:
+        raw_segments = payload.get("segments") if isinstance(payload, dict) else []
+        if not isinstance(raw_segments, list):
+            raw_segments = []
+        segments: list[CaptionSegment] = []
+        words: list[CaptionWord] = []
+        text_parts: list[str] = []
+        for entry in raw_segments:
+            if not isinstance(entry, dict):
+                continue
+            start = max(0.0, float(entry.get("start", 0.0)))
+            end = max(start, float(entry.get("end", start)))
+            raw_text = str(entry.get("text") or "").strip()
+            normalized_words: list[CaptionWord] = []
+            probabilities: list[float] = []
+            raw_words = entry.get("words") if isinstance(entry.get("words"), list) else []
+            for word_entry in raw_words:
+                if not isinstance(word_entry, dict):
+                    continue
+                word_start = max(0.0, float(word_entry.get("start", 0.0)))
+                word_end = max(word_start, float(word_entry.get("end", word_start)))
+                probability_raw = word_entry.get("probability")
+                probability = float(probability_raw) if probability_raw is not None else None
+                if probability is not None:
+                    probabilities.append(probability)
+                normalized_word = CaptionWord(
+                    text=str(word_entry.get("word") or word_entry.get("text") or "").strip(),
+                    start=word_start,
+                    end=word_end,
+                    probability=probability,
+                )
+                normalized_words.append(normalized_word)
+                words.append(normalized_word)
+            segment_text = " ".join(word.text for word in normalized_words if word.text).strip() or raw_text
+            if segment_text:
+                text_parts.append(segment_text)
+            avg_probability: float | None
+            if probabilities:
+                avg_probability = sum(probabilities) / len(probabilities)
+            else:
+                avg_logprob = entry.get("avg_logprob")
+                avg_probability = math.exp(float(avg_logprob)) if avg_logprob is not None else None
+            segments.append(
+                CaptionSegment(
+                    start=start,
+                    end=end,
+                    text=segment_text,
+                    average_probability=avg_probability,
+                    words=tuple(normalized_words),
+                )
+            )
+        return CaptionTranscriptionResult(
+            text=" ".join(text_parts).strip() or str(payload.get("text") or "").strip(),
+            segments=segments,
+            words=words,
+            model_id=model_id,
+        )

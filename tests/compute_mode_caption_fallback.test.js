@@ -240,7 +240,7 @@ test("caption stage keeps estimating during the first caption windows", () => {
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (medium). Window 1 of 27. On your local helper device."],
+    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 1 of 27. On your local helper device."],
     progress: 0.26,
     eta_seconds: 700,
     status: "running",
@@ -250,7 +250,7 @@ test("caption stage keeps estimating during the first caption windows", () => {
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (medium). Window 2 of 27. On your local helper device."],
+    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 2 of 27. On your local helper device."],
     progress: 0.32,
     eta_seconds: 620,
     status: "running",
@@ -265,7 +265,7 @@ test("caption review keeps estimating during the first review item", () => {
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Reviewing low-confidence caption lines with whisper.cpp (medium). 1 of 12. On your local helper device."],
+    logs: ["lecture-quality captions: Reviewing low-confidence caption lines with mlx-whisper (medium). 1 of 12. On your local helper device."],
     progress: 0.84,
     eta_seconds: 14,
     status: "running",
@@ -281,7 +281,7 @@ test("caption eta smoothing avoids snapping to a larger raw value mid-run", () =
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (medium). Window 4 of 27. On your local helper device."],
+    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 4 of 27. On your local helper device."],
     progress: 0.38,
     eta_seconds: 150,
     status: "running",
@@ -291,7 +291,7 @@ test("caption eta smoothing avoids snapping to a larger raw value mid-run", () =
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (medium). Window 5 of 27. On your local helper device."],
+    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 5 of 27. On your local helper device."],
     progress: 0.4,
     eta_seconds: 240,
     status: "running",

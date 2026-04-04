@@ -41,6 +41,11 @@ def test_speech_cleanup_selects_whispercpp_for_macos_local_helper(monkeypatch):
         "capability_status",
         lambda self: (True, "ready"),
     )
+    monkeypatch.setattr(
+        speech_cleanup_module.MlxWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
 
     service = SpeechCleanupService()
 
@@ -64,6 +69,11 @@ def test_estimate_caption_runtime_seconds_uses_policy_review_model_for_macos_loc
         "capability_status",
         lambda self: (True, "ready"),
     )
+    monkeypatch.setattr(
+        speech_cleanup_module.MlxWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
     monkeypatch.setattr(speech_cleanup_module, "estimate_caption_seconds", lambda duration_seconds, quality_mode: 180)
 
     service = SpeechCleanupService()
@@ -78,7 +88,7 @@ def test_estimate_caption_runtime_seconds_uses_policy_review_model_for_macos_loc
     result = service.estimate_caption_runtime_seconds(60.0, quality_mode=CaptionQualityMode.REVIEWED)
 
     assert result == 180
-    assert cache_checks == [("medium", "whispercpp"), ("medium", "whispercpp")]
+    assert cache_checks == [("medium", "mlx_whisper"), ("medium", "mlx_whisper")]
 
 
 def test_caption_review_backend_config_fails_fast_for_unknown_backend(monkeypatch):
@@ -125,13 +135,18 @@ def test_caption_quality_policy_for_mode_uses_local_helper_lecture_policy(monkey
         "capability_status",
         lambda self: (True, "ready"),
     )
+    monkeypatch.setattr(
+        speech_cleanup_module.MlxWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
 
     service = SpeechCleanupService()
     policy = service.caption_quality_policy_for_mode(CaptionQualityMode.REVIEWED)
 
     assert policy.policy_id == "quality_local_lecture"
-    assert policy.first_pass_backend_id == "whispercpp"
-    assert policy.review_backend_id == "whispercpp"
+    assert policy.first_pass_backend_id == "mlx_whisper"
+    assert policy.review_backend_id == "mlx_whisper"
 
 
 def test_generate_caption_file_reports_caption_backend_and_model(monkeypatch, tmp_path: Path):
@@ -158,6 +173,11 @@ def test_generate_caption_file_reports_caption_backend_and_model(monkeypatch, tm
         "capability_status",
         lambda self: (True, "ready"),
     )
+    monkeypatch.setattr(
+        speech_cleanup_module.MlxWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
     monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst, *, audio_filters=None: shutil.copy2(src, dst))
     monkeypatch.setattr("radcast.services.speech_cleanup.probe_duration_seconds", _wav_duration_seconds)
 
@@ -181,7 +201,7 @@ def test_generate_caption_file_reports_caption_backend_and_model(monkeypatch, tm
     )
 
     assert result.caption_path.exists()
-    assert any("whisper.cpp" in detail and "small" in detail for _progress, detail, _eta in stage_updates)
+    assert any("mlx-whisper" in detail and "small" not in detail and "medium" in detail for _progress, detail, _eta in stage_updates)
 
 
 def _write_test_wav(path: Path, samples: np.ndarray, *, sample_rate: int = 16000) -> None:
@@ -921,6 +941,11 @@ def test_generate_caption_file_reviewed_mode_uses_whispercpp_for_review_on_macos
         "capability_status",
         lambda self: (True, "ready"),
     )
+    monkeypatch.setattr(
+        speech_cleanup_module.MlxWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
 
     service = SpeechCleanupService()
     monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
@@ -951,7 +976,7 @@ def test_generate_caption_file_reviewed_mode_uses_whispercpp_for_review_on_macos
 
     review_details = [detail for _progress, detail, _eta in stages if "Reviewing low-confidence caption lines" in detail]
     assert review_details
-    assert "whisper.cpp" in review_details[0]
+    assert "mlx-whisper" in review_details[0]
 
 
 def test_generate_caption_file_quality_local_lecture_prefixes_transcribe_and_review_details(monkeypatch, tmp_path: Path):
@@ -972,6 +997,11 @@ def test_generate_caption_file_quality_local_lecture_prefixes_transcribe_and_rev
     )
     monkeypatch.setattr(
         speech_cleanup_module.FasterWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.MlxWhisperCaptionBackend,
         "capability_status",
         lambda self: (True, "ready"),
     )
@@ -1005,10 +1035,10 @@ def test_generate_caption_file_quality_local_lecture_prefixes_transcribe_and_rev
         on_stage=lambda progress, detail, eta: stages.append((progress, detail, eta)),
     )
 
-    assert captured["transcribe_detail"] == "lecture-quality captions: Transcribing speech for captions with whisper.cpp (medium)"
+    assert captured["transcribe_detail"] == "lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium)"
     review_details = [detail for _progress, detail, _eta in stages if "Reviewing low-confidence caption lines" in detail]
     assert review_details
-    assert review_details[0].startswith("lecture-quality captions: Reviewing low-confidence caption lines with whisper.cpp (medium)")
+    assert review_details[0].startswith("lecture-quality captions: Reviewing low-confidence caption lines with mlx-whisper (medium)")
 
 
 def test_generate_caption_file_writes_review_notes_for_low_confidence_segments(monkeypatch, tmp_path: Path):
