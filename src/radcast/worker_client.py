@@ -32,12 +32,24 @@ from radcast.utils.audio import probe_duration_seconds
 
 LOG = logging.getLogger("radcast.worker")
 _WINDOW_DETAIL_RE = re.compile(r"\bWindow\s+(\d+)\s+of\s+(\d+)\b", re.IGNORECASE)
+_REVIEW_DETAIL_RE = re.compile(r"Reviewing low-confidence caption lines.*?\b(\d+)\s+of\s+(\d+)\b", re.IGNORECASE)
 _MACOS_LOCAL_CAPTION_DEFAULTS = {
     "RADCAST_CAPTION_ACCURATE_MODEL": "small",
     "RADCAST_CAPTION_ACCURATE_BEAM_SIZE": "3",
     "RADCAST_CAPTION_REVIEWED_MODEL": "medium",
     "RADCAST_CAPTION_REVIEWED_BEAM_SIZE": "3",
 }
+
+
+def _caption_progress_units(detail: str | None) -> tuple[int, int] | None:
+    text = str(detail or "")
+    match = _WINDOW_DETAIL_RE.search(text)
+    if match:
+        return max(1, int(match.group(1))), max(1, int(match.group(2)))
+    match = _REVIEW_DETAIL_RE.search(text)
+    if match:
+        return max(1, int(match.group(1))), max(1, int(match.group(2)))
+    return None
 
 
 def _heartbeat_eta_seconds(
@@ -68,11 +80,11 @@ def _heartbeat_progress(
     normalized_stage = str(stage or "").strip().lower()
     if normalized_stage not in {"cleanup", "captions"} or progress_updated_at_monotonic is None:
         return float(progress)
-    match = _WINDOW_DETAIL_RE.search(str(detail or ""))
-    if not match:
+    progress_units = _caption_progress_units(detail)
+    if not progress_units:
         return float(progress)
-    current_window = max(1, int(match.group(1)))
-    total_windows = max(current_window, int(match.group(2)))
+    current_window, total_windows = progress_units
+    total_windows = max(current_window, total_windows)
     if current_window >= total_windows:
         return float(progress)
 

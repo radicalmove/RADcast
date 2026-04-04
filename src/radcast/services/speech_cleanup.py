@@ -385,10 +385,11 @@ class SpeechCleanupService:
         base_seconds = estimate_caption_seconds(duration_seconds, quality_mode=normalized_quality)
         profile = self._caption_profile_for_mode(normalized_quality, caption_prompt=None)
         policy = self.caption_quality_policy_for_mode(normalized_quality)
+        first_pass_backend = self._caption_backend_for_id(policy.first_pass_backend_id)
+        first_pass_model_size = policy.first_pass_model_size
         if normalized_quality == CaptionQualityMode.REVIEWED:
-            first_pass_backend = self._caption_backend_for_id(policy.first_pass_backend_id)
             review_backend = self._caption_backend_for_id(policy.review_backend_id)
-            first_pass_ready = self._model_cache_ready(profile.model_size, backend=first_pass_backend)
+            first_pass_ready = self._model_cache_ready(first_pass_model_size, backend=first_pass_backend)
             review_ready = self._model_cache_ready(policy.review_model_size, backend=review_backend)
             if first_pass_ready and review_ready:
                 return base_seconds
@@ -406,8 +407,7 @@ class SpeechCleanupService:
             cold_start_seconds = 95
         else:
             cold_start_seconds = 145
-        first_pass_backend = self._caption_backend_for_id(policy.first_pass_backend_id)
-        if self._model_cache_ready(profile.model_size, backend=first_pass_backend):
+        if self._model_cache_ready(first_pass_model_size, backend=first_pass_backend):
             return base_seconds
         return min(base_seconds + cold_start_seconds, 22 * 60)
 
@@ -650,18 +650,19 @@ class SpeechCleanupService:
             window_seconds=profile.window_seconds,
             overlap_seconds=profile.overlap_seconds,
         )
+        first_pass_backend = self._caption_backend_for_id(policy.first_pass_backend_id)
+        first_pass_model_size = policy.first_pass_model_size
+        stage_label = f"{policy.progress_label}: " if policy.policy_id == "quality_local_lecture" else ""
         started_at = time.monotonic()
         if on_stage:
             backend_detail = _caption_stage_detail(
                 action="Transcribing speech for captions",
-                backend=self._caption_backend,
-                model_size=profile.model_size,
+                backend=first_pass_backend,
+                model_size=first_pass_model_size,
             )
-            detail = backend_detail
-            if policy.policy_id == "quality_local_lecture":
-                detail = f"{policy.progress_label}: {detail}"
-            if not self._model_cache_ready(profile.model_size):
-                detail = f"Loading {profile.model_size} caption model and {detail.lower()}."
+            detail = f"{stage_label}{backend_detail}" if stage_label else backend_detail
+            if not self._model_cache_ready(first_pass_model_size, backend=first_pass_backend):
+                detail = f"Loading {first_pass_model_size} caption model and {detail.lower()}."
             on_stage(
                 0.02,
                 _windowed_stage_detail(detail, current_window=1, total_windows=total_windows),
@@ -680,16 +681,12 @@ class SpeechCleanupService:
                 on_stage=on_stage,
                 remove_filler_words=False,
                 filler_removal_mode=FillerRemovalMode.AGGRESSIVE,
-                transcribe_detail=_caption_stage_detail(
-                    action="Transcribing speech for captions",
-                    backend=self._caption_backend,
-                    model_size=profile.model_size,
-                ),
+                transcribe_detail=f"{stage_label}{_caption_stage_detail(action='Transcribing speech for captions', backend=first_pass_backend, model_size=first_pass_model_size)}".strip(),
                 cancel_check=cancel_check,
                 force_windowed=True,
                 preserve_fillers=False,
-                backend=self._caption_backend,
-                model_size=profile.model_size,
+                backend=first_pass_backend,
+                model_size=first_pass_model_size,
                 beam_size=profile.beam_size,
                 condition_on_previous_text=profile.condition_on_previous_text,
                 initial_prompt=profile.initial_prompt,
@@ -704,13 +701,16 @@ class SpeechCleanupService:
             review_report = build_caption_quality_report(segments)
             if profile.review_sweep and review_report.flagged_segments:
                 if on_stage:
+                    review_detail = _caption_stage_detail(
+                        action="Reviewing low-confidence caption lines",
+                        backend=review_backend,
+                        model_size=review_model_size,
+                    )
+                    if stage_label:
+                        review_detail = f"{stage_label}{review_detail}"
                     on_stage(
                         0.82,
-                        _caption_stage_detail(
-                            action="Reviewing low-confidence caption lines",
-                            backend=review_backend,
-                            model_size=review_model_size,
-                        ),
+                        review_detail,
                         None,
                     )
                 segments = self._review_and_correct_caption_segments(
@@ -723,6 +723,7 @@ class SpeechCleanupService:
                     caption_eta_seconds=caption_eta_seconds,
                     review_backend=review_backend,
                     review_model_size=review_model_size,
+                    progress_label=policy.progress_label if policy.policy_id == "quality_local_lecture" else None,
                     cancel_check=cancel_check,
                 )
                 segments = _dedupe_caption_segments(segments)
@@ -1059,6 +1060,7 @@ class SpeechCleanupService:
         caption_eta_seconds: int | None = None,
         review_backend: CaptionBackend | None = None,
         review_model_size: str | None = None,
+        progress_label: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptSegmentTiming]:
         if not quality_report.flagged_segments:
@@ -1079,15 +1081,18 @@ class SpeechCleanupService:
             for flag_index, flag in enumerate(flags, start=1):
                 if cancel_check and cancel_check():
                     raise JobCancelledError("job cancelled")
+                review_detail = _caption_stage_detail(
+                    action="Reviewing low-confidence caption lines",
+                    backend=selected_backend,
+                    model_size=resolved_review_model_size,
+                )
+                if progress_label:
+                    review_detail = f"{progress_label}: {review_detail}"
                 if on_stage:
                     on_stage(
                         0.82 + (((flag_index - 1) / max(1, total_flags)) * 0.08),
                         _indexed_stage_detail(
-                            _caption_stage_detail(
-                                action="Reviewing low-confidence caption lines",
-                                backend=selected_backend,
-                                model_size=resolved_review_model_size,
-                            ),
+                            review_detail,
                             current_item=flag_index,
                             total_items=total_flags,
                         ),
@@ -1124,11 +1129,7 @@ class SpeechCleanupService:
                     on_stage(
                         0.82 + ((flag_index / max(1, total_flags)) * 0.08),
                         _indexed_stage_detail(
-                            _caption_stage_detail(
-                                action="Reviewing low-confidence caption lines",
-                                backend=selected_backend,
-                                model_size=resolved_review_model_size,
-                            ),
+                            review_detail,
                             current_item=flag_index,
                             total_items=total_flags,
                         ),

@@ -214,8 +214,8 @@ test("caption stage clears numeric eta when later same-stage updates switch back
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["Transcribing speech for captions with whisper.cpp (small). Window 1 of 27."],
-    progress: 0.26,
+    logs: ["Transcribing speech for captions with whisper.cpp (small). Window 3 of 27."],
+    progress: 0.34,
     eta_seconds: 700,
     status: "running",
   });
@@ -224,12 +224,79 @@ test("caption stage clears numeric eta when later same-stage updates switch back
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["Transcribing speech for captions with whisper.cpp (small). Window 1 of 27."],
-    progress: 0.27,
+    logs: ["Transcribing speech for captions with whisper.cpp (small). Window 3 of 27."],
+    progress: 0.35,
     eta_seconds: null,
     status: "running",
   });
   context.updateProgressVisuals();
 
   assert.equal(progressEtaNode.textContent, "Time left to process: estimating...");
+});
+
+test("caption stage keeps estimating during the first caption windows", () => {
+  const context = buildContext();
+  const progressEtaNode = context.document.getElementById("progress-eta");
+
+  context.updateFromJob({
+    stage: "captions",
+    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (medium). Window 1 of 27. On your local helper device."],
+    progress: 0.26,
+    eta_seconds: 700,
+    status: "running",
+  });
+  context.updateProgressVisuals();
+  assert.equal(progressEtaNode.textContent, "Time left to process: estimating...");
+
+  context.updateFromJob({
+    stage: "captions",
+    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (medium). Window 2 of 27. On your local helper device."],
+    progress: 0.32,
+    eta_seconds: 620,
+    status: "running",
+  });
+  context.updateProgressVisuals();
+  assert.equal(progressEtaNode.textContent, "Time left to process: estimating...");
+});
+
+test("caption review keeps estimating during the first review item", () => {
+  const context = buildContext();
+  const progressEtaNode = context.document.getElementById("progress-eta");
+
+  context.updateFromJob({
+    stage: "captions",
+    logs: ["lecture-quality captions: Reviewing low-confidence caption lines with whisper.cpp (medium). 1 of 12. On your local helper device."],
+    progress: 0.84,
+    eta_seconds: 14,
+    status: "running",
+  });
+  context.updateProgressVisuals();
+
+  assert.equal(progressEtaNode.textContent, "Time left to process: estimating...");
+});
+
+test("caption eta smoothing avoids snapping to a larger raw value mid-run", () => {
+  const context = buildContext();
+  const progressEtaNode = context.document.getElementById("progress-eta");
+
+  context.updateFromJob({
+    stage: "captions",
+    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (medium). Window 4 of 27. On your local helper device."],
+    progress: 0.38,
+    eta_seconds: 150,
+    status: "running",
+  });
+  context.updateProgressVisuals();
+  assert.equal(progressEtaNode.textContent, "Time left to process: 02:30");
+
+  context.updateFromJob({
+    stage: "captions",
+    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (medium). Window 5 of 27. On your local helper device."],
+    progress: 0.4,
+    eta_seconds: 240,
+    status: "running",
+  });
+  context.updateProgressVisuals();
+
+  assert.equal(progressEtaNode.textContent, "Time left to process: 02:57");
 });

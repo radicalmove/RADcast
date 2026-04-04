@@ -2080,7 +2080,50 @@ function currentEtaRemainingSeconds() {
   return Math.max(0, Math.round(state.etaSeconds - (Date.now() - state.etaUpdatedAtMs) / 1000));
 }
 
-function syncEtaFromJob(nextStage, nextEtaSeconds) {
+function parseCaptionProgressDetail(detail) {
+  const text = String(detail || "");
+  let match = text.match(/\bWindow\s+(\d+)\s+of\s+(\d+)\b/i);
+  if (match) {
+    return {
+      kind: "window",
+      index: Number(match[1]),
+      total: Number(match[2]),
+    };
+  }
+  match = text.match(/Reviewing low-confidence caption lines.*?\b(\d+)\s+of\s+(\d+)\b/i);
+  if (match) {
+    return {
+      kind: "review",
+      index: Number(match[1]),
+      total: Number(match[2]),
+    };
+  }
+  return null;
+}
+
+function shouldDelayNumericEta(nextStage, detail) {
+  if (nextStage !== "captions") return false;
+  const progress = parseCaptionProgressDetail(detail);
+  if (!progress) return false;
+  if (progress.kind === "window") return progress.index <= 2;
+  if (progress.kind === "review") return progress.index <= 1;
+  return false;
+}
+
+function smoothFlexibleEtaSeconds(currentRemaining, nextEtaSeconds) {
+  if (!Number.isFinite(currentRemaining)) return nextEtaSeconds;
+  if (!Number.isFinite(nextEtaSeconds)) return currentRemaining;
+  return Math.max(1, Math.round(currentRemaining * 0.7 + nextEtaSeconds * 0.3));
+}
+
+function syncEtaFromJob(nextStage, nextEtaSeconds, detail) {
+  if (shouldDelayNumericEta(nextStage, detail)) {
+    state.etaSeconds = null;
+    state.etaUpdatedAtMs = null;
+    state.etaStage = nextStage;
+    return;
+  }
+
   if (!Number.isFinite(nextEtaSeconds) || nextEtaSeconds <= 0) {
     if (state.etaStage !== nextStage || flexibleEtaStages.has(nextStage)) {
       state.etaSeconds = null;
@@ -2098,7 +2141,16 @@ function syncEtaFromJob(nextStage, nextEtaSeconds) {
   }
 
   const currentRemaining = currentEtaRemainingSeconds();
-  const allowEtaIncrease = flexibleEtaStages.has(nextStage) || flexibleEtaStages.has(state.etaStage);
+  const flexibleStage = flexibleEtaStages.has(nextStage) || flexibleEtaStages.has(state.etaStage);
+  if (flexibleStage && currentRemaining !== null) {
+    if (Math.abs(nextEtaSeconds - currentRemaining) < 3) return;
+    state.etaSeconds = smoothFlexibleEtaSeconds(currentRemaining, nextEtaSeconds);
+    state.etaUpdatedAtMs = Date.now();
+    state.etaStage = nextStage;
+    return;
+  }
+
+  const allowEtaIncrease = flexibleStage;
   if (
     currentRemaining === null ||
     nextEtaSeconds <= currentRemaining - 3 ||
@@ -2263,7 +2315,7 @@ function updateFromJob(job) {
   if (Number.isFinite(Number(job.progress))) {
     state.actualProgress = Math.max(state.actualProgress, Number(job.progress) * 100);
   }
-  syncEtaFromJob(nextStage, Number(job.eta_seconds));
+  syncEtaFromJob(nextStage, Number(job.eta_seconds), state.latestDetail);
   const statusText = runningStatusText();
   if (statusText) setGenerateStatus(statusText);
 }

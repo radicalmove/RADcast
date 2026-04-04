@@ -24,6 +24,29 @@ from radcast.worker_client import (
 )
 
 
+_LOCAL_CAPTION_ENV_KEYS = (
+    "RADCAST_RUNTIME_CONTEXT",
+    "RADCAST_CAPTION_BACKEND",
+    "RADCAST_CAPTION_ACCURATE_MODEL",
+    "RADCAST_CAPTION_ACCURATE_BEAM_SIZE",
+    "RADCAST_CAPTION_REVIEWED_MODEL",
+    "RADCAST_CAPTION_REVIEWED_BEAM_SIZE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_local_caption_env():
+    original_values = {key: os.environ.get(key) for key in _LOCAL_CAPTION_ENV_KEYS}
+    try:
+        yield
+    finally:
+        for key, value in original_values.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def test_worker_queue_round_trip_completes_job(monkeypatch):
     client = TestClient(app)
     project_id = f"radcast-worker-{uuid.uuid4().hex[:8]}"
@@ -262,6 +285,25 @@ def test_heartbeat_progress_creeps_windowed_caption_stage_without_eta():
     )
 
     assert progressed > base_progress
+
+
+def test_heartbeat_progress_creeps_reviewed_caption_stage_without_eta():
+    base_progress = 0.82
+
+    progressed = _heartbeat_progress(
+        base_progress,
+        stage="captions",
+        detail="Reviewing low-confidence caption lines with whisper.cpp (medium). 1 of 18. On your local helper device.",
+        progress_updated_at_monotonic=10.0,
+        cleanup_requested=False,
+        caption_requested=True,
+        enhancement_requested=False,
+        remaining_eta_seconds=None,
+        now_monotonic=130.0,
+    )
+
+    assert progressed > base_progress
+    assert progressed < 0.985
 
 
 def test_apply_local_caption_defaults_on_macos(monkeypatch):

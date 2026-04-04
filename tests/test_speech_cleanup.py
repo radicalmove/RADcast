@@ -954,6 +954,63 @@ def test_generate_caption_file_reviewed_mode_uses_whispercpp_for_review_on_macos
     assert "whisper.cpp" in review_details[0]
 
 
+def test_generate_caption_file_quality_local_lecture_prefixes_transcribe_and_review_details(monkeypatch, tmp_path: Path):
+    from radcast.services import speech_cleanup as speech_cleanup_module
+
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 2.0), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    monkeypatch.setenv("RADCAST_RUNTIME_CONTEXT", "local_helper")
+    monkeypatch.setenv("RADCAST_CAPTION_BACKEND", "auto")
+    monkeypatch.setattr(speech_cleanup_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        speech_cleanup_module.WhisperCppCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.FasterWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst, *, audio_filters=None: shutil.copy2(src, dst))
+    captured: dict[str, object] = {}
+
+    def fake_transcribe_timeline(*args, **kwargs):
+        captured["transcribe_detail"] = kwargs["transcribe_detail"]
+        return (
+            [],
+            [TranscriptSegmentTiming(text="Needs careful review in this line", start=0.0, end=1.1, average_probability=0.35)],
+        )
+
+    monkeypatch.setattr(service, "_transcribe_timeline", fake_transcribe_timeline)
+    monkeypatch.setattr(
+        service,
+        "_review_and_correct_caption_segments",
+        lambda **kwargs: [
+            TranscriptSegmentTiming(text="Needs careful review in this line", start=0.0, end=1.1, average_probability=0.86),
+        ],
+    )
+
+    stages: list[tuple[float, str, int | None]] = []
+    service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+        on_stage=lambda progress, detail, eta: stages.append((progress, detail, eta)),
+    )
+
+    assert captured["transcribe_detail"] == "lecture-quality captions: Transcribing speech for captions with whisper.cpp (medium)"
+    review_details = [detail for _progress, detail, _eta in stages if "Reviewing low-confidence caption lines" in detail]
+    assert review_details
+    assert review_details[0].startswith("lecture-quality captions: Reviewing low-confidence caption lines with whisper.cpp (medium)")
+
+
 def test_generate_caption_file_writes_review_notes_for_low_confidence_segments(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
