@@ -2101,6 +2101,13 @@ function parseCaptionProgressDetail(detail) {
   return null;
 }
 
+function isFirstMlxCaptionWindow(detail) {
+  const text = String(detail || "");
+  const progress = parseCaptionProgressDetail(text);
+  if (!progress || progress.kind !== "window") return false;
+  return progress.index === 1 && /mlx-whisper/i.test(text);
+}
+
 function shouldDelayNumericEta(nextStage, detail) {
   if (nextStage !== "captions") return false;
   const progress = parseCaptionProgressDetail(detail);
@@ -2208,6 +2215,9 @@ function runningStatusText() {
   }
   if (state.currentStage === "captions") {
     if (state.computeMode === "worker") {
+      if (isFirstMlxCaptionWindow(state.latestDetail)) {
+        return "Helper connected. Generating captions on your local helper device. The first caption window can take longer while the model warms up.";
+      }
       return "Helper connected. Generating captions on your local helper device.";
     }
     return "Audio processing is done. Generating captions on the RADcast server (Mac mini).";

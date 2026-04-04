@@ -259,6 +259,37 @@ test("caption stage keeps estimating during the first caption windows", () => {
   assert.equal(progressEtaNode.textContent, "Time left to process: estimating...");
 });
 
+test("mlx lecture captions show a warm-up notice during the first window only", () => {
+  const context = buildContext();
+  const generateStatusNode = context.document.getElementById("generate-status");
+
+  context.updateFromJob({
+    stage: "captions",
+    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 1 of 27. On your local helper device."],
+    progress: 0.26,
+    eta_seconds: null,
+    status: "running",
+  });
+
+  assert.equal(
+    generateStatusNode.textContent,
+    "Helper connected. Generating captions on your local helper device. The first caption window can take longer while the model warms up."
+  );
+
+  context.updateFromJob({
+    stage: "captions",
+    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 2 of 27. On your local helper device."],
+    progress: 0.32,
+    eta_seconds: 470,
+    status: "running",
+  });
+
+  assert.equal(
+    generateStatusNode.textContent,
+    "Helper connected. Generating captions on your local helper device."
+  );
+});
+
 test("caption review keeps estimating during the first review item", () => {
   const context = buildContext();
   const progressEtaNode = context.document.getElementById("progress-eta");
