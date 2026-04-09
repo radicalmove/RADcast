@@ -37,6 +37,18 @@ class ProjectManager:
     def project_root(self, project_id: str) -> Path:
         return self.projects_root / project_id
 
+    def global_root(self) -> Path:
+        return self.projects_root / "_global"
+
+    def global_manifests_root(self) -> Path:
+        return self.global_root() / "manifests"
+
+    def glossary_path(self, project_id: str) -> Path:
+        return self.get_paths(project_id).manifests / "glossary.json"
+
+    def global_glossary_path(self) -> Path:
+        return self.global_manifests_root() / "glossary.json"
+
     def get_paths(self, project_id: str) -> ProjectPaths:
         root = self.project_root(project_id)
         return ProjectPaths(

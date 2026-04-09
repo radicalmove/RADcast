@@ -53,6 +53,42 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class CaptionAccessibilityStatus(str, Enum):
+    PASSED = "passed"
+    PASSED_WITH_WARNINGS = "passed_with_warnings"
+    FAILED = "failed"
+
+
+class GlossaryScope(str, Enum):
+    GLOBAL = "global"
+    PROJECT = "project"
+
+
+class GlossaryStatus(str, Enum):
+    SUGGESTED = "suggested"
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
+class GlossaryEntry(BaseModel):
+    term: str = Field(min_length=1)
+    normalized_term: str = Field(min_length=1)
+    scope: GlossaryScope = GlossaryScope.PROJECT
+    project_id: str | None = None
+    status: GlossaryStatus = GlossaryStatus.SUGGESTED
+    notes: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @model_validator(mode="after")
+    def validate_scope_and_identity(self) -> "GlossaryEntry":
+        if self.scope == GlossaryScope.PROJECT and not self.project_id:
+            raise ValueError("project_id is required for project-scoped glossary entries")
+        if self.scope == GlossaryScope.GLOBAL and self.project_id:
+            raise ValueError("project_id must be omitted for global glossary entries")
+        return self
+
+
 class ProjectCreateRequest(BaseModel):
     project_id: str = Field(min_length=2)
     course: str | None = None
@@ -150,6 +186,7 @@ class OutputMetadata(BaseModel):
     output_file: Path
     input_file: Path
     duration_seconds: float
+    runtime_seconds: float | None = None
     output_format: OutputFormat
     caption_file: Path | None = None
     caption_review_file: Path | None = None
@@ -160,6 +197,9 @@ class OutputMetadata(BaseModel):
     caption_average_probability: float | None = None
     caption_low_confidence_segments: int = 0
     caption_total_segments: int = 0
+    caption_accessibility_status: CaptionAccessibilityStatus = CaptionAccessibilityStatus.PASSED
+    caption_review_warning_segments: int = 0
+    caption_review_failure_segments: int = 0
     enhancement_model: EnhancementModel | None = None
     audio_tuning_label: str | None = None
     clip_start_seconds: float | None = None
@@ -293,6 +333,9 @@ class WorkerJobCompleteRequest(BaseModel):
     caption_average_probability: float | None = None
     caption_low_confidence_segments: int = Field(default=0, ge=0)
     caption_total_segments: int = Field(default=0, ge=0)
+    caption_accessibility_status: CaptionAccessibilityStatus = CaptionAccessibilityStatus.PASSED
+    caption_review_warning_segments: int = Field(default=0, ge=0)
+    caption_review_failure_segments: int = Field(default=0, ge=0)
     stage_durations_seconds: dict[str, float] = Field(default_factory=dict)
 
 
