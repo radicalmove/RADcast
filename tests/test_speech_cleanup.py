@@ -11,7 +11,13 @@ import numpy as np
 import pytest
 
 from radcast.exceptions import EnhancementRuntimeError
-from radcast.models import CaptionFormat, CaptionQualityMode, FillerRemovalMode, OutputFormat
+from radcast.models import (
+    CaptionAccessibilityStatus,
+    CaptionFormat,
+    CaptionQualityMode,
+    FillerRemovalMode,
+    OutputFormat,
+)
 from radcast.services.speech_cleanup import (
     CaptionExportResult,
     SpeechCleanupResult,
@@ -977,6 +983,7 @@ def test_generate_caption_file_reviewed_mode_uses_whispercpp_for_review_on_macos
     review_details = [detail for _progress, detail, _eta in stages if "Reviewing low-confidence caption lines" in detail]
     assert review_details
     assert "mlx-whisper" in review_details[0]
+    assert "medium" in review_details[0]
 
 
 def test_generate_caption_file_quality_local_lecture_prefixes_transcribe_and_review_details(monkeypatch, tmp_path: Path):
@@ -1444,7 +1451,127 @@ def test_review_caption_flag_rejects_mixed_final_result_prompt_echo(monkeypatch,
     assert result.text == "hello better world"
 
 
-def test_generate_caption_file_uses_pre_shape_review_report_for_review_notes(monkeypatch, tmp_path: Path):
+def test_review_caption_flag_stitches_adjacent_segments_for_probable_truncation(monkeypatch, tmp_path: Path):
+    service = SpeechCleanupService()
+
+    sample_rate = 16000
+    waveform = np.zeros((sample_rate * 90, 1), dtype=np.float32)
+    review_tmp = tmp_path / "review"
+    review_tmp.mkdir()
+    flag = SimpleNamespace(
+        start=69.78,
+        end=74.46,
+        text="with a multiplier when plugged back into the equation's left hand side.",
+        average_probability=0.41,
+        reason="probable truncation",
+    )
+
+    monkeypatch.setattr(
+        service,
+        "_transcribe_file",
+        lambda _model, _snippet_path, **kwargs: [SimpleNamespace(text="unused", start=0.0, end=1.0, words=[])],
+    )
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup._collect_timing_rows",
+        lambda _segments, **kwargs: (
+            [],
+            [
+                TranscriptSegmentTiming(
+                    text="solving the Schrödinger equation are known as eigenstates, and return the same function",
+                    start=67.98,
+                    end=72.24,
+                    average_probability=0.72,
+                ),
+                TranscriptSegmentTiming(
+                    text="with a multiplier when plugged back into the equation's left hand side.",
+                    start=72.24,
+                    end=75.52,
+                    average_probability=0.78,
+                ),
+            ],
+        ),
+    )
+
+    result = service._review_caption_flag(
+        model=object(),
+        waveform=waveform,
+        sample_rate=sample_rate,
+        flag=flag,
+        prompt_text="prompt",
+        tmp_path=review_tmp,
+    )
+
+    assert result is not None
+    assert result.text == (
+        "solving the Schrödinger equation are known as eigenstates, and return the same function "
+        "with a multiplier when plugged back into the equation's left hand side."
+    )
+
+
+def test_review_and_correct_caption_segments_accepts_better_truncation_candidate_with_materially_lower_probability(
+    monkeypatch,
+    tmp_path: Path,
+):
+    from radcast.services.caption_review import CaptionQualityReport, CaptionReviewFlag
+
+    service = SpeechCleanupService()
+    analysis_wav = tmp_path / "analysis.wav"
+    _write_test_wav(analysis_wav, np.zeros(16000, dtype=np.float32), sample_rate=16000)
+
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup._read_pcm16_wav",
+        lambda _path: (np.zeros((16000, 1), dtype=np.float32), 16000),
+    )
+    monkeypatch.setattr(service, "_load_model", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        service,
+        "_review_caption_flag",
+        lambda **_kwargs: TranscriptSegmentTiming(
+            text="On the individual electrons, there will always be an inseparable term with dependence on both electron A and electron B.",
+            start=232.26,
+            end=235.50,
+            average_probability=0.8867,
+        ),
+    )
+
+    flag = CaptionReviewFlag(
+        start=232.26,
+        end=235.50,
+        text="There will always be an inseparable term with dependence on",
+        average_probability=0.97,
+        reason="probable truncation",
+    )
+    report = CaptionQualityReport(
+        average_probability=0.97,
+        low_confidence_segment_count=0,
+        total_segment_count=1,
+        flagged_segments=[flag],
+        review_recommended=True,
+    )
+    base_segments = [
+        TranscriptSegmentTiming(
+            text="There will always be an inseparable term with dependence on concept isn't just limited",
+            start=232.26,
+            end=235.50,
+            average_probability=0.97,
+        )
+    ]
+
+    corrected = service._review_and_correct_caption_segments(
+        analysis_wav=analysis_wav,
+        base_segments=base_segments,
+        quality_report=report,
+        prompt_text="prompt",
+        review_backend=SimpleNamespace(id="faster_whisper"),
+        review_model_size="large-v3",
+    )
+
+    assert corrected[0].text == (
+        "On the individual electrons, there will always be an inseparable term with dependence on both electron A and electron B."
+    )
+
+
+def test_generate_caption_file_uses_export_shape_review_notes(monkeypatch, tmp_path: Path):
     sample_rate = 16000
     audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
     audio_path = tmp_path / "lecture.wav"
@@ -1490,8 +1617,9 @@ def test_generate_caption_file_uses_pre_shape_review_report_for_review_notes(mon
     assert result.quality_report.total_segment_count == 2
     assert result.quality_report.average_probability == pytest.approx(0.95, abs=0.001)
     review_text = result.review_path.read_text(encoding="utf-8")
-    assert "This line should be checked" in review_text
-    assert "This line is now clean and high confidence" not in review_text
+    assert "This line should be checked" not in review_text
+    assert "No specific caption lines were flagged." in review_text
+    assert "Total caption lines: 2" in review_text
 
 
 def test_generate_caption_file_surfaces_export_only_review_flags_in_outward_quality_report(monkeypatch, tmp_path: Path):
@@ -1530,6 +1658,113 @@ def test_generate_caption_file_surfaces_export_only_review_flags_in_outward_qual
     assert result.quality_report.low_confidence_segment_count == 0
     assert result.quality_report.total_segment_count == 1
     assert [flag.reason for flag in result.quality_report.flagged_segments] == ["probable truncation"]
+
+
+def test_generate_caption_file_accessibility_assessment_follows_exported_captions(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda *args, **kwargs: (
+            [],
+            [TranscriptSegmentTiming(text="This line should be checked", start=0.0, end=1.4, average_probability=0.39)],
+        ),
+    )
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup.shape_lecture_caption_cues",
+        lambda segments: [
+            TranscriptSegmentTiming(text="This line is now clean and high confidence", start=0.0, end=1.4, average_probability=0.96),
+        ],
+    )
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+    )
+
+    assert result.accessibility_assessment is not None
+    assert result.accessibility_assessment.status == CaptionAccessibilityStatus.PASSED
+    assert result.accessibility_assessment.warning_segment_count == 0
+    assert result.accessibility_assessment.failure_segment_count == 0
+
+
+def test_generate_caption_file_accessibility_assessment_flags_export_defects(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda *args, **kwargs: (
+            [],
+            [TranscriptSegmentTiming(text="This line is complete", start=0.0, end=1.4, average_probability=0.96)],
+        ),
+    )
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup.shape_lecture_caption_cues",
+        lambda segments: [
+            TranscriptSegmentTiming(text="This line should be checked when", start=0.0, end=1.4, average_probability=0.96),
+        ],
+    )
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+    )
+
+    assert result.accessibility_assessment is not None
+    assert result.accessibility_assessment.status == CaptionAccessibilityStatus.FAILED
+    assert result.accessibility_assessment.failure_segment_count == 1
+
+
+def test_generate_caption_file_accessibility_assessment_fails_on_glossary_term_miss(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda *args, **kwargs: (
+            [],
+            [TranscriptSegmentTiming(text="transcription against tikanga", start=0.0, end=1.4, average_probability=0.96)],
+        ),
+    )
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup.shape_lecture_caption_cues",
+        lambda segments: [
+            TranscriptSegmentTiming(text="transcription against tikanga", start=0.0, end=1.4, average_probability=0.96),
+        ],
+    )
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+        caption_glossary="transgression",
+    )
+
+    assert result.accessibility_assessment is not None
+    assert result.accessibility_assessment.status == CaptionAccessibilityStatus.FAILED
+    assert result.accessibility_assessment.failure_segment_count == 1
 
 
 def test_generate_caption_file_falls_back_to_stabilized_segments_when_cue_shaping_raises(monkeypatch, tmp_path: Path):

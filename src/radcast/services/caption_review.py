@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 import re
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from radcast.models import CaptionAccessibilityStatus
+
 _TOKEN_RE = re.compile(r"[^a-z']+")
 _CAPTION_REVIEW_MAX_FLAGS = 18
 _LOW_CONFIDENCE_THRESHOLD = 0.45
+_CRITICAL_TERM_SHORT_WORD_THRESHOLD = 0.8
+_CRITICAL_TERM_LONG_WORD_THRESHOLD = 0.68
 _FINAL_REVIEW_RESULT_LINE = "this is the final result of the review"
 _REVIEW_SYSTEM_PHRASES = (
     "review low-confidence transcript lines carefully",
@@ -50,6 +55,14 @@ _TRUNCATION_ENDINGS = {
     "within",
     "without",
 }
+_TARGETED_REVIEW_HIGH_RISK_TRUNCATION_ENDINGS = {
+    "because",
+    "but",
+    "of",
+    "on",
+    "when",
+    "while",
+}
 
 
 class CaptionSegmentLike(Protocol):
@@ -83,6 +96,35 @@ class CaptionQualityReport:
             return "Caption confidence looked stable."
         flagged_segment_count = len(self.flagged_segments)
         return f"Caption review suggested: {flagged_segment_count} flagged segment{'s' if flagged_segment_count != 1 else ''}."
+
+
+@dataclass(frozen=True)
+class CaptionAccessibilityAssessment:
+    status: CaptionAccessibilityStatus
+    warning_segment_count: int
+    failure_segment_count: int
+
+
+def assess_caption_accessibility(report: CaptionQualityReport) -> CaptionAccessibilityAssessment:
+    warning_segment_count = sum(1 for flag in report.flagged_segments if flag.reason == "probable low confidence")
+    failure_segment_count = sum(1 for flag in report.flagged_segments if flag.reason != "probable low confidence")
+    if failure_segment_count > 0:
+        return CaptionAccessibilityAssessment(
+            status=CaptionAccessibilityStatus.FAILED,
+            warning_segment_count=warning_segment_count,
+            failure_segment_count=failure_segment_count,
+        )
+    if warning_segment_count > 0:
+        return CaptionAccessibilityAssessment(
+            status=CaptionAccessibilityStatus.PASSED_WITH_WARNINGS,
+            warning_segment_count=warning_segment_count,
+            failure_segment_count=0,
+        )
+    return CaptionAccessibilityAssessment(
+        status=CaptionAccessibilityStatus.PASSED,
+        warning_segment_count=0,
+        failure_segment_count=0,
+    )
 
 
 def _clean_caption_text(text: str) -> str:
@@ -252,6 +294,19 @@ def _is_probable_truncation(segment: CaptionSegmentLike) -> bool:
     return False
 
 
+def _looks_like_truncation_continuation(current: CaptionSegmentLike, next_segment: CaptionSegmentLike | None) -> bool:
+    if next_segment is None:
+        return False
+    current_tokens = _caption_tokens(current.text)
+    if not current_tokens or current_tokens[-1] not in _TRUNCATION_ENDINGS:
+        return False
+    next_text = _clean_caption_text(next_segment.text)
+    if not next_text:
+        return False
+    first_token = next_text.split()[0].lstrip("\"'“”‘’«»([{")
+    return bool(first_token) and first_token[0].islower()
+
+
 def _caption_review_reason(
     segments: Sequence[CaptionSegmentLike],
     index: int,
@@ -263,6 +318,8 @@ def _caption_review_reason(
     if index > 0 and _is_probable_duplication(segments[index - 1], segment):
         return "probable duplication"
     if _is_probable_truncation(segment):
+        if _looks_like_truncation_continuation(segment, segments[index + 1] if index + 1 < len(segments) else None):
+            return None
         return "probable truncation"
     probability = segment.average_probability
     if probability is None:
@@ -272,16 +329,38 @@ def _caption_review_reason(
     return None
 
 
+def _is_targeted_review_candidate(
+    segments: Sequence[CaptionSegmentLike],
+    index: int,
+    reason: str,
+) -> bool:
+    if reason != "probable truncation":
+        return True
+    segment = segments[index]
+    tokens = _caption_tokens(segment.text)
+    if len(tokens) <= 2:
+        return True
+    probability = segment.average_probability
+    if probability is not None and probability < 0.8:
+        return True
+    if tokens and tokens[-1] in _TARGETED_REVIEW_HIGH_RISK_TRUNCATION_ENDINGS:
+        return True
+    return False
+
+
 def _select_review_candidates(
     segments: Sequence[CaptionSegmentLike],
     *,
     limit: int | None,
+    strategy_id: str = "standard_review",
 ) -> list[CaptionReviewFlag]:
     clean_segments = [segment for segment in segments if _clean_caption_text(segment.text)]
     flagged_segments: list[CaptionReviewFlag] = []
     for index, segment in enumerate(clean_segments):
         reason = _caption_review_reason(clean_segments, index)
         if not reason:
+            continue
+        if strategy_id == "targeted_review" and not _is_targeted_review_candidate(clean_segments, index, reason):
             continue
         flagged_segments.append(
             CaptionReviewFlag(
@@ -297,11 +376,20 @@ def _select_review_candidates(
     return flagged_segments[:max(0, int(limit))]
 
 
-def select_review_candidates(segments: Sequence[CaptionSegmentLike]) -> list[CaptionReviewFlag]:
-    return _select_review_candidates(segments, limit=_CAPTION_REVIEW_MAX_FLAGS)
+def select_review_candidates(
+    segments: Sequence[CaptionSegmentLike],
+    *,
+    strategy_id: str = "standard_review",
+) -> list[CaptionReviewFlag]:
+    return _select_review_candidates(segments, limit=_CAPTION_REVIEW_MAX_FLAGS, strategy_id=strategy_id)
 
 
-def build_caption_quality_report(segments: Sequence[CaptionSegmentLike]) -> CaptionQualityReport:
+def build_caption_quality_report(
+    segments: Sequence[CaptionSegmentLike],
+    *,
+    strategy_id: str = "standard_review",
+    critical_terms: Sequence[str] | None = None,
+) -> CaptionQualityReport:
     clean_segments = [
         segment
         for segment in segments
@@ -309,8 +397,18 @@ def build_caption_quality_report(segments: Sequence[CaptionSegmentLike]) -> Capt
     ]
     probabilities = [segment.average_probability for segment in clean_segments if segment.average_probability is not None]
     average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
-    all_flagged_segments = _select_review_candidates(clean_segments, limit=None)
-    flagged_segments = all_flagged_segments[:_CAPTION_REVIEW_MAX_FLAGS]
+    all_flagged_segments = _select_review_candidates(clean_segments, limit=None, strategy_id=strategy_id)
+    critical_term_flags = _select_critical_term_miss_candidates(clean_segments, critical_terms=critical_terms)
+    flagged_segments = []
+    seen_keys: set[tuple[float, float, str, str]] = set()
+    for flag in [*all_flagged_segments, *critical_term_flags]:
+        key = (float(flag.start), float(flag.end), str(flag.text), str(flag.reason))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        flagged_segments.append(flag)
+        if len(flagged_segments) >= _CAPTION_REVIEW_MAX_FLAGS:
+            break
     low_confidence_segment_count = _count_probable_low_confidence_flags(flagged_segments)
     return CaptionQualityReport(
         average_probability=average_probability,
@@ -321,12 +419,86 @@ def build_caption_quality_report(segments: Sequence[CaptionSegmentLike]) -> Capt
     )
 
 
-def format_caption_review_document(report: CaptionQualityReport) -> str:
+def _select_critical_term_miss_candidates(
+    segments: Sequence[CaptionSegmentLike],
+    *,
+    critical_terms: Sequence[str] | None,
+) -> list[CaptionReviewFlag]:
+    normalized_terms = [
+        _normalize_critical_term(term)
+        for term in (critical_terms or ())
+        if _normalize_critical_term(term)
+    ]
+    if not normalized_terms:
+        return []
+
+    flags: list[CaptionReviewFlag] = []
+    for segment in segments:
+        text = _clean_caption_text(segment.text)
+        if not text:
+            continue
+        normalized_text = _normalize_caption_text(text)
+        tokens = _caption_tokens(text)
+        for term in normalized_terms:
+            if _term_present_exactly(normalized_text, term):
+                continue
+            if _looks_like_critical_term_miss(tokens, term):
+                flags.append(
+                    CaptionReviewFlag(
+                        start=segment.start,
+                        end=segment.end,
+                        text=text,
+                        average_probability=segment.average_probability,
+                        reason=f"probable critical term miss: {term}",
+                    )
+                )
+                break
+    return flags
+
+
+def _normalize_critical_term(text: str) -> str:
+    return _normalize_caption_text(text)
+
+
+def _term_present_exactly(normalized_text: str, term: str) -> bool:
+    if not normalized_text or not term:
+        return False
+    if " " not in term:
+        return bool(re.search(rf"(?<!\w){re.escape(term)}(?!\w)", normalized_text))
+    return term in normalized_text
+
+
+def _looks_like_critical_term_miss(tokens: Sequence[str], term: str) -> bool:
+    if not tokens or not term:
+        return False
+    term_tokens = term.split()
+    if len(term_tokens) == 1:
+        target = term_tokens[0]
+        best_ratio = max(SequenceMatcher(None, token, target).ratio() for token in tokens)
+        threshold = _CRITICAL_TERM_LONG_WORD_THRESHOLD if len(target) >= 6 else _CRITICAL_TERM_SHORT_WORD_THRESHOLD
+        return best_ratio >= threshold and best_ratio < 0.999
+
+    window_size = len(term_tokens)
+    best_ratio = 0.0
+    for start in range(0, max(1, len(tokens) - window_size + 1)):
+        window = " ".join(tokens[start : start + window_size])
+        ratio = SequenceMatcher(None, window, term).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+    return best_ratio >= 0.75 and best_ratio < 0.999
+
+
+def format_caption_review_document(
+    report: CaptionQualityReport,
+    *,
+    displayed_total_segment_count: int | None = None,
+) -> str:
     lines = ["RADcast Caption Review", ""]
     if report.average_probability is not None:
         lines.append(f"Average word confidence: {report.average_probability:.0%}")
     lines.append(f"Flagged caption lines: {len(report.flagged_segments)}")
-    lines.append(f"Total caption lines: {report.total_segment_count}")
+    total_segment_count = report.total_segment_count if displayed_total_segment_count is None else displayed_total_segment_count
+    lines.append(f"Total caption lines: {total_segment_count}")
     lines.append("")
     if not report.flagged_segments:
         lines.append("No specific caption lines were flagged.")

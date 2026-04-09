@@ -31,8 +31,10 @@ from radcast.services.caption_quality_policy import (
     resolve_caption_quality_policy,
 )
 from radcast.services.caption_review import (
+    CaptionAccessibilityAssessment,
     CaptionQualityReport,
     CaptionReviewFlag,
+    assess_caption_accessibility,
     build_caption_export_quality_report,
     build_caption_quality_report,
     format_caption_review_document,
@@ -268,6 +270,7 @@ class CaptionExportResult:
     segment_count: int
     review_path: Path | None = None
     quality_report: CaptionQualityReport | None = None
+    accessibility_assessment: CaptionAccessibilityAssessment | None = None
 
 
 @dataclass(frozen=True)
@@ -718,7 +721,10 @@ class SpeechCleanupService:
             if cancel_check and cancel_check():
                 raise JobCancelledError("job cancelled")
 
-            review_report = build_caption_quality_report(segments)
+            review_report = build_caption_quality_report(
+                segments,
+                strategy_id=policy.review_strategy_id,
+            )
             if profile.review_sweep and review_report.flagged_segments:
                 if on_stage:
                     review_detail = _caption_stage_detail(
@@ -753,11 +759,13 @@ class SpeechCleanupService:
             except Exception:
                 export_segments = segments
             export_segments = _dedupe_caption_segments(export_segments)
-            export_report = build_caption_quality_report(export_segments)
+            critical_terms = _critical_caption_terms(caption_glossary)
+            export_report = build_caption_quality_report(export_segments, critical_terms=critical_terms)
             outward_quality_report = build_caption_export_quality_report(
                 review_report=review_report,
                 export_report=export_report,
             )
+            accessibility_assessment = assess_caption_accessibility(export_report)
 
             output_path = audio_path.with_suffix(f".{caption_format.value}")
             review_path = None
@@ -773,13 +781,20 @@ class SpeechCleanupService:
             )
             if review_report.review_recommended:
                 review_path = output_path.parent / f"{output_path.name}.review.txt"
-                review_path.write_text(format_caption_review_document(review_report), encoding="utf-8")
+                review_path.write_text(
+                    format_caption_review_document(
+                        export_report,
+                        displayed_total_segment_count=outward_quality_report.total_segment_count,
+                    ),
+                    encoding="utf-8",
+                )
         return CaptionExportResult(
             caption_path=output_path,
             caption_format=caption_format,
             segment_count=len([segment for segment in export_segments if _clean_caption_text(segment.text)]),
             review_path=review_path,
             quality_report=outward_quality_report,
+            accessibility_assessment=accessibility_assessment,
         )
 
     def _load_model(self, model_size: str | None = None, *, backend: CaptionBackend | None = None):
@@ -1141,7 +1156,11 @@ class SpeechCleanupService:
                 current_segment = corrected[matched_index]
                 current_probability = current_segment.average_probability if current_segment.average_probability is not None else -1.0
                 next_probability = candidate_segment.average_probability if candidate_segment.average_probability is not None else current_probability
-                if next_probability + 0.03 < current_probability:
+                if next_probability + 0.03 < current_probability and not _should_accept_truncation_review_candidate(
+                    flag=flag,
+                    current_segment=current_segment,
+                    candidate_segment=candidate_segment,
+                ):
                     continue
                 corrected[matched_index] = candidate_segment
                 if on_stage:
@@ -1202,7 +1221,7 @@ class SpeechCleanupService:
             keep_start_seconds=0.0,
             keep_end_seconds=max(0.0, snippet_end - snippet_start),
         )
-        best = _best_overlapping_segment(candidate_segments, flag)
+        best = _best_review_candidate(candidate_segments, flag)
         if best is None:
             return None
         if not _clean_caption_text(best.text):
@@ -1367,6 +1386,22 @@ def _build_caption_prompt(custom_glossary: str | None) -> str:
             "Also prefer these course or project terms if spoken clearly: " + ", ".join(glossary_terms) + "."
         )
     return _combine_prompt_parts(*prompt_parts) or _NZ_ENGLISH_STYLE_PROMPT
+
+
+def _critical_caption_terms(custom_glossary: str | None) -> list[str]:
+    glossary_terms = _normalize_custom_glossary(custom_glossary)
+    combined: list[str] = []
+    seen: set[str] = set()
+    for term in [*glossary_terms, *_COMMON_MAORI_TERMS]:
+        normalized = " ".join(str(term or "").split()).strip()
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append(normalized)
+    return combined
 
 
 def _normalize_custom_glossary(value: str | None) -> list[str]:
@@ -1941,6 +1976,105 @@ def _best_overlapping_segment(
             best_segment = segment
             best_score = adjusted_score
     return best_segment
+
+
+def _best_review_candidate(
+    segments: list[TranscriptSegmentTiming],
+    flag: CaptionReviewFlag,
+) -> TranscriptSegmentTiming | None:
+    if getattr(flag, "reason", None) == "probable truncation":
+        stitched = _stitched_truncation_review_candidate(segments, flag)
+        if stitched is not None:
+            return stitched
+    return _best_overlapping_segment(segments, flag)
+
+
+def _stitched_truncation_review_candidate(
+    segments: list[TranscriptSegmentTiming],
+    flag: CaptionReviewFlag,
+) -> TranscriptSegmentTiming | None:
+    overlapping = [segment for segment in segments if _segment_overlap(segment.start, segment.end, flag.start, flag.end) > 0]
+    if not overlapping:
+        return None
+    if len(overlapping) == 1:
+        return overlapping[0]
+    ordered = sorted(overlapping, key=lambda segment: (segment.start, segment.end))
+    combined_text = _join_review_segment_texts(ordered)
+    if not combined_text:
+        return None
+    probabilities = [segment.average_probability for segment in ordered if segment.average_probability is not None]
+    average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
+    return TranscriptSegmentTiming(
+        text=combined_text,
+        start=ordered[0].start,
+        end=ordered[-1].end,
+        average_probability=average_probability,
+    )
+
+
+def _should_accept_truncation_review_candidate(
+    *,
+    flag: CaptionReviewFlag,
+    current_segment: TranscriptSegmentTiming,
+    candidate_segment: TranscriptSegmentTiming,
+) -> bool:
+    if getattr(flag, "reason", None) != "probable truncation":
+        return False
+    candidate_probability = candidate_segment.average_probability
+    if candidate_probability is None or candidate_probability < 0.75:
+        return False
+    flag_tokens = _normalized_word_tokens(flag.text)
+    candidate_tokens = _normalized_word_tokens(candidate_segment.text)
+    current_tokens = _normalized_word_tokens(current_segment.text)
+    if not flag_tokens or len(candidate_tokens) <= len(current_tokens):
+        return False
+    prefix_overlap = _common_prefix_token_count(candidate_tokens, flag_tokens)
+    minimum_prefix_overlap = max(4, len(flag_tokens) - 2)
+    if prefix_overlap < minimum_prefix_overlap and not _contains_token_subsequence(candidate_tokens, flag_tokens):
+        return False
+    return True
+
+
+def _join_review_segment_texts(segments: list[TranscriptSegmentTiming]) -> str:
+    parts: list[str] = []
+    for segment in segments:
+        cleaned = _clean_caption_text(segment.text)
+        if not cleaned:
+            continue
+        words = cleaned.split()
+        if not words:
+            continue
+        if parts:
+            previous_words = parts[-1].split()
+            while previous_words and words and _normalize_token(previous_words[-1]) == _normalize_token(words[0]):
+                words = words[1:]
+            if not words:
+                continue
+        parts.append(" ".join(words))
+    return _clean_caption_text(" ".join(parts))
+
+
+def _normalized_word_tokens(text: str) -> list[str]:
+    return [token for token in (_normalize_token(word) for word in _clean_caption_text(text).split()) if token]
+
+
+def _common_prefix_token_count(left: list[str], right: list[str]) -> int:
+    count = 0
+    for left_token, right_token in zip(left, right):
+        if left_token != right_token:
+            break
+        count += 1
+    return count
+
+
+def _contains_token_subsequence(haystack: list[str], needle: list[str]) -> bool:
+    if not needle or len(needle) > len(haystack):
+        return False
+    needle_length = len(needle)
+    for index in range(len(haystack) - needle_length + 1):
+        if haystack[index : index + needle_length] == needle:
+            return True
+    return False
 
 
 def _segment_overlap(start_a: float, end_a: float, start_b: float, end_b: float) -> float:
