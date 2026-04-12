@@ -4,60 +4,112 @@
 
 **Goal:** Add a per-output glossary review modal that lets a user review glossary-related caption failures in context and approve terms into the shared global glossary for future projects.
 
-**Architecture:** The backend will derive glossary candidates from the existing caption VTT and review artifacts, expose them through a new API endpoint, and persist approved entries through the existing shared glossary store. The frontend will render a modal from each completed output card, show surrounding transcript context for each candidate, and submit only explicitly approved terms back to the server. This feature will not change transcription scoring or accessibility verdict rules.
+**Architecture:** The backend will derive glossary candidates from the existing caption VTT and review artifacts through a dedicated review-candidate service, expose them with a project-output scoped API, and persist approved entries through the existing shared glossary store. The frontend will render a modal from each completed output card, show surrounding transcript context for each candidate, and submit only explicitly approved terms back to the server. This feature will not change transcription scoring or accessibility verdict rules.
 
-**Tech Stack:** FastAPI, Pydantic models, existing RADcast glossary store, vanilla JS frontend, existing modal/CSS patterns, pytest, node-based UI tests where applicable.
+**Tech Stack:** FastAPI, Pydantic models, existing RADcast glossary store, vanilla JS frontend, existing modal/CSS patterns, pytest, node-based UI tests.
 
 ---
 
-### Task 1: Add glossary-candidate extraction helpers and tests
+## File Map
+
+- `src/radcast/services/glossary_review.py` - new review-candidate extraction and normalization helpers for VTT + review artifact parsing.
+- `src/radcast/services/glossary_store.py` - keep persistence concerns only; add write helpers if the save endpoint needs a small convenience wrapper.
+- `src/radcast/api.py` - new glossary-review endpoints and outputs metadata flag.
+- `src/radcast/models.py` - new request/response models for glossary candidate payloads if needed.
+- `src/radcast/templates/index.html` - modal markup and optional toolbar hook for the completed output card.
+- `src/radcast/static/ui.js` - output-card button rendering, modal open/close, fetch/save flow.
+- `src/radcast/static/ui.css` - modal layout and candidate-row styling.
+- `tests/fixtures/glossary_review/simple.vtt` - tiny deterministic VTT fixture.
+- `tests/fixtures/glossary_review/simple.vtt.review.txt` - matching deterministic review fixture.
+- `tests/test_glossary_review.py` - service-level extraction tests.
+- `tests/test_api_ui.py` - API contract and glossary-save endpoint tests.
+- `tests/glossary_review_modal.test.js` - focused UI/modal behavior tests.
+
+---
+
+### Task 1: Add a dedicated glossary-review extraction service and tests
 
 **Files:**
-- Modify: `src/radcast/services/glossary_store.py`
-- Create: `tests/test_glossary_review_candidates.py`
+- Create: `src/radcast/services/glossary_review.py`
+- Create: `tests/fixtures/glossary_review/simple.vtt`
+- Create: `tests/fixtures/glossary_review/simple.vtt.review.txt`
+- Create: `tests/test_glossary_review.py`
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 def test_extract_glossary_candidates_returns_context_and_deduped_terms():
-    # load a real-ish VTT + review pair and assert the helper returns
-    # flagged term candidates with previous/current/next cue context
-    # and no duplicate normalized terms.
+    # load the tiny fixture VTT/review pair and assert that the helper returns
+    # glossary candidates with:
+    # - normalized term suggestion
+    # - reason text
+    # - previous/current/next cue context
+    # - deterministic ordering
+    # - dedupe by normalized term
     ...
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python3 -m pytest /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/test_glossary_review_candidates.py -q`
-Expected: FAIL because the candidate extraction helper does not exist yet.
+Run: `python3 -m pytest /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/test_glossary_review.py -q`
+Expected: FAIL because the dedicated glossary-review service does not exist yet.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add a small, focused helper in `glossary_store.py` that can:
-- parse a VTT plus matching `.review.txt`
-- identify glossary-related failures from the review output
-- return a structured candidate list with context cues and normalized term suggestions
-- de-duplicate candidates by normalized term and cue span
+Implement a small service that:
+- parses the review artifact timestamp ranges and reasons
+- maps each glossary-related failure back to overlapping VTT cues by timestamp
+- extracts a suggested term from the flagged cue or surrounding context when the reason is a critical-term miss
+- returns a structured candidate list with `candidate_id`, `term`, `normalized_term`, `reason`, `previous_context`, `flagged_context`, `next_context`, and `already_known`
+- dedupes candidates by normalized term and cue span
+
+Normalization rules:
+- use the existing glossary term normalization rules for comparison and dedupe
+- preserve the original display form from the transcript when possible
+- treat macrons/Unicode variants as the same normalized term for dedupe and already-known checks
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python3 -m pytest /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/test_glossary_review_candidates.py -q`
+Run: `python3 -m pytest /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/test_glossary_review.py -q`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/radcast/services/glossary_store.py tests/test_glossary_review_candidates.py
+git add src/radcast/services/glossary_review.py tests/fixtures/glossary_review/simple.vtt tests/fixtures/glossary_review/simple.vtt.review.txt tests/test_glossary_review.py
 git commit -m "feat: derive glossary review candidates from caption artifacts"
 ```
 
-### Task 2: Expose API endpoints for glossary review and approval
+### Task 2: Expose glossary-review API endpoints and tests
 
 **Files:**
 - Modify: `src/radcast/api.py`
 - Modify: `src/radcast/models.py` if new request/response models are needed
-- Modify: `src/radcast/services/glossary_store.py` if the save path needs a dedicated helper
+- Modify: `src/radcast/services/glossary_store.py` only if a small save helper is needed
 - Modify: `tests/test_api_ui.py`
+
+**Endpoint contract:**
+- GET `/projects/{project_id}/outputs/glossary-review-candidates?path={output_path}`
+- POST `/projects/{project_id}/outputs/glossary-review-candidates?path={output_path}`
+
+The `path` query parameter should be the existing `output_path` returned from `/projects/{project_id}/outputs`.
+
+The GET response should include:
+- `project_id`
+- `output_path`
+- `has_candidates`
+- `has_review_artifacts`
+- `candidates[]` with the fields returned by the extraction service
+
+The POST request should accept:
+- `approved_terms[]` with the selected candidate IDs or normalized terms
+- optional edited display text per approved row
+
+The POST response should include:
+- `saved_terms[]`
+- `already_known_terms[]`
+- `project_id`
+- `output_path`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -69,27 +121,28 @@ def test_project_output_glossary_candidates_endpoint_returns_context(monkeypatch
 
 
 def test_project_output_glossary_candidates_save_promotes_terms_to_global_store(monkeypatch):
-    # post approved candidates and assert the global glossary store is updated
-    # and duplicates are not created.
+    # post approved candidates and assert the global glossary store is updated,
+    # deduped, and normalized.
     ...
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `python3 -m pytest /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/test_api_ui.py -q -k 'glossary_candidates'`
+Run: `python3 -m pytest /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/test_api_ui.py -q -k 'glossary_review_candidates'`
 Expected: FAIL because the endpoints do not exist yet.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Add endpoints that:
-- load the completed output metadata and associated review artifacts
-- return a JSON candidate payload for the modal
-- accept approved glossary terms and save them into the shared global glossary
-- reject malformed or duplicate approvals cleanly
+Add API handlers that:
+- look up the output record by `output_path` within the project
+- derive the sidecar VTT and review paths from the output metadata
+- call the glossary-review service to build candidates
+- expose the candidate payload with `has_review_artifacts` and `has_candidates`
+- save approved terms into the global glossary store using normalized dedupe
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `python3 -m pytest /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/test_api_ui.py -q -k 'glossary_candidates'`
+Run: `python3 -m pytest /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/test_api_ui.py -q -k 'glossary_review_candidates'`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -105,38 +158,46 @@ git commit -m "feat: add glossary review candidate APIs"
 - Modify: `src/radcast/templates/index.html`
 - Modify: `src/radcast/static/ui.js`
 - Modify: `src/radcast/static/ui.css`
-- Modify: `tests/compute_mode_caption_fallback.test.js` or add a focused UI test file for the completed-output action and modal if the current test harness already covers this area
+- Create: `tests/glossary_review_modal.test.js`
 
 - [ ] **Step 1: Write the failing test**
 
 ```javascript
 test("completed output cards show glossary review action when review artifacts exist", async () => {
-  // render an output with review metadata and assert a new action button appears
+  // render an output with review metadata and assert a new action button appears.
 });
 
 test("glossary review modal renders candidate rows and context", async () => {
-  // click the action, fetch candidate payload, and assert the modal shows context
+  // open the modal, mock the candidate API response, and assert the modal shows
+  // the prev/current/next context rows and approve/edit controls.
+});
+
+test("approved glossary terms are posted and the output list refreshes", async () => {
+  // submit one approved candidate and assert the save endpoint payload and refresh.
 });
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `node --test /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/compute_mode_caption_fallback.test.js`
-Expected: FAIL or no coverage until the modal action and bindings exist.
+Run: `node --test /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/glossary_review_modal.test.js`
+Expected: FAIL because the modal action and bindings do not exist yet.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Update the completed output card renderer to show a `Review glossary candidates` button when review artifacts are present. Add a modal using the existing modal styling and focus-management pattern, load candidate data on open, and render approve/edit/skip controls plus save/cancel actions.
+Update the completed output card renderer to show a `Review glossary candidates` button whenever the outputs payload includes `caption_review_download_url`.
+Add a modal using the existing modal styling and focus-management pattern, load candidate data on open, and render approve/edit/skip controls plus save/cancel actions.
+
+Use the existing modal helpers in `ui.js` (`syncModalOpenState()`, focus return, ESC/close handling) instead of inventing a separate modal state model.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `node --test /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/compute_mode_caption_fallback.test.js`
+Run: `node --test /Users/rcd58/RADcast/.worktrees/codex-platform-caption-mlx/tests/glossary_review_modal.test.js`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/radcast/templates/index.html src/radcast/static/ui.js src/radcast/static/ui.css tests/compute_mode_caption_fallback.test.js
+git add src/radcast/templates/index.html src/radcast/static/ui.js src/radcast/static/ui.css tests/glossary_review_modal.test.js
 git commit -m "feat: add glossary review modal to completed outputs"
 ```
 
@@ -144,16 +205,16 @@ git commit -m "feat: add glossary review modal to completed outputs"
 
 **Files:**
 - Modify: `tests/test_api_ui.py`
-- Modify: `tests/test_glossary_store.py` if any new store behavior needs coverage
-- Modify: `tests/test_speech_cleanup.py` only if the new glossary metadata needs to remain compatible with caption generation
+- Modify: `tests/test_glossary_store.py`
+- Modify: `tests/test_caption_review.py` only if a shared helper needs a new regression assertion
 
 - [ ] **Step 1: Write the failing test**
 
 Add one end-to-end test that:
 - creates an output with review artifacts
-- fetches candidates
+- fetches glossary candidates
 - approves a candidate
-- asserts the shared global glossary contains the new active term
+- asserts the shared global glossary contains the new active term exactly once and in normalized form
 
 - [ ] **Step 2: Run the full targeted suite**
 
@@ -168,7 +229,7 @@ Expected: PASS and no regressions in caption review or accessibility verdicts.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add tests/test_api_ui.py tests/test_glossary_store.py tests/test_caption_review.py tests/test_speech_cleanup.py
+git add tests/test_api_ui.py tests/test_glossary_store.py tests/test_caption_review.py
 git commit -m "test: cover glossary review modal flow end to end"
 ```
 
@@ -185,7 +246,7 @@ Expected: PASS.
 - [ ] **Step 2: Manual check in RADcast dev**
 
 Open a completed output with review artifacts and verify:
-- the new glossary review action appears
+- the new glossary review action appears only when review data exists
 - the modal shows candidate context correctly
 - approved terms save into the shared glossary
 - the output list refreshes afterward
