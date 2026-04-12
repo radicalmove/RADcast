@@ -185,7 +185,7 @@ Expected: FAIL because the modal action and bindings do not exist yet.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Update the completed output card renderer to show a `Review glossary candidates` button whenever the outputs payload includes `caption_review_download_url`.
+Update the completed output card renderer to show a `Review glossary candidates` button whenever the outputs payload includes `has_review_artifacts: true`. The backend should set that flag when a caption review file exists for the output.
 Add a modal using the existing modal styling and focus-management pattern, load candidate data on open, and render approve/edit/skip controls plus save/cancel actions.
 
 Use the existing modal helpers in `ui.js` (`syncModalOpenState()`, focus return, ESC/close handling) instead of inventing a separate modal state model.
