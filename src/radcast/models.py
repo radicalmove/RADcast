@@ -104,6 +104,45 @@ class ProjectAccessRevokeRequest(BaseModel):
     email: str = Field(min_length=3)
 
 
+class GlossaryReviewApprovalItem(BaseModel):
+    candidate_id: str = Field(min_length=1)
+    term: str = Field(min_length=1, max_length=120)
+
+
+class GlossaryReviewApprovalRequest(BaseModel):
+    approvals: list[GlossaryReviewApprovalItem] = Field(default_factory=list)
+
+
+class GlossaryReviewCandidateView(BaseModel):
+    candidate_id: str = Field(min_length=1)
+    term: str = Field(min_length=1)
+    normalized_term: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    previous_context: str = ""
+    flagged_context: str = ""
+    next_context: str = ""
+    already_known: bool = False
+
+
+class GlossaryReviewCandidatesResponse(BaseModel):
+    project_id: str
+    output_path: str
+    caption_path: str | None = None
+    review_path: str | None = None
+    has_review_artifacts: bool = False
+    has_candidates: bool = False
+    candidate_count: int = 0
+    candidates: list[GlossaryReviewCandidateView] = Field(default_factory=list)
+
+
+class GlossaryReviewSubmissionResponse(BaseModel):
+    project_id: str
+    output_path: str
+    has_review_artifacts: bool = False
+    saved_terms: list[str] = Field(default_factory=list)
+    already_known_terms: list[str] = Field(default_factory=list)
+
+
 class ClipRange(BaseModel):
     clip_start_seconds: float = Field(ge=0.0)
     clip_end_seconds: float = Field(gt=0.0)

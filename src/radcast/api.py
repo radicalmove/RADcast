@@ -22,9 +22,16 @@ from radcast.constants import DEFAULT_WORKER_FALLBACK_TIMEOUT_SECONDS, DEFAULT_W
 from radcast.exceptions import EnhancementRuntimeError, JobCancelledError
 from radcast.manifests import ManifestStore
 from radcast.models import (
+    CaptionAccessibilityStatus,
     CaptionFormat,
     CaptionQualityMode,
     ClipRange,
+    GlossaryEntry,
+    GlossaryReviewApprovalRequest,
+    GlossaryReviewCandidatesResponse,
+    GlossaryReviewSubmissionResponse,
+    GlossaryScope,
+    GlossaryStatus,
     EnhancementModel,
     FillerRemovalMode,
     JobRecord,
@@ -57,6 +64,8 @@ from radcast.progress import (
     map_local_stage_progress,
     map_postprocess_stage_progress,
 )
+from radcast.services.glossary_review import extract_glossary_review_candidates
+from radcast.services.glossary_store import GlossaryStore, normalize_glossary_term, split_legacy_glossary_terms
 from radcast.services.enhance import EnhanceService
 from radcast.services.speech_cleanup import SpeechCleanupService
 from radcast.utils.audio import probe_duration_seconds
@@ -129,9 +138,37 @@ app.mount("/static", StaticFiles(directory=MODULE_ROOT / "static"), name="static
 templates = Jinja2Templates(directory=str(MODULE_ROOT / "templates"))
 
 project_manager = ProjectManager(PROJECTS_ROOT)
+glossary_store = GlossaryStore(PROJECTS_ROOT)
 enhance_service = EnhanceService()
 speech_cleanup_service = SpeechCleanupService()
 worker_manager = WorkerManager(projects_root=PROJECTS_ROOT, worker_secret=WORKER_SECRET)
+
+
+def _asset_version() -> str:
+    try:
+        candidates = [MODULE_ROOT / "static" / "ui.js", MODULE_ROOT / "static" / "ui.css"]
+        newest_mtime_ns = max(path.stat().st_mtime_ns for path in candidates if path.exists())
+        return str(newest_mtime_ns)
+    except Exception:
+        return "0"
+
+
+def _runtime_seconds_from_job(manifests_dir: Path, job_id: str) -> float | None:
+    try:
+        store = ManifestStore(manifests_dir)
+        job = store.get_job(job_id)
+        if not job:
+            return None
+        created_raw = str(job.get("created_at") or "").strip()
+        if not created_raw:
+            return None
+        created_at = datetime.fromisoformat(created_raw)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        runtime_seconds = max(0.0, (datetime.now(timezone.utc) - created_at).total_seconds())
+        return round(runtime_seconds, 3)
+    except Exception:
+        return None
 
 _job_update_lock = threading.Lock()
 _cancelled_jobs: set[str] = set()
@@ -339,6 +376,27 @@ def _write_project_settings(scoped_project_id: str, settings: ProjectUiSettings)
         {"ui_settings": settings.model_dump(mode="json")},
     )
     return settings
+
+
+def _effective_caption_glossary(scoped_project_id: str, *, caption_glossary: str | None) -> str | None:
+    merged_terms: list[str] = []
+    seen: set[str] = set()
+
+    def add_terms(values: list[str]) -> None:
+        for term in values:
+            normalized = normalize_glossary_term(term)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            merged_terms.append(term)
+
+    add_terms(split_legacy_glossary_terms(caption_glossary))
+    try:
+        add_terms(glossary_store.active_terms_for_project(scoped_project_id))
+    except Exception:
+        pass
+
+    return ", ".join(merged_terms) if merged_terms else None
 
 
 def _inferred_owner_key_from_project_id(scoped_project_id: str) -> str:
@@ -957,10 +1015,12 @@ def _run_enhancement_job(
             )
 
         duration_seconds = cleanup_result.duration_seconds
+        runtime_seconds = _runtime_seconds_from_job(manifests_dir, job_id)
         metadata = OutputMetadata(
             output_file=final_path,
             input_file=input_audio_path,
             duration_seconds=duration_seconds,
+            runtime_seconds=runtime_seconds,
             output_format=output_format,
             caption_file=caption_result.caption_path if caption_result else None,
             caption_review_file=getattr(caption_result, "review_path", None) if caption_result else None,
@@ -976,6 +1036,21 @@ def _run_enhancement_job(
                 getattr(caption_result.quality_report, "average_probability", None)
                 if caption_result and getattr(caption_result, "quality_report", None)
                 else None
+            ),
+            caption_accessibility_status=(
+                getattr(caption_result.accessibility_assessment, "status", CaptionAccessibilityStatus.PASSED)
+                if caption_result and getattr(caption_result, "accessibility_assessment", None)
+                else CaptionAccessibilityStatus.PASSED
+            ),
+            caption_review_warning_segments=(
+                getattr(caption_result.accessibility_assessment, "warning_segment_count", 0)
+                if caption_result and getattr(caption_result, "accessibility_assessment", None)
+                else 0
+            ),
+            caption_review_failure_segments=(
+                getattr(caption_result.accessibility_assessment, "failure_segment_count", 0)
+                if caption_result and getattr(caption_result, "accessibility_assessment", None)
+                else 0
             ),
             caption_low_confidence_segments=(
                 getattr(caption_result.quality_report, "low_confidence_segment_count", 0)
@@ -1204,6 +1279,7 @@ def home(request: Request):
         request=request,
         name="index.html",
         context={
+            "asset_version": _asset_version(),
             "app_env": APP_ENV,
             "auth_required": AUTH_REQUIRED,
             "current_user": _current_user(request),
@@ -1522,6 +1598,7 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
     _require_auth(request)
     scoped_project_id = _resolve_project_id_for_request(request, req.project_id)
     paths = project_manager.ensure_project(scoped_project_id)
+    settings = _load_project_settings(scoped_project_id)
     selected_model = EnhancementModel(req.enhancement_model)
     if not enhance_service.is_model_available(selected_model):
         raise HTTPException(status_code=503, detail=f"{selected_model.value} is not available on this machine")
@@ -1558,13 +1635,16 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
     resolved_clip_start_seconds = req.clip_start_seconds
     resolved_clip_end_seconds = req.clip_end_seconds
     if req.input_audio_hash:
-        settings = _load_project_settings(scoped_project_id)
         saved_trim = settings.trim_ranges_by_audio_hash.get(req.input_audio_hash)
         if saved_trim is not None:
             if resolved_clip_start_seconds is None:
                 resolved_clip_start_seconds = saved_trim.clip_start_seconds
             if resolved_clip_end_seconds is None:
                 resolved_clip_end_seconds = saved_trim.clip_end_seconds
+    resolved_caption_glossary = _effective_caption_glossary(
+        scoped_project_id,
+        caption_glossary=req.caption_glossary if req.caption_glossary is not None else settings.caption_glossary,
+    )
 
     output_name = _build_output_name(input_audio_filename, req.output_name)
     cancelled_jobs = worker_manager.cancel_project_jobs(scoped_project_id, reason="superseded by a newer request")
@@ -1576,7 +1656,7 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         output_format=req.output_format,
         caption_format=req.caption_format,
         caption_quality_mode=req.caption_quality_mode,
-        caption_glossary=(str(req.caption_glossary or "").strip() or None),
+        caption_glossary=resolved_caption_glossary,
         enhancement_model=selected_model,
         clip_start_seconds=resolved_clip_start_seconds,
         clip_end_seconds=resolved_clip_end_seconds,
@@ -1685,11 +1765,20 @@ def list_project_outputs(request: Request, project_id: str):
                     "folder_path": folder_path,
                     "created_at": str(item.get("created_at") or ""),
                     "duration_seconds": float(item.get("duration_seconds") or 0.0),
+                    "runtime_seconds": (float(item.get("runtime_seconds")) if item.get("runtime_seconds") is not None else None),
                     "caption_format": str(item.get("caption_format") or ""),
                     "caption_review_required": bool(item.get("caption_review_required")),
                     "caption_average_probability": item.get("caption_average_probability"),
+                    "caption_accessibility_status": (
+                        str(item.get("caption_accessibility_status"))
+                        if item.get("caption_accessibility_status") is not None
+                        else None
+                    ),
+                    "caption_review_warning_segments": int(item.get("caption_review_warning_segments") or 0),
+                    "caption_review_failure_segments": int(item.get("caption_review_failure_segments") or 0),
                     "caption_low_confidence_segments": int(item.get("caption_low_confidence_segments") or 0),
                     "caption_total_segments": int(item.get("caption_total_segments") or 0),
+                    "has_review_artifacts": _output_has_review_artifacts(item),
                     "enhancement_model": str(item.get("enhancement_model") or ""),
                     "audio_tuning_label": str(item.get("audio_tuning_label") or ""),
                     "version_number": total_outputs - reverse_index,
@@ -1708,20 +1797,132 @@ def list_project_outputs(request: Request, project_id: str):
     }
 
 
+@app.get("/projects/{project_id}/outputs/glossary-review-candidates")
+def list_project_output_glossary_review_candidates(
+    request: Request,
+    project_id: str,
+    path: str = Query(..., min_length=1),
+) -> GlossaryReviewCandidatesResponse:
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    item = _find_project_output_item(scoped_project_id, path)
+    caption_file = str(item.get("caption_file") or "").strip()
+    review_file = str(item.get("caption_review_file") or "").strip()
+    has_review_artifacts = _output_has_review_artifacts(item)
+    if not has_review_artifacts:
+        return GlossaryReviewCandidatesResponse(
+            project_id=_display_project_id(scoped_project_id),
+            output_path=str(item.get("output_file") or ""),
+            caption_path=caption_file or None,
+            review_path=review_file or None,
+            has_review_artifacts=False,
+            has_candidates=False,
+            candidate_count=0,
+            candidates=[],
+        )
+
+    active_terms = glossary_store.active_terms_for_project(scoped_project_id)
+    candidates = extract_glossary_review_candidates(
+        caption_path=Path(caption_file),
+        review_path=Path(review_file),
+        active_terms=active_terms,
+    )
+    return GlossaryReviewCandidatesResponse(
+        project_id=_display_project_id(scoped_project_id),
+        output_path=str(item.get("output_file") or ""),
+        caption_path=caption_file or None,
+        review_path=review_file or None,
+        has_review_artifacts=True,
+        has_candidates=bool(candidates),
+        candidate_count=len(candidates),
+        candidates=[candidate.model_dump(mode="json") if hasattr(candidate, "model_dump") else _glossary_candidate_payload(candidate) for candidate in candidates],
+    )
+
+
+@app.post("/projects/{project_id}/outputs/glossary-review-candidates")
+def save_project_output_glossary_review_candidates(
+    request: Request,
+    project_id: str,
+    path: str = Query(..., min_length=1),
+    body: GlossaryReviewApprovalRequest | None = None,
+) -> GlossaryReviewSubmissionResponse:
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    item = _find_project_output_item(scoped_project_id, path)
+    caption_file = str(item.get("caption_file") or "").strip()
+    review_file = str(item.get("caption_review_file") or "").strip()
+    has_review_artifacts = _output_has_review_artifacts(item)
+    if not has_review_artifacts:
+        raise HTTPException(status_code=404, detail="glossary review artifacts not found")
+
+    candidate_list = extract_glossary_review_candidates(
+        caption_path=Path(caption_file),
+        review_path=Path(review_file),
+        active_terms=glossary_store.active_terms_for_project(scoped_project_id),
+    )
+    candidates_by_id = {candidate.candidate_id: candidate for candidate in candidate_list}
+    approvals = body.approvals if body is not None else []
+    saved_terms: list[str] = []
+    already_known_terms: list[str] = []
+    seen_saved: set[str] = set()
+    seen_known: set[str] = set()
+
+    for approval in approvals:
+        candidate = candidates_by_id.get(str(approval.candidate_id or "").strip())
+        if candidate is None:
+            raise HTTPException(status_code=400, detail=f"unknown glossary candidate: {approval.candidate_id}")
+        approved_term = str(approval.term or "").strip()
+        normalized_term = normalize_glossary_term(approved_term)
+        if not normalized_term:
+            raise HTTPException(status_code=400, detail="approval term is required")
+        existing_global = next(
+            (
+                entry
+                for entry in glossary_store.global_entries()
+                if entry.status == GlossaryStatus.ACTIVE and entry.normalized_term == normalized_term
+            ),
+            None,
+        )
+        if existing_global is not None:
+            if normalized_term not in seen_known:
+                seen_known.add(normalized_term)
+                already_known_terms.append(approved_term)
+            continue
+        glossary_store.upsert_entry(
+            GlossaryEntry(
+                term=approved_term,
+                normalized_term=normalized_term,
+                scope=GlossaryScope.GLOBAL,
+                project_id=None,
+                status=GlossaryStatus.ACTIVE,
+                notes=[
+                    "glossary-review",
+                    f"project:{_display_project_id(scoped_project_id)}",
+                    f"output:{str(item.get('output_file') or '')}",
+                    f"candidate:{candidate.candidate_id}",
+                ],
+            )
+        )
+        if normalized_term not in seen_saved:
+            seen_saved.add(normalized_term)
+            saved_terms.append(approved_term)
+
+    return GlossaryReviewSubmissionResponse(
+        project_id=_display_project_id(scoped_project_id),
+        output_path=str(item.get("output_file") or ""),
+        has_review_artifacts=has_review_artifacts,
+        saved_terms=saved_terms,
+        already_known_terms=already_known_terms,
+    )
+
+
 @app.get("/projects/{project_id}/artifact")
 def project_artifact(request: Request, project_id: str, path: str = Query(...), download: bool = Query(False)):
     _require_auth(request)
     scoped_project_id = _resolve_project_id_for_request(request, project_id)
     paths = project_manager.ensure_project(scoped_project_id)
 
-    try:
-        requested = Path(unquote(path)).resolve()
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail="invalid path") from exc
-
-    project_root = paths.root.resolve()
-    if project_root != requested and project_root not in requested.parents:
-        raise HTTPException(status_code=403, detail="artifact path outside project")
+    requested = _resolve_project_artifact_path(scoped_project_id, path)
     if not requested.exists() or not requested.is_file():
         raise HTTPException(status_code=404, detail="artifact not found")
 
@@ -1894,6 +2095,54 @@ def _artifact_download_url(project_id: str, path_value: object) -> str | None:
     if not raw:
         return None
     return f"/projects/{project_id}/artifact?path={quote(raw, safe='')}&download=true"
+
+
+def _resolve_project_artifact_path(scoped_project_id: str, path_value: str) -> Path:
+    try:
+        requested = Path(unquote(str(path_value))).resolve()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="invalid path") from exc
+
+    project_root = project_manager.ensure_project(scoped_project_id).root.resolve()
+    if project_root != requested and project_root not in requested.parents:
+        raise HTTPException(status_code=403, detail="artifact path outside project")
+    return requested
+
+
+def _find_project_output_item(scoped_project_id: str, output_path: str) -> dict[str, object]:
+    requested = _resolve_project_artifact_path(scoped_project_id, output_path)
+    store = ManifestStore(project_manager.ensure_project(scoped_project_id).manifests)
+    for item in store.list_outputs():
+        stored_output = str(item.get("output_file") or "").strip()
+        if not stored_output:
+            continue
+        try:
+            if Path(stored_output).resolve() == requested:
+                return item
+        except Exception:
+            continue
+    raise HTTPException(status_code=404, detail="output not found")
+
+
+def _output_has_review_artifacts(item: dict[str, object]) -> bool:
+    caption_file = str(item.get("caption_file") or "").strip()
+    review_file = str(item.get("caption_review_file") or "").strip()
+    if not caption_file or not review_file:
+        return False
+    return Path(caption_file).exists() and Path(review_file).exists()
+
+
+def _glossary_candidate_payload(candidate) -> dict[str, object]:
+    return {
+        "candidate_id": candidate.candidate_id,
+        "term": candidate.term,
+        "normalized_term": candidate.normalized_term,
+        "reason": candidate.reason,
+        "previous_context": candidate.previous_context,
+        "flagged_context": candidate.flagged_context,
+        "next_context": candidate.next_context,
+        "already_known": candidate.already_known,
+    }
 
 
 def _completed_output_log(

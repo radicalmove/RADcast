@@ -71,6 +71,12 @@ const helpModalBodyNode = document.getElementById("help-modal-body");
 const helpCloseBtn = document.getElementById("help-close-btn");
 const helpTabButtons = Array.from(document.querySelectorAll("[data-help-tab]"));
 const helpPanels = Array.from(document.querySelectorAll("[data-help-panel]"));
+const glossaryReviewModalNode = document.getElementById("glossary-review-modal");
+const glossaryReviewCloseBtn = document.getElementById("glossary-review-close-btn");
+const glossaryReviewStatusNode = document.getElementById("glossary-review-status");
+const glossaryReviewSummaryNode = document.getElementById("glossary-review-summary");
+const glossaryReviewListNode = document.getElementById("glossary-review-list");
+const glossaryReviewSaveBtn = document.getElementById("glossary-review-save-btn");
 const helpStorageKey = "radcast-help-last-tab";
 const helpTabOrder = ["overview", "process-audio", "cleanup-pauses", "generate-captions", "trim-clip", "helper-processing", "troubleshooting"];
 
@@ -158,8 +164,13 @@ const state = {
   shareProjectCollaborators: [],
   shareProjectOwner: null,
   helpActiveTab: "overview",
+  glossaryReviewActiveProjectRef: null,
+  glossaryReviewActiveOutputPath: null,
+  glossaryReviewCandidates: [],
+  glossaryReviewLoadToken: 0,
 };
 let helpModalReturnFocusNode = null;
+let glossaryReviewModalReturnFocusNode = null;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -814,7 +825,9 @@ function workerAvailabilitySummary() {
 }
 
 function syncModalOpenState() {
-  const anyModalOpen = [workerSetupModalNode, shareProjectModalNode, helpModalNode].some((node) => node && !node.hidden);
+  const anyModalOpen = [workerSetupModalNode, shareProjectModalNode, helpModalNode, glossaryReviewModalNode].some(
+    (node) => node && !node.hidden
+  );
   document.body.classList.toggle("modal-open", anyModalOpen);
 }
 
@@ -980,6 +993,266 @@ function closeHelpModal() {
     returnFocusNode.focus();
   } else if (helpBtn) {
     helpBtn.focus();
+  }
+}
+
+function glossaryReviewModalElementHidden(node) {
+  let currentNode = node;
+  while (currentNode instanceof HTMLElement && currentNode !== glossaryReviewModalNode) {
+    if (currentNode.hidden) return true;
+    if (typeof currentNode.getAttribute === "function" && currentNode.getAttribute("aria-hidden") === "true") return true;
+    currentNode = currentNode.parentNode;
+  }
+  return false;
+}
+
+function isGlossaryReviewModalFocusable(node) {
+  if (!(node instanceof HTMLElement)) return false;
+  if (glossaryReviewModalElementHidden(node)) return false;
+  if ("disabled" in node && node.disabled) return false;
+  if (node.tabIndex < 0) return false;
+  const tagName = String(node.tagName || "").toLowerCase();
+  if (tagName === "button" || tagName === "input" || tagName === "select" || tagName === "textarea" || tagName === "summary") {
+    return true;
+  }
+  if (tagName === "a") {
+    return typeof node.getAttribute === "function" && node.getAttribute("href") !== null;
+  }
+  return typeof node.getAttribute === "function" && node.getAttribute("tabindex") !== null;
+}
+
+function getGlossaryReviewModalFocusableNodes() {
+  if (!(glossaryReviewModalNode instanceof HTMLElement)) return [];
+  const focusableNodes = [];
+  const stack = Array.from(glossaryReviewModalNode.children || []);
+  while (stack.length) {
+    const node = stack.shift();
+    if (!(node instanceof HTMLElement)) continue;
+    if (isGlossaryReviewModalFocusable(node)) {
+      focusableNodes.push(node);
+    }
+    stack.unshift(...Array.from(node.children || []));
+  }
+  return focusableNodes;
+}
+
+function handleGlossaryReviewModalKeydown(event) {
+  if (event.key !== "Tab" || !glossaryReviewModalNode || glossaryReviewModalNode.hidden) return;
+  const focusableNodes = getGlossaryReviewModalFocusableNodes();
+  if (focusableNodes.length < 2) return;
+  const firstNode = focusableNodes[0];
+  const lastNode = focusableNodes[focusableNodes.length - 1];
+  const activeNode = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (event.shiftKey) {
+    if (activeNode !== firstNode) return;
+    event.preventDefault();
+    lastNode.focus();
+    return;
+  }
+  if (activeNode !== lastNode) return;
+  event.preventDefault();
+  firstNode.focus();
+}
+
+function setGlossaryReviewStatus(message, isError = false) {
+  if (!glossaryReviewStatusNode) return;
+  glossaryReviewStatusNode.textContent = message || "";
+  glossaryReviewStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function renderGlossaryReviewSummary(data) {
+  if (!glossaryReviewSummaryNode) return;
+  const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
+  const total = Number(data?.candidate_count || candidates.length || 0);
+  const known = candidates.filter((candidate) => Boolean(candidate?.already_known)).length;
+  const remaining = Math.max(0, total - known);
+  glossaryReviewSummaryNode.innerHTML = `
+    <div class="glossary-review-summary-card">
+      <strong>${escapeHtml(String(total))} candidate${total === 1 ? "" : "s"}</strong>
+      <span>${escapeHtml(String(known))} already in glossary</span>
+      <span>${escapeHtml(String(remaining))} ready to review</span>
+    </div>
+  `;
+}
+
+function renderGlossaryReviewCandidates(data) {
+  if (!glossaryReviewListNode) return;
+  const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
+  if (!candidates.length) {
+    glossaryReviewListNode.innerHTML = '<p class="glossary-review-empty">No glossary candidates were found for this run.</p>';
+    if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.disabled = true;
+    return;
+  }
+
+  glossaryReviewListNode.innerHTML = candidates
+    .map((candidate, index) => {
+      const candidateId = escapeHtml(candidate?.candidate_id || `candidate-${index}`);
+      const term = escapeHtml(candidate?.term || "");
+      const normalizedTerm = escapeHtml(candidate?.normalized_term || "");
+      const reason = escapeHtml(candidate?.reason || "");
+      const previous = escapeHtml(candidate?.previous_context || "");
+      const flagged = escapeHtml(candidate?.flagged_context || "");
+      const next = escapeHtml(candidate?.next_context || "");
+      const alreadyKnown = Boolean(candidate?.already_known);
+      return `
+        <article class="glossary-candidate-card" data-candidate-id="${candidateId}">
+          <div class="glossary-candidate-topline">
+            <label class="glossary-candidate-approve">
+              <input type="checkbox" data-glossary-approve ${alreadyKnown ? "" : "checked"} ${alreadyKnown ? "disabled" : ""} />
+              <span>${alreadyKnown ? "Already in glossary" : "Approve for shared glossary"}</span>
+            </label>
+            <div class="glossary-candidate-term-wrap">
+              <label class="glossary-candidate-term-label">
+                <span>Term</span>
+                <input type="text" data-glossary-term value="${term}" ${alreadyKnown ? "disabled" : ""} />
+              </label>
+              <div class="glossary-candidate-normalized">Normalized: ${normalizedTerm}</div>
+            </div>
+          </div>
+          <div class="glossary-candidate-reason">${reason}</div>
+          <div class="glossary-candidate-context-grid">
+            <div class="glossary-candidate-context">
+              <span>Previous</span>
+              <p>${previous || "&nbsp;"}</p>
+            </div>
+            <div class="glossary-candidate-context glossary-candidate-context-flagged">
+              <span>Flagged</span>
+              <p>${flagged || "&nbsp;"}</p>
+            </div>
+            <div class="glossary-candidate-context">
+              <span>Next</span>
+              <p>${next || "&nbsp;"}</p>
+            </div>
+          </div>
+          ${alreadyKnown ? '<p class="glossary-candidate-known">This term is already in the shared glossary.</p>' : ""}
+        </article>
+      `;
+    })
+    .join("");
+
+  if (glossaryReviewSaveBtn) {
+    glossaryReviewSaveBtn.disabled = false;
+  }
+}
+
+async function loadGlossaryReviewCandidates(outputPath) {
+  if (!state.activeProjectRef || !outputPath) return null;
+  const requestToken = ++state.glossaryReviewLoadToken;
+  state.glossaryReviewActiveOutputPath = outputPath;
+  state.glossaryReviewActiveProjectRef = state.activeProjectRef;
+  setGlossaryReviewStatus("Loading glossary candidates...");
+
+  try {
+    const data = await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/outputs/glossary-review-candidates?path=${encodeURIComponent(outputPath)}`,
+      "GET"
+    );
+    if (requestToken !== state.glossaryReviewLoadToken || state.activeProjectRef !== state.glossaryReviewActiveProjectRef) {
+      return null;
+    }
+    state.glossaryReviewCandidates = Array.isArray(data?.candidates) ? data.candidates : [];
+    renderGlossaryReviewSummary(data);
+    renderGlossaryReviewCandidates(data);
+    const candidateCount = Number(data?.candidate_count || state.glossaryReviewCandidates.length || 0);
+    const knownCount = state.glossaryReviewCandidates.filter((candidate) => Boolean(candidate?.already_known)).length;
+    if (candidateCount > 0) {
+      setGlossaryReviewStatus(
+        knownCount > 0
+          ? `${candidateCount} glossary candidate${candidateCount === 1 ? "" : "s"} loaded. ${knownCount} already known.`
+          : `${candidateCount} glossary candidate${candidateCount === 1 ? "" : "s"} loaded.`
+      );
+    } else {
+      setGlossaryReviewStatus("No glossary candidates found for this run.");
+    }
+    if (glossaryReviewSaveBtn) {
+      glossaryReviewSaveBtn.disabled = !candidateCount;
+    }
+    return data;
+  } catch (err) {
+    if (requestToken !== state.glossaryReviewLoadToken) return null;
+    setGlossaryReviewStatus(`Could not load glossary candidates: ${String(err)}`, true);
+    if (glossaryReviewListNode) {
+      glossaryReviewListNode.innerHTML = '<p class="glossary-review-empty">Could not load glossary candidates.</p>';
+    }
+    if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.disabled = true;
+    return null;
+  }
+}
+
+function openGlossaryReviewModal(outputPath) {
+  if (!glossaryReviewModalNode || !outputPath) return;
+  glossaryReviewModalReturnFocusNode = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  glossaryReviewModalNode.hidden = false;
+  syncModalOpenState();
+  if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.disabled = true;
+  if (glossaryReviewSummaryNode) glossaryReviewSummaryNode.innerHTML = "";
+  if (glossaryReviewListNode) {
+    glossaryReviewListNode.innerHTML = '<p class="glossary-review-empty">Loading glossary candidates...</p>';
+  }
+  setGlossaryReviewStatus("Loading glossary candidates...");
+  void loadGlossaryReviewCandidates(outputPath).then(() => {
+    const focusableNodes = getGlossaryReviewModalFocusableNodes();
+    const firstFocusable = focusableNodes[0];
+    if (firstFocusable instanceof HTMLElement && typeof firstFocusable.focus === "function") {
+      firstFocusable.focus();
+    }
+  });
+}
+
+function closeGlossaryReviewModal() {
+  if (!glossaryReviewModalNode) return;
+  glossaryReviewModalNode.hidden = true;
+  syncModalOpenState();
+  const returnFocusNode = glossaryReviewModalReturnFocusNode;
+  glossaryReviewModalReturnFocusNode = null;
+  if (returnFocusNode instanceof HTMLElement && typeof returnFocusNode.focus === "function") {
+    returnFocusNode.focus();
+  }
+}
+
+async function submitGlossaryReviewApprovals() {
+  if (!state.activeProjectRef || !state.glossaryReviewActiveOutputPath) return;
+  const cards = Array.from(glossaryReviewListNode?.querySelectorAll(".glossary-candidate-card") || []);
+  const approvals = cards
+    .map((card) => {
+      if (!(card instanceof HTMLElement)) return null;
+      const candidateId = cleanOptional(card.dataset.candidateId);
+      if (!candidateId) return null;
+      const checkbox = card.querySelector("[data-glossary-approve]");
+      if (!(checkbox instanceof HTMLInputElement) || !checkbox.checked || checkbox.disabled) return null;
+      const termInput = card.querySelector("[data-glossary-term]");
+      const term = cleanOptional(termInput?.value || termInput?.textContent || "");
+      if (!term) return null;
+      return { candidate_id: candidateId, term };
+    })
+    .filter(Boolean);
+
+  if (!approvals.length) {
+    setGlossaryReviewStatus("Select at least one glossary candidate to approve.", true);
+    return;
+  }
+
+  if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.disabled = true;
+  setGlossaryReviewStatus("Saving approved glossary terms...");
+
+  try {
+    const data = await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/outputs/glossary-review-candidates?path=${encodeURIComponent(state.glossaryReviewActiveOutputPath)}`,
+      "POST",
+      { approvals }
+    );
+    const savedTerms = Array.isArray(data?.saved_terms) ? data.saved_terms : [];
+    const alreadyKnownTerms = Array.isArray(data?.already_known_terms) ? data.already_known_terms : [];
+    const summaryParts = [];
+    if (savedTerms.length) summaryParts.push(`${savedTerms.length} term${savedTerms.length === 1 ? "" : "s"} saved`);
+    if (alreadyKnownTerms.length) summaryParts.push(`${alreadyKnownTerms.length} already known`);
+    setGlossaryReviewStatus(summaryParts.length ? `Glossary updated: ${summaryParts.join(", ")}.` : "No new glossary terms were added.");
+    await loadOutputs();
+    closeGlossaryReviewModal();
+  } catch (err) {
+    setGlossaryReviewStatus(`Could not save glossary terms: ${String(err)}`, true);
+  } finally {
+    if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.disabled = false;
   }
 }
 
@@ -1211,6 +1484,29 @@ function bindProjectSharing() {
   }
 }
 
+function bindGlossaryReviewModal() {
+  if (glossaryReviewCloseBtn) {
+    glossaryReviewCloseBtn.addEventListener("click", () => {
+      closeGlossaryReviewModal();
+    });
+  }
+
+  if (glossaryReviewSaveBtn) {
+    glossaryReviewSaveBtn.addEventListener("click", () => {
+      void submitGlossaryReviewApprovals();
+    });
+  }
+
+  if (glossaryReviewModalNode) {
+    glossaryReviewModalNode.addEventListener("click", (event) => {
+      if (event.target === glossaryReviewModalNode) {
+        closeGlossaryReviewModal();
+      }
+    });
+    glossaryReviewModalNode.addEventListener("keydown", handleGlossaryReviewModalKeydown);
+  }
+}
+
 function bindHelpModal() {
   if (helpBtn) {
     helpBtn.addEventListener("click", () => {
@@ -1251,6 +1547,9 @@ function bindHelpModal() {
 }
 
 if (typeof window !== "undefined") {
+  if (window.__RADCAST_DISABLE_AUTOINIT__) {
+    window.__radcastTestState = state;
+  }
   window.__radcastHelp = {
     bindHelpModal,
     focusHelpTabButton,
@@ -1259,6 +1558,17 @@ if (typeof window !== "undefined") {
     helpTabNavigationTarget,
     normalizeHelpTab,
     setHelpTab,
+  };
+  window.__radcastGlossaryReview = {
+    bindGlossaryReviewModal,
+    closeGlossaryReviewModal,
+    getGlossaryReviewModalFocusableNodes,
+    handleGlossaryReviewModalKeydown,
+    loadGlossaryReviewCandidates,
+    openGlossaryReviewModal,
+    renderGlossaryReviewCandidates,
+    renderGlossaryReviewSummary,
+    submitGlossaryReviewApprovals,
   };
 }
 
@@ -2523,7 +2833,8 @@ async function loadOutputs() {
       const captionFormat = String(item.caption_format || "").trim().toLowerCase();
       const versionNumber = Number(item.version_number || 0);
       const summaryLabel = formatOutputSummary(item);
-      const reviewNote = formatCaptionReviewNote(item);
+      const accessibilityNote = formatCaptionAccessibilityNote(item);
+      const accessibilityTone = captionAccessibilityTone(item);
 
       if (item.download_url) {
         if (playUrl) {
@@ -2540,6 +2851,11 @@ async function loadOutputs() {
         const captionLabel = captionFormat === "vtt" ? "Save VTT captions" : "Save SRT captions";
         actions.push(`<a href="${escapeHtml(item.caption_download_url)}" download>${escapeHtml(captionLabel)}</a>`);
       }
+      if (item.has_review_artifacts) {
+        actions.push(
+          `<button class="glossary-review-btn" data-output-path="${escapeHtml(item.output_path || "")}" type="button">Review glossary candidates</button>`
+        );
+      }
       if (item.caption_review_download_url) {
         actions.push(`<a href="${escapeHtml(item.caption_review_download_url)}" download>Save caption review</a>`);
       }
@@ -2554,7 +2870,7 @@ async function loadOutputs() {
             ${summaryLabel ? `<span class="output-summary">${escapeHtml(summaryLabel)}</span>` : ""}
           </div>
           <div class="output-actions">${actions.join(" ")}</div>
-          ${reviewNote ? `<div class="output-review-note">${escapeHtml(reviewNote)}</div>` : ""}
+          ${accessibilityNote ? `<div class="output-review-note output-review-note--${escapeHtml(accessibilityTone)}">${escapeHtml(accessibilityNote)}</div>` : ""}
           ${
             playUrl
               ? `<div class="output-audio-player" data-output-id="${escapeHtml(outputId)}" hidden>
@@ -2579,6 +2895,10 @@ function formatOutputSummary(item) {
   if (Number.isFinite(duration) && duration > 0) {
     parts.push(formatDurationSeconds(duration));
   }
+  const runtime = Number(item.runtime_seconds || 0);
+  if (Number.isFinite(runtime) && runtime > 0) {
+    parts.push(`runtime ${formatDurationSeconds(runtime)}`);
+  }
   const dateText = formatOutputDate(item.created_at);
   if (dateText) {
     parts.push(dateText);
@@ -2590,22 +2910,51 @@ function formatOutputSummary(item) {
   return parts.join(" | ");
 }
 
-function formatCaptionReviewNote(item) {
-  if (!item || !item.caption_review_required) return "";
-  const lowConfidenceCount = Number(item.caption_low_confidence_segments || 0);
-  const averageProbability = Number(item.caption_average_probability);
-  if (lowConfidenceCount > 0 && Number.isFinite(averageProbability) && averageProbability > 0) {
-    return `Caption review suggested: ${lowConfidenceCount} low-confidence lines (${Math.round(
-      averageProbability * 100
-    )}% average confidence).`;
+function normalizeCaptionAccessibilityStatus(item) {
+  const rawStatus = String(item?.caption_accessibility_status || "").trim().toLowerCase();
+  if (rawStatus === "passed" || rawStatus === "passed_with_warnings" || rawStatus === "failed") {
+    return rawStatus;
   }
-  if (lowConfidenceCount > 0) {
-    return `Caption review suggested: ${lowConfidenceCount} low-confidence lines.`;
+  if (Number(item?.caption_review_failure_segments || 0) > 0) {
+    return "failed";
   }
-  if (Number.isFinite(averageProbability) && averageProbability > 0) {
-    return `Caption review suggested (${Math.round(averageProbability * 100)}% average confidence).`;
+  if (Number(item?.caption_review_warning_segments || 0) > 0) {
+    return "passed_with_warnings";
   }
-  return "Caption review suggested.";
+  if (item && item.caption_review_required) {
+    return "passed_with_warnings";
+  }
+  return "passed";
+}
+
+function captionAccessibilityTone(item) {
+  const status = normalizeCaptionAccessibilityStatus(item);
+  if (status === "failed") return "failed";
+  if (status === "passed_with_warnings") return "warning";
+  return "passed";
+}
+
+function formatCaptionAccessibilityNote(item) {
+  const status = normalizeCaptionAccessibilityStatus(item);
+  const warningCount = Number(item?.caption_review_warning_segments || 0);
+  const failureCount = Number(item?.caption_review_failure_segments || 0);
+  if (status === "failed") {
+    if (failureCount > 0) {
+      return `Accessibility review: failed (${failureCount} blocking issue${failureCount === 1 ? "" : "s"}).`;
+    }
+    return "Accessibility review: failed.";
+  }
+  if (status === "passed_with_warnings") {
+    if (warningCount > 0) {
+      return `Accessibility review: passed with warnings (${warningCount} review warning${warningCount === 1 ? "" : "s"}).`;
+    }
+    return "Accessibility review: passed with warnings.";
+  }
+  return "Accessibility review: passed.";
+}
+
+function formatCaptionAccessibilityStatus(item) {
+  return formatCaptionAccessibilityNote(item);
 }
 
 function toggleOutputAudioPlayer(button) {
@@ -2682,6 +3031,13 @@ function bindOutputActions() {
       .catch(() => {
         setGenerateStatus("Could not copy folder path.", true);
       });
+    return;
+
+    const glossaryReviewButton = target.closest(".glossary-review-btn");
+    if (!(glossaryReviewButton instanceof HTMLButtonElement)) return;
+    const outputPath = cleanOptional(glossaryReviewButton.dataset.outputPath);
+    if (!outputPath) return;
+    openGlossaryReviewModal(outputPath);
   });
 }
 
@@ -2858,6 +3214,7 @@ async function init() {
   }
 
   bindProjectSharing();
+  bindGlossaryReviewModal();
 
   if (refreshSourceAudioBtn) {
     refreshSourceAudioBtn.addEventListener("click", () => {
@@ -2898,6 +3255,12 @@ async function init() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && workerSetupModalNode && !workerSetupModalNode.hidden) {
       closeWorkerSetupModal();
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && glossaryReviewModalNode && !glossaryReviewModalNode.hidden) {
+      closeGlossaryReviewModal();
     }
   });
 

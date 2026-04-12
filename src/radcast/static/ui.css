@@ -567,6 +567,161 @@ body.modal-open {
   width: min(720px, 100%);
 }
 
+.glossary-review-modal-card {
+  width: min(1080px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.glossary-review-header {
+  align-items: flex-start;
+}
+
+.glossary-review-header .modal-copy {
+  margin-top: 6px;
+  max-width: 72ch;
+}
+
+.glossary-review-summary {
+  margin-top: 2px;
+}
+
+.glossary-review-summary-card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--uc-radius-md);
+  background: var(--bg-surface-alt);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.glossary-review-summary-card strong {
+  color: var(--text-primary);
+}
+
+.glossary-review-list {
+  display: grid;
+  gap: 12px;
+  max-height: min(58vh, 640px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.glossary-review-empty {
+  margin: 0;
+  padding: 16px;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--uc-radius-md);
+  color: var(--text-secondary);
+  background: var(--bg-surface-alt);
+}
+
+.glossary-candidate-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--uc-radius-md);
+  background: var(--bg-surface);
+  box-shadow: var(--uc-shadow-sm);
+}
+
+.glossary-candidate-topline {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  align-items: start;
+}
+
+.glossary-candidate-approve {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.glossary-candidate-term-wrap {
+  display: grid;
+  gap: 6px;
+}
+
+.glossary-candidate-term-label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.glossary-candidate-term-label input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--uc-radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.glossary-candidate-normalized,
+.glossary-candidate-known,
+.glossary-candidate-reason {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.glossary-candidate-reason {
+  padding: 8px 10px;
+  border-radius: var(--uc-radius-sm);
+  background: var(--bg-surface-alt);
+}
+
+.glossary-candidate-context-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.glossary-candidate-context {
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--uc-radius-sm);
+  background: var(--bg-surface-alt);
+}
+
+.glossary-candidate-context span {
+  display: inline-block;
+  margin-bottom: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.glossary-candidate-context p {
+  margin: 0;
+  color: var(--text-primary);
+  line-height: 1.45;
+}
+
+.glossary-candidate-known {
+  margin: 0;
+  color: #156b2f;
+}
+
+.glossary-review-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 4px;
+}
+
 .help-modal-card {
   display: flex;
   flex-direction: column;
@@ -1704,8 +1859,19 @@ button.worker-mini-btn {
 .output-review-note {
   margin-top: 8px;
   font-size: 0.82rem;
-  color: var(--uc-red);
   font-weight: 600;
+}
+
+.output-review-note--passed {
+  color: #156b2f;
+}
+
+.output-review-note--warning {
+  color: #9a6b00;
+}
+
+.output-review-note--failed {
+  color: var(--uc-red);
 }
 
 [data-theme="dark"] .dropzone:hover,
