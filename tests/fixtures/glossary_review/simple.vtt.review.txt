@@ -1,0 +1,19 @@
+RADcast Caption Review
+
+Average word confidence: 89%
+Flagged caption lines: 3
+Total caption lines: 4
+
+Review these timestamp ranges:
+
+00:00:01.000 --> 00:00:02.000 | confidence 91%
+Reason: probable critical term miss: tikanga
+Aitikanga Māori space
+
+00:00:01.000 --> 00:00:02.000 | confidence 91%
+Reason: probable critical term miss: tikanga
+Aitikanga Māori space
+
+00:00:02.000 --> 00:00:03.000 | confidence 88%
+Reason: probable critical term miss: transgression
+And then we discuss transgression
