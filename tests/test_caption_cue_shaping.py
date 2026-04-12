@@ -180,3 +180,472 @@ def test_shape_lecture_caption_cues_keeps_lecture_phrases_ordered_and_readable()
     assert max(len(cue.text) for cue in shaped) <= 84
     assert all(len(cue.text.split()) <= 14 for cue in shaped)
     assert all(cue.text.split()[-1].lower().rstrip(".,!?;:") not in {"and", "then", "the", "to"} for cue in shaped[:-1])
+
+
+def test_shape_lecture_caption_cues_merges_duplicate_boundary_words_between_adjacent_cues():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Quantum mechanics relies",
+            start=0.0,
+            end=1.2,
+            average_probability=0.96,
+        ),
+        TranscriptSegmentTiming(
+            text="relies on the Schrödinger equation,",
+            start=1.2,
+            end=3.0,
+            average_probability=0.96,
+        ),
+        TranscriptSegmentTiming(
+            text="a mathematical tool used to determine",
+            start=3.0,
+            end=5.0,
+            average_probability=0.95,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "Quantum mechanics relies on the Schrödinger equation,",
+        "a mathematical tool used to determine",
+    ]
+    assert shaped[0].start == 0.0
+    assert shaped[0].end == 3.0
+
+
+def test_shape_lecture_caption_cues_merges_single_word_orphan_into_following_continuation():
+    segments = [
+        TranscriptSegmentTiming(
+            text="When",
+            start=10.0,
+            end=10.2,
+            average_probability=0.52,
+        ),
+        TranscriptSegmentTiming(
+            text="When the Schrödinger equation is separable, we",
+            start=10.2,
+            end=12.5,
+            average_probability=0.93,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "When the Schrödinger equation is separable, we",
+    ]
+    assert shaped[0].start == 10.0
+    assert shaped[0].end == 12.5
+
+
+def test_shape_lecture_caption_cues_merges_short_lead_in_with_following_phrase_when_readable():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Specifically,",
+            start=0.0,
+            end=0.3,
+            average_probability=0.97,
+        ),
+        TranscriptSegmentTiming(
+            text="here's quantum mechanics",
+            start=0.3,
+            end=2.0,
+            average_probability=0.97,
+        ),
+        TranscriptSegmentTiming(
+            text="in 60 seconds.",
+            start=2.0,
+            end=3.6,
+            average_probability=0.96,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "Specifically, here's quantum mechanics in 60 seconds.",
+    ]
+    assert shaped[0].start == 0.0
+    assert shaped[0].end == 3.6
+
+
+def test_shape_lecture_caption_cues_does_not_merge_independent_short_adjacent_cues():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Hello world",
+            start=0.0,
+            end=1.25,
+            average_probability=0.96,
+        ),
+        TranscriptSegmentTiming(
+            text="Second line",
+            start=1.4,
+            end=1.95,
+            average_probability=0.95,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == ["Hello world", "Second line"]
+    assert [cue.start for cue in shaped] == [0.0, 1.4]
+    assert [cue.end for cue in shaped] == [1.25, 1.95]
+
+
+def test_shape_lecture_caption_cues_does_not_merge_new_sentence_that_starts_with_capitalized_weak_word():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Kia ora and welcome everyone",
+            start=0.0,
+            end=1.8,
+            average_probability=0.84,
+        ),
+        TranscriptSegmentTiming(
+            text="We will start with tikanga.",
+            start=2.15,
+            end=3.2,
+            average_probability=0.88,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "Kia ora and welcome everyone",
+        "We will start with tikanga.",
+    ]
+
+
+def test_shape_lecture_caption_cues_merges_duplicate_boundary_word_with_accent_variation():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Solving the Schrödinger",
+            start=52.82,
+            end=53.50,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="Schrodinger equation yields a basis set, comprising many different wave",
+            start=53.50,
+            end=57.08,
+            average_probability=0.95,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "Solving the Schrödinger equation yields a basis set, comprising many different wave",
+    ]
+
+
+def test_shape_lecture_caption_cues_trims_duplicate_boundary_word_when_merge_would_be_too_long():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Wavefunctions are mathematical functions that encode the probability of measuring a particle",
+            start=59.68,
+            end=63.62,
+            average_probability=0.97,
+        ),
+        TranscriptSegmentTiming(
+            text="particle in a specific state.",
+            start=63.62,
+            end=64.98,
+            average_probability=0.97,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "Wavefunctions are mathematical functions that encode",
+        "the probability of measuring a particle in a specific state.",
+    ]
+
+
+def test_shape_lecture_caption_cues_merges_one_word_continuation_orphan_after_longer_cue():
+    segments = [
+        TranscriptSegmentTiming(
+            text="The key to discovering entanglement lies in creating non -separable systems in real -world",
+            start=155.08,
+            end=160.14,
+            average_probability=0.96,
+        ),
+        TranscriptSegmentTiming(
+            text="scenarios.",
+            start=160.14,
+            end=160.82,
+            average_probability=0.96,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "The key to discovering entanglement lies",
+        "in creating non-separable systems in real-world scenarios.",
+    ]
+
+
+def test_shape_lecture_caption_cues_merges_medium_continuation_after_weak_boundary():
+    segments = [
+        TranscriptSegmentTiming(
+            text="This equation accounts for a system's total energy, typically including the kinetic and",
+            start=40.50,
+            end=45.64,
+            average_probability=0.91,
+        ),
+        TranscriptSegmentTiming(
+            text="potential energy terms at a minimum.",
+            start=45.64,
+            end=47.24,
+            average_probability=0.92,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "This equation accounts for a system's total",
+        "energy, typically including the kinetic and potential energy terms at a minimum.",
+    ]
+
+
+def test_shape_lecture_caption_cues_merges_short_lowercase_continuation_after_nonterminal_boundary():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Wavefunctions are mathematical functions that encode the probability of measuring a particle",
+            start=59.68,
+            end=63.62,
+            average_probability=0.97,
+        ),
+        TranscriptSegmentTiming(
+            text="in a specific state.",
+            start=63.62,
+            end=64.98,
+            average_probability=0.97,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "Wavefunctions are mathematical functions that encode",
+        "the probability of measuring a particle in a specific state.",
+    ]
+
+
+def test_shape_lecture_caption_cues_trims_dangling_suffix_before_next_sentence_continuation():
+    segments = [
+        TranscriptSegmentTiming(
+            text="single physical system, but entanglement is a phenomenon that occurs when multiple quantum",
+            start=113.93,
+            end=118.50,
+            average_probability=0.98,
+        ),
+        TranscriptSegmentTiming(
+            text="When dealing with the quantum state of multiple",
+            start=118.98,
+            end=123.791,
+            average_probability=0.98,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "single physical system, but entanglement is a phenomenon that occurs when",
+        "When dealing with the quantum state of multiple",
+    ]
+
+
+def test_shape_lecture_caption_cues_merges_short_non_sentence_fragment_into_following_continuation():
+    segments = [
+        TranscriptSegmentTiming(
+            text="concept isn't just limited",
+            start=235.50,
+            end=238.584,
+            average_probability=0.97,
+        ),
+        TranscriptSegmentTiming(
+            text="to two boring electrons either.",
+            start=238.584,
+            end=242.440,
+            average_probability=0.97,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "concept isn't just limited to two boring electrons either.",
+    ]
+    assert shaped[0].start == 235.50
+    assert shaped[0].end == 242.440
+
+
+def test_shape_lecture_caption_cues_shifts_preposition_boundary_into_following_continuation():
+    segments = [
+        TranscriptSegmentTiming(
+            text="There will always be an inseparable term with dependence on",
+            start=232.26,
+            end=235.50,
+            average_probability=0.97,
+        ),
+        TranscriptSegmentTiming(
+            text="concept isn't just limited",
+            start=235.50,
+            end=238.584,
+            average_probability=0.97,
+        ),
+        TranscriptSegmentTiming(
+            text="to two boring electrons either.",
+            start=238.584,
+            end=242.440,
+            average_probability=0.97,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "There will always be an inseparable term",
+        "with dependence on concept isn't just limited to two boring electrons either.",
+    ]
+    assert shaped[0].start == 232.26
+    assert shaped[0].end == shaped[1].start
+
+
+def test_shape_lecture_caption_cues_merges_capitalized_proper_noun_continuation_after_weak_boundary():
+    segments = [
+        TranscriptSegmentTiming(
+            text="any function that satisfies the",
+            start=89.44,
+            end=92.50,
+            average_probability=0.99,
+        ),
+        TranscriptSegmentTiming(
+            text="Schrödinger equation of our",
+            start=92.50,
+            end=95.08,
+            average_probability=0.99,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "any function that satisfies the Schrödinger equation of our",
+    ]
+
+
+def test_shape_lecture_caption_cues_trims_long_duplicate_boundary_phrase_between_adjacent_cues():
+    segments = [
+        TranscriptSegmentTiming(
+            text=(
+                "equation for a single physical system, but entanglement "
+                "is a phenomenon that occurs when"
+            ),
+            start=111.52,
+            end=116.14,
+            average_probability=0.98,
+        ),
+        TranscriptSegmentTiming(
+            text="entanglement is a phenomenon that occurs when multiple quantum systems interact.",
+            start=116.14,
+            end=119.60,
+            average_probability=0.98,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "equation for a single physical system, but entanglement is a phenomenon that occurs when",
+        "multiple quantum systems interact.",
+    ]
+
+
+def test_shape_lecture_caption_cues_merges_short_trailing_continuation_after_weak_boundary():
+    segments = [
+        TranscriptSegmentTiming(
+            text="as eigenstates and return the same function with a multiplier when plugged back into the",
+            start=69.78,
+            end=74.46,
+            average_probability=0.97,
+        ),
+        TranscriptSegmentTiming(
+            text="equation's left hand side.",
+            start=74.46,
+            end=75.62,
+            average_probability=0.97,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "as eigenstates and return the same function",
+        "with a multiplier when plugged back into the equation's left hand side.",
+    ]
+
+
+def test_shape_lecture_caption_cues_merges_two_word_continuation_after_when_boundary():
+    segments = [
+        TranscriptSegmentTiming(
+            text="equation for a single physical system, but entanglement is a phenomenon that occurs when",
+            start=113.744,
+            end=116.140,
+            average_probability=0.98,
+        ),
+        TranscriptSegmentTiming(
+            text="multiple quantum",
+            start=116.140,
+            end=118.500,
+            average_probability=0.98,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "equation for a single physical system, but entanglement is a phenomenon that occurs when multiple quantum",
+    ]
+
+
+def test_shape_lecture_caption_cues_trims_repeated_sentence_restart_at_next_boundary():
+    segments = [
+        TranscriptSegmentTiming(
+            text="in quantum mechanics, let's go to entanglement.",
+            start=108.1,
+            end=110.7,
+            average_probability=0.98,
+        ),
+        TranscriptSegmentTiming(
+            text="Let's go to entanglement. I just explained that we can solve the Schrödinger",
+            start=111.52,
+            end=113.744,
+            average_probability=0.98,
+        ),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "in quantum mechanics, let's go to entanglement.",
+        "I just explained that we can solve the Schrödinger",
+    ]
+
+
+def test_shape_lecture_caption_cues_normalizes_spaced_hyphens_within_words():
+    segment = TranscriptSegmentTiming(
+        text="and exhibit strange, non -intuitive phenomena.",
+        start=12.0,
+        end=14.2,
+        average_probability=0.94,
+    )
+
+    shaped = shape_lecture_caption_cues([segment])
+
+    assert [cue.text for cue in shaped] == ["and exhibit strange, non-intuitive phenomena."]

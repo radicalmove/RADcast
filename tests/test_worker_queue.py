@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from radcast.api import app
 from radcast.exceptions import JobCancelledError
-from radcast.models import CaptionFormat, FillerRemovalMode
+from radcast.models import CaptionAccessibilityStatus, CaptionFormat, FillerRemovalMode
 from radcast.services.speech_cleanup import SpeechCleanupResult
 from radcast.worker_client import (
     WorkerClient,
@@ -423,6 +423,12 @@ def test_worker_completion_applies_server_side_speech_cleanup(monkeypatch):
             time.sleep(0.05)
         else:
             raise AssertionError("worker cleanup finalization did not complete in time")
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        assert outputs.status_code == 200
+        output_payload = outputs.json()
+        assert output_payload["outputs"]
+        assert output_payload["outputs"][0]["runtime_seconds"] == 7.1
     finally:
         api_module.enhance_service.is_model_available = original_is_model_available
         for path in Path("projects").glob(f"*__{project_id}"):
@@ -567,8 +573,16 @@ def test_worker_completion_skips_server_caption_generation_when_helper_already_g
                 "api_key": api_key,
                 "output_audio_b64": base64.b64encode(b"fake-mp3" * 8).decode("utf-8"),
                 "caption_b64": base64.b64encode(b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n").decode("utf-8"),
+                "caption_review_b64": base64.b64encode(b"RADcast Caption Review\n\nFlagged caption lines: 1\n").decode("utf-8"),
                 "output_format": "mp3",
                 "duration_seconds": 3.4,
+                "caption_review_required": True,
+                "caption_average_probability": 0.88,
+                "caption_low_confidence_segments": 0,
+                "caption_total_segments": 1,
+                "caption_accessibility_status": "failed",
+                "caption_review_warning_segments": 0,
+                "caption_review_failure_segments": 1,
                 "stage_durations_seconds": {"total": 7.1, "captions": 2.0},
             },
         )
@@ -579,6 +593,14 @@ def test_worker_completion_skips_server_caption_generation_when_helper_already_g
         assert payload["status"] == "completed"
         assert payload["outputs"]["caption_path"].endswith(".vtt")
         assert payload["logs"][-1].endswith("generated VTT captions.")
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        assert outputs.status_code == 200
+        output_payload = outputs.json()
+        assert output_payload["outputs"]
+        assert output_payload["outputs"][0]["caption_accessibility_status"] == CaptionAccessibilityStatus.FAILED.value
+        assert output_payload["outputs"][0]["caption_review_failure_segments"] == 1
+        assert output_payload["outputs"][0]["caption_review_required"] is True
     finally:
         api_module.enhance_service.is_model_available = original_is_model_available
         for path in Path("projects").glob(f"*__{project_id}"):
@@ -1176,7 +1198,25 @@ def test_worker_client_generates_captions_locally_when_available(monkeypatch, tm
             kwargs["on_stage"](0.55, "Transcribing speech for captions.", 14)
             caption_path = Path(kwargs["audio_path"]).with_suffix(".vtt")
             caption_path.write_text("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n", encoding="utf-8")
-            return SimpleNamespace(caption_path=caption_path, caption_format=CaptionFormat.VTT, segment_count=1)
+            review_path = caption_path.parent / f"{caption_path.name}.review.txt"
+            review_path.write_text("RADcast Caption Review\n\nFlagged caption lines: 1\n", encoding="utf-8")
+            return SimpleNamespace(
+                caption_path=caption_path,
+                review_path=review_path,
+                caption_format=CaptionFormat.VTT,
+                segment_count=1,
+                quality_report=SimpleNamespace(
+                    review_recommended=True,
+                    average_probability=0.88,
+                    low_confidence_segment_count=0,
+                    total_segment_count=1,
+                ),
+                accessibility_assessment=SimpleNamespace(
+                    status=CaptionAccessibilityStatus.FAILED,
+                    warning_segment_count=0,
+                    failure_segment_count=1,
+                ),
+            )
 
     progress_updates: list[tuple[float, str | None, str | None, int | None]] = []
 
@@ -1203,4 +1243,8 @@ def test_worker_client_generates_captions_locally_when_available(monkeypatch, tm
 
     assert caption_calls
     assert result["caption_b64"]
+    assert result["caption_review_b64"]
+    assert result["caption_accessibility_status"] == CaptionAccessibilityStatus.FAILED.value
+    assert result["caption_review_warning_segments"] == 0
+    assert result["caption_review_failure_segments"] == 1
     assert any(stage == "captions" and detail and "local helper device" in detail.lower() for _, stage, detail, _ in progress_updates)

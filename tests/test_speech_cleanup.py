@@ -210,6 +210,189 @@ def test_generate_caption_file_reports_caption_backend_and_model(monkeypatch, tm
     assert any("mlx-whisper" in detail and "small" not in detail and "medium" in detail for _progress, detail, _eta in stage_updates)
 
 
+def test_generate_caption_file_passes_critical_terms_into_initial_quality_report(monkeypatch, tmp_path: Path):
+    from radcast.services import speech_cleanup as speech_cleanup_module
+
+    sample_rate = 16000
+    tone_t = np.linspace(0.0, 0.5, int(sample_rate * 0.5), endpoint=False)
+    audio = (0.2 * np.sin(2.0 * np.pi * 220.0 * tone_t)).astype(np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    monkeypatch.setenv("RADCAST_RUNTIME_CONTEXT", "local_helper")
+    monkeypatch.setenv("RADCAST_CAPTION_BACKEND", "auto")
+    monkeypatch.setenv("RADCAST_CAPTION_ACCURATE_MODEL", "small")
+    monkeypatch.setenv("RADCAST_CAPTION_REVIEWED_MODEL", "medium")
+    monkeypatch.setattr(speech_cleanup_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        speech_cleanup_module.WhisperCppCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.FasterWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.MlxWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst, *, audio_filters=None: shutil.copy2(src, dst))
+    monkeypatch.setattr("radcast.services.speech_cleanup.probe_duration_seconds", _wav_duration_seconds)
+
+    service = SpeechCleanupService()
+    review_report_calls: list[dict[str, object]] = []
+
+    def fake_build_caption_quality_report(segments, **kwargs):
+        review_report_calls.append(kwargs)
+        return speech_cleanup_module.CaptionQualityReport(
+            average_probability=0.92,
+            low_confidence_segment_count=0,
+            total_segment_count=len(list(segments)),
+            flagged_segments=[],
+            review_recommended=False,
+        )
+
+    monkeypatch.setattr(speech_cleanup_module, "build_caption_quality_report", fake_build_caption_quality_report)
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda _path, **kwargs: (
+            [],
+            [TranscriptSegmentTiming(text="Aitikanga Māori space", start=0.0, end=0.4, average_probability=0.95)],
+        ),
+    )
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
+        caption_glossary="tikanga, Aotearoa",
+    )
+
+    assert result.caption_path.exists()
+    assert review_report_calls
+    critical_terms = review_report_calls[0].get("critical_terms")
+    assert isinstance(critical_terms, list)
+    assert critical_terms[:2] == ["tikanga", "Aotearoa"]
+    assert "tikanga" in critical_terms
+    assert "Aotearoa" in critical_terms
+
+
+def test_review_and_correct_caption_segments_uses_merged_rerun_windows(monkeypatch, tmp_path: Path):
+    from radcast.services import speech_cleanup as speech_cleanup_module
+    from radcast.services.caption_review import CaptionQualityReport, CaptionReviewFlag
+
+    sample_rate = 16000
+    tone_t = np.linspace(0.0, 0.5, int(sample_rate * 0.5), endpoint=False)
+    audio = (0.2 * np.sin(2.0 * np.pi * 220.0 * tone_t)).astype(np.float32)
+    audio_path = tmp_path / "analysis.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    monkeypatch.setenv("RADCAST_RUNTIME_CONTEXT", "local_helper")
+    monkeypatch.setenv("RADCAST_CAPTION_BACKEND", "auto")
+    monkeypatch.setenv("RADCAST_CAPTION_ACCURATE_MODEL", "small")
+    monkeypatch.setenv("RADCAST_CAPTION_REVIEWED_MODEL", "medium")
+    monkeypatch.setattr(speech_cleanup_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        speech_cleanup_module.WhisperCppCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.FasterWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr(
+        speech_cleanup_module.MlxWhisperCaptionBackend,
+        "capability_status",
+        lambda self: (True, "ready"),
+    )
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst, *, audio_filters=None: shutil.copy2(src, dst))
+    monkeypatch.setattr("radcast.services.speech_cleanup.probe_duration_seconds", _wav_duration_seconds)
+
+    service = SpeechCleanupService()
+    windows_seen: list[object] = []
+
+    def fake_review_caption_window(**kwargs):
+        window = kwargs["window"]
+        windows_seen.append(window)
+        return TranscriptSegmentTiming(
+            text=f"{window.flags[0].text} corrected",
+            start=window.start,
+            end=max(window.end, window.start + 0.2),
+            average_probability=0.97,
+        )
+
+    monkeypatch.setattr(service, "_review_caption_window", fake_review_caption_window, raising=False)
+    monkeypatch.setattr(
+        speech_cleanup_module,
+        "build_selective_rerun_plan",
+        lambda report, **kwargs: [
+            speech_cleanup_module.CaptionRerunWindow(
+                start=0.0,
+                end=1.8,
+                flags=[
+                    CaptionReviewFlag(
+                        start=0.0,
+                        end=0.9,
+                        text="Aitikanga Māori space",
+                        average_probability=0.93,
+                        reason="probable critical term miss: tikanga",
+                    ),
+                    CaptionReviewFlag(
+                        start=0.95,
+                        end=1.8,
+                        text="This line is low confidence",
+                        average_probability=0.39,
+                        reason="probable low confidence",
+                    ),
+                ],
+                priority_reason="probable critical term miss: tikanga",
+            )
+        ],
+    )
+    quality_report = CaptionQualityReport(
+        average_probability=0.71,
+        low_confidence_segment_count=1,
+        total_segment_count=2,
+        flagged_segments=[
+            CaptionReviewFlag(
+                start=0.0,
+                end=0.9,
+                text="Aitikanga Māori space",
+                average_probability=0.93,
+                reason="probable critical term miss: tikanga",
+            ),
+            CaptionReviewFlag(
+                start=0.95,
+                end=1.8,
+                text="This line is low confidence",
+                average_probability=0.39,
+                reason="probable low confidence",
+            ),
+        ],
+        review_recommended=True,
+    )
+
+    corrected = service._review_and_correct_caption_segments(
+        analysis_wav=audio_path,
+        base_segments=[
+            TranscriptSegmentTiming(text="Aitikanga Māori space", start=0.0, end=0.9, average_probability=0.93),
+            TranscriptSegmentTiming(text="This line is low confidence", start=0.95, end=1.8, average_probability=0.39),
+        ],
+        quality_report=quality_report,
+        prompt_text="",
+    )
+
+    assert len(windows_seen) == 1
+    assert windows_seen[0].priority_reason == "probable critical term miss: tikanga"
+    assert any(segment.text.endswith("corrected") for segment in corrected)
+
+
 def _write_test_wav(path: Path, samples: np.ndarray, *, sample_rate: int = 16000) -> None:
     clipped = np.clip(samples, -1.0, 1.0 - (1.0 / 32768.0))
     pcm = np.round(clipped * 32767.0).astype("<i2")
@@ -725,6 +908,7 @@ def test_generate_caption_file_uses_accurate_profile_and_maori_glossary(monkeypa
     assert captured["condition_on_previous_text"] is True
     assert captured["window_seconds"] == 12.0
     assert captured["overlap_seconds"] == 2.5
+    assert "Preserve these lecture terms exactly if spoken clearly" in str(captured["initial_prompt"])
     assert "tikanga" in str(captured["initial_prompt"])
     assert "whānau" in str(captured["initial_prompt"])
     assert "organisation" in str(captured["initial_prompt"])
@@ -922,8 +1106,8 @@ def test_generate_caption_file_reviewed_mode_reports_progress_per_flag(monkeypat
     )
 
     review_details = [detail for _progress, detail, _eta in stages if "Reviewing low-confidence caption lines" in detail]
-    assert any("1 of 2" in detail for detail in review_details)
-    assert any("2 of 2" in detail for detail in review_details)
+    assert any("1 of 1" in detail for detail in review_details)
+    assert all("2 of 2" not in detail for detail in review_details)
 
 
 def test_generate_caption_file_reviewed_mode_uses_whispercpp_for_review_on_macos_local_helper(monkeypatch, tmp_path: Path):
@@ -1311,6 +1495,56 @@ def test_review_caption_flag_uses_configured_review_beam(monkeypatch, tmp_path: 
 
     assert result is not None
     assert captured["beam_size"] == 5
+
+
+def test_review_caption_flag_adds_expected_critical_term_hint_to_review_prompt(monkeypatch, tmp_path: Path):
+    service = SpeechCleanupService()
+
+    sample_rate = 16000
+    waveform = np.zeros((sample_rate * 2, 1), dtype=np.float32)
+    tmp_review = tmp_path / "review"
+    tmp_review.mkdir()
+    flag = SimpleNamespace(
+        start=0.2,
+        end=0.8,
+        text="monarchy those visitors",
+        average_probability=0.3,
+        reason="probable critical term miss: manaaki",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_transcribe_file(_model, _snippet_path, **kwargs):
+        captured.update(kwargs)
+        return [
+            SimpleNamespace(
+                text="manaaki those visitors",
+                start=0.0,
+                end=0.7,
+                words=[
+                    SimpleNamespace(word="manaaki", start=0.0, end=0.35, probability=0.92),
+                    SimpleNamespace(word="those", start=0.35, end=0.5, probability=0.91),
+                    SimpleNamespace(word="visitors", start=0.5, end=0.7, probability=0.93),
+                ],
+            )
+        ]
+
+    monkeypatch.setattr(service, "_transcribe_file", fake_transcribe_file)
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup._best_overlapping_segment",
+        lambda segments, _flag: segments[0] if segments else None,
+    )
+
+    result = service._review_caption_flag(
+        model=object(),
+        waveform=waveform,
+        sample_rate=sample_rate,
+        flag=flag,
+        prompt_text="prompt",
+        tmp_path=tmp_review,
+    )
+
+    assert result is not None
+    assert "Expected critical lecture term: manaaki." in str(captured["initial_prompt"])
 
 
 def test_review_caption_flag_rejects_review_system_boilerplate(monkeypatch, tmp_path: Path):
@@ -1760,6 +1994,41 @@ def test_generate_caption_file_accessibility_assessment_fails_on_glossary_term_m
         caption_format=CaptionFormat.VTT,
         caption_quality_mode=CaptionQualityMode.REVIEWED,
         caption_glossary="transgression",
+    )
+
+    assert result.accessibility_assessment is not None
+    assert result.accessibility_assessment.status == CaptionAccessibilityStatus.FAILED
+    assert result.accessibility_assessment.failure_segment_count == 1
+
+
+def test_generate_caption_file_accessibility_assessment_fails_on_common_maori_term_miss(monkeypatch, tmp_path: Path):
+    sample_rate = 16000
+    audio = np.zeros(int(sample_rate * 1.5), dtype=np.float32)
+    audio_path = tmp_path / "lecture.wav"
+    _write_test_wav(audio_path, audio, sample_rate=sample_rate)
+
+    service = SpeechCleanupService()
+    monkeypatch.setattr(service, "capability_status", lambda: (True, "ready"))
+    monkeypatch.setattr("radcast.services.speech_cleanup.run_ffmpeg_convert", lambda src, dst: shutil.copy2(src, dst))
+    monkeypatch.setattr(
+        service,
+        "_transcribe_timeline",
+        lambda *args, **kwargs: (
+            [],
+            [TranscriptSegmentTiming(text="monarchy those visitors", start=0.0, end=1.4, average_probability=0.96)],
+        ),
+    )
+    monkeypatch.setattr(
+        "radcast.services.speech_cleanup.shape_lecture_caption_cues",
+        lambda segments: [
+            TranscriptSegmentTiming(text="monarchy those visitors", start=0.0, end=1.4, average_probability=0.96),
+        ],
+    )
+
+    result = service.generate_caption_file(
+        audio_path=audio_path,
+        caption_format=CaptionFormat.VTT,
+        caption_quality_mode=CaptionQualityMode.REVIEWED,
     )
 
     assert result.accessibility_assessment is not None

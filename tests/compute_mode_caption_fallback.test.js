@@ -331,3 +331,62 @@ test("caption eta smoothing avoids snapping to a larger raw value mid-run", () =
 
   assert.equal(progressEtaNode.textContent, "Time left to process: 02:57");
 });
+
+
+test("output summary includes runtime when present", () => {
+  const context = buildContext();
+  const summary = context.formatOutputSummary({
+    duration_seconds: 349.5,
+    runtime_seconds: 644,
+    created_at: "2026-04-07T07:54:52+00:00",
+  });
+
+  assert.match(summary, /5:50/);
+  assert.match(summary, /runtime 10:44/);
+});
+
+test("caption accessibility status replaces confidence text with pass-or-warning wording", () => {
+  const context = buildContext();
+
+  assert.equal(
+    context.formatCaptionAccessibilityNote({
+      caption_accessibility_status: "passed",
+      caption_review_warning_segments: 0,
+      caption_review_failure_segments: 0,
+    }),
+    "Accessibility review: passed."
+  );
+  assert.equal(context.captionAccessibilityTone({
+    caption_accessibility_status: "passed",
+    caption_review_warning_segments: 0,
+    caption_review_failure_segments: 0,
+  }), "passed");
+
+  assert.equal(
+    context.formatCaptionAccessibilityNote({
+      caption_accessibility_status: "passed_with_warnings",
+      caption_review_warning_segments: 1,
+      caption_review_failure_segments: 0,
+    }),
+    "Accessibility review: passed with warnings (1 review warning)."
+  );
+  assert.equal(context.captionAccessibilityTone({
+    caption_accessibility_status: "passed_with_warnings",
+    caption_review_warning_segments: 1,
+    caption_review_failure_segments: 0,
+  }), "warning");
+
+  assert.equal(
+    context.formatCaptionAccessibilityNote({
+      caption_accessibility_status: "failed",
+      caption_review_warning_segments: 0,
+      caption_review_failure_segments: 1,
+    }),
+    "Accessibility review: failed (1 blocking issue)."
+  );
+  assert.equal(context.captionAccessibilityTone({
+    caption_accessibility_status: "failed",
+    caption_review_warning_segments: 0,
+    caption_review_failure_segments: 1,
+  }), "failed");
+});

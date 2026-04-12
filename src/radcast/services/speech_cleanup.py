@@ -34,9 +34,11 @@ from radcast.services.caption_review import (
     CaptionAccessibilityAssessment,
     CaptionQualityReport,
     CaptionReviewFlag,
+    CaptionRerunWindow,
     assess_caption_accessibility,
     build_caption_export_quality_report,
     build_caption_quality_report,
+    build_selective_rerun_plan,
     format_caption_review_document,
     sanitize_review_candidate_text,
     is_review_system_text,
@@ -105,6 +107,7 @@ _COMMON_MAORI_TERMS = (
     "kotahitanga",
     "kuia",
     "mana",
+    "manaaki",
     "mana whenua",
     "manaakitanga",
     "mātauranga",
@@ -173,7 +176,7 @@ _NZ_ENGLISH_VARIANTS = (
     "cheque",
 )
 _MAORI_GLOSSARY_PROMPT = (
-    "This audio may include te reo Māori words. Prefer correct spellings and macrons when spoken clearly, such as "
+    "Preserve these lecture terms exactly if spoken clearly, especially te reo Māori words and macrons, such as "
     + ", ".join(_COMMON_MAORI_TERMS)
     + "."
 )
@@ -696,6 +699,7 @@ class SpeechCleanupService:
             tmp_path = Path(tmp)
             analysis_wav = tmp_path / "analysis.wav"
             run_ffmpeg_convert(audio_path, analysis_wav)
+            critical_terms = _critical_caption_terms(caption_glossary)
             _words, segments = self._transcribe_timeline(
                 analysis_wav,
                 total_duration=input_duration,
@@ -724,6 +728,7 @@ class SpeechCleanupService:
             review_report = build_caption_quality_report(
                 segments,
                 strategy_id=policy.review_strategy_id,
+                critical_terms=critical_terms,
             )
             if profile.review_sweep and review_report.flagged_segments:
                 if on_stage:
@@ -759,7 +764,6 @@ class SpeechCleanupService:
             except Exception:
                 export_segments = segments
             export_segments = _dedupe_caption_segments(export_segments)
-            critical_terms = _critical_caption_terms(caption_glossary)
             export_report = build_caption_quality_report(export_segments, critical_terms=critical_terms)
             outward_quality_report = build_caption_export_quality_report(
                 review_report=review_report,
@@ -1099,7 +1103,8 @@ class SpeechCleanupService:
         progress_label: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptSegmentTiming]:
-        if not quality_report.flagged_segments:
+        rerun_plan = build_selective_rerun_plan(quality_report)
+        if not rerun_plan:
             return base_segments
         selected_backend = review_backend or self._faster_whisper_backend
         resolved_review_model_size = str(review_model_size or self.caption_reviewed_model_size).strip() or self.caption_reviewed_model_size
@@ -1109,12 +1114,11 @@ class SpeechCleanupService:
             model = self._load_model(resolved_review_model_size, backend=selected_backend)
         waveform, sample_rate = _read_pcm16_wav(analysis_wav)
         corrected = list(base_segments)
-        flags = quality_report.flagged_segments
-        total_flags = len(flags)
+        total_windows = len(rerun_plan)
         review_started_at = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="radcast_caption_review_") as tmp:
             tmp_path = Path(tmp)
-            for flag_index, flag in enumerate(flags, start=1):
+            for window_index, window in enumerate(rerun_plan, start=1):
                 if cancel_check and cancel_check():
                     raise JobCancelledError("job cancelled")
                 review_detail = _caption_stage_detail(
@@ -1126,57 +1130,69 @@ class SpeechCleanupService:
                     review_detail = f"{progress_label}: {review_detail}"
                 if on_stage:
                     on_stage(
-                        0.82 + (((flag_index - 1) / max(1, total_flags)) * 0.08),
+                        0.82 + (((window_index - 1) / max(1, total_windows)) * 0.08),
                         _indexed_stage_detail(
                             review_detail,
-                            current_item=flag_index,
-                            total_items=total_flags,
+                            current_item=window_index,
+                            total_items=total_windows,
                         ),
                         _review_sweep_eta_seconds(
                             elapsed_seconds=max(0.0, time.monotonic() - review_started_at),
-                            processed_flags=flag_index - 1,
-                            total_flags=total_flags,
+                            processed_flags=window_index - 1,
+                            total_flags=total_windows,
                         ),
                     )
-                matched_index = _find_segment_index(corrected, flag)
-                if matched_index is None:
+                matching_indices = _find_segment_indices_for_window(corrected, window)
+                if not matching_indices:
                     continue
-                candidate_segment = self._review_caption_flag(
-                    model=model,
-                    waveform=waveform,
-                    sample_rate=sample_rate,
-                    flag=flag,
-                    prompt_text=prompt_text,
-                    tmp_path=tmp_path,
-                    review_backend=selected_backend,
-                    review_model_size=resolved_review_model_size,
-                )
+                current_segment = _merge_segments_for_window([corrected[index] for index in matching_indices])
+                if len(window.flags) == 1:
+                    candidate_segment = self._review_caption_flag(
+                        model=model,
+                        waveform=waveform,
+                        sample_rate=sample_rate,
+                        flag=window.flags[0],
+                        prompt_text=prompt_text,
+                        tmp_path=tmp_path,
+                        review_backend=selected_backend,
+                        review_model_size=resolved_review_model_size,
+                    )
+                else:
+                    candidate_segment = self._review_caption_window(
+                        model=model,
+                        waveform=waveform,
+                        sample_rate=sample_rate,
+                        window=window,
+                        prompt_text=prompt_text,
+                        tmp_path=tmp_path,
+                        review_backend=selected_backend,
+                        review_model_size=resolved_review_model_size,
+                    )
                 if candidate_segment is None:
                     continue
-                current_segment = corrected[matched_index]
-                current_probability = current_segment.average_probability if current_segment.average_probability is not None else -1.0
-                next_probability = candidate_segment.average_probability if candidate_segment.average_probability is not None else current_probability
-                if next_probability + 0.03 < current_probability and not _should_accept_truncation_review_candidate(
-                    flag=flag,
+                if not _should_accept_window_review_candidate(
+                    window=window,
                     current_segment=current_segment,
                     candidate_segment=candidate_segment,
                 ):
                     continue
-                corrected[matched_index] = candidate_segment
+                start_index = matching_indices[0]
+                end_index = matching_indices[-1]
+                corrected[start_index : end_index + 1] = [candidate_segment]
                 if on_stage:
                     elapsed = max(0.0, time.monotonic() - review_started_at)
                     overall_elapsed = max(0.0, time.monotonic() - float(started_at or review_started_at))
                     on_stage(
-                        0.82 + ((flag_index / max(1, total_flags)) * 0.08),
+                        0.82 + ((window_index / max(1, total_windows)) * 0.08),
                         _indexed_stage_detail(
                             review_detail,
-                            current_item=flag_index,
-                            total_items=total_flags,
+                            current_item=window_index,
+                            total_items=total_windows,
                         ),
                         _review_sweep_eta_seconds(
                             elapsed_seconds=elapsed,
-                            processed_flags=flag_index,
-                            total_flags=total_flags,
+                            processed_flags=window_index,
+                            total_flags=total_windows,
                         )
                         or _remaining_cleanup_eta(float(started_at or review_started_at), int(caption_eta_seconds or max(30, int(overall_elapsed + 8))), floor_seconds=4),
                     )
@@ -1194,24 +1210,65 @@ class SpeechCleanupService:
         review_backend: CaptionBackend | None = None,
         review_model_size: str | None = None,
     ) -> TranscriptSegmentTiming | None:
-        snippet_start = max(0.0, flag.start - _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS)
-        snippet_end = max(snippet_start + 0.5, flag.end + _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS)
+        window = CaptionRerunWindow(
+            start=float(flag.start),
+            end=float(flag.end),
+            flags=[flag],
+            priority_reason=str(getattr(flag, "reason", "") or ""),
+        )
+        return self._review_caption_window(
+            model=model,
+            waveform=waveform,
+            sample_rate=sample_rate,
+            window=window,
+            prompt_text=prompt_text,
+            tmp_path=tmp_path,
+            review_backend=review_backend,
+            review_model_size=review_model_size,
+        )
+
+    def _review_caption_window(
+        self,
+        *,
+        model,
+        waveform: np.ndarray,
+        sample_rate: int,
+        window: CaptionRerunWindow,
+        prompt_text: str | None,
+        tmp_path: Path,
+        review_backend: CaptionBackend | None = None,
+        review_model_size: str | None = None,
+    ) -> TranscriptSegmentTiming | None:
+        snippet_start = max(0.0, float(window.start) - _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS)
+        snippet_end = max(snippet_start + 0.5, float(window.end) + _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS)
         total_duration = waveform.shape[0] / float(sample_rate) if sample_rate else 0.0
         snippet_end = min(total_duration, snippet_end)
         start_idx = max(0, min(len(waveform), int(round(snippet_start * sample_rate))))
         end_idx = max(start_idx, min(len(waveform), int(round(snippet_end * sample_rate))))
         if end_idx <= start_idx:
             return None
-        snippet_path = tmp_path / f"caption_review_{int(round(flag.start * 1000))}.wav"
+        snippet_path = tmp_path / f"caption_review_{int(round(window.start * 1000))}.wav"
         _write_pcm16_wav(snippet_path, waveform[start_idx:end_idx], sample_rate=sample_rate)
         selected_backend = review_backend or self._faster_whisper_backend
+        review_prompt = _combine_prompt_parts(
+            prompt_text,
+            _CAPTION_REVIEW_PROMPT,
+            *[_expected_critical_term_hint(flag) for flag in window.flags if _expected_critical_term_hint(flag)],
+        )
+        synthetic_flag = window.flags[0] if window.flags else CaptionReviewFlag(
+            start=float(window.start),
+            end=float(window.end),
+            text="",
+            average_probability=None,
+            reason=window.priority_reason,
+        )
         review_segments = self._transcribe_file(
             model,
             snippet_path,
             preserve_fillers=False,
             beam_size=self.caption_reviewed_beam_size,
             condition_on_previous_text=True,
-            initial_prompt=_combine_prompt_parts(prompt_text, _CAPTION_REVIEW_PROMPT),
+            initial_prompt=review_prompt,
             backend=selected_backend,
             model_size=review_model_size,
         )
@@ -1221,23 +1278,23 @@ class SpeechCleanupService:
             keep_start_seconds=0.0,
             keep_end_seconds=max(0.0, snippet_end - snippet_start),
         )
-        best = _best_review_candidate(candidate_segments, flag)
+        best = _best_review_candidate(candidate_segments, synthetic_flag)
         if best is None:
             return None
         if not _clean_caption_text(best.text):
             return None
-        candidate_text = sanitize_review_candidate_text(best.text, reference_text=flag.text)
+        candidate_text = sanitize_review_candidate_text(best.text, reference_text=synthetic_flag.text)
         if not candidate_text:
             return None
-        if _clean_caption_text(candidate_text) == _clean_caption_text(flag.text) and (
+        if _clean_caption_text(candidate_text) == _clean_caption_text(synthetic_flag.text) and (
             best.average_probability is None
-            or (flag.average_probability is not None and best.average_probability <= flag.average_probability + 0.01)
+            or (synthetic_flag.average_probability is not None and best.average_probability <= synthetic_flag.average_probability + 0.01)
         ):
             return None
         return TranscriptSegmentTiming(
             text=candidate_text,
-            start=flag.start,
-            end=max(flag.end, flag.start + 0.2),
+            start=float(window.start),
+            end=max(float(window.end), float(window.start) + 0.2),
             average_probability=best.average_probability,
         )
 
@@ -1383,9 +1440,22 @@ def _build_caption_prompt(custom_glossary: str | None) -> str:
     prompt_parts = [_NZ_ENGLISH_STYLE_PROMPT, _MAORI_GLOSSARY_PROMPT]
     if glossary_terms:
         prompt_parts.append(
-            "Also prefer these course or project terms if spoken clearly: " + ", ".join(glossary_terms) + "."
+            "Also preserve these course or project terms exactly if spoken clearly: "
+            + ", ".join(glossary_terms)
+            + ". Prefer these spellings over phonetically similar alternatives when the context matches."
         )
     return _combine_prompt_parts(*prompt_parts) or _NZ_ENGLISH_STYLE_PROMPT
+
+
+def _expected_critical_term_hint(flag: CaptionReviewFlag) -> str | None:
+    reason = str(getattr(flag, "reason", "") or "").strip()
+    prefix = "probable critical term miss:"
+    if not reason.lower().startswith(prefix):
+        return None
+    term = reason[len(prefix) :].strip()
+    if not term:
+        return None
+    return f"Expected critical lecture term: {term}. Prefer that exact spelling if it matches the audio."
 
 
 def _critical_caption_terms(custom_glossary: str | None) -> list[str]:
@@ -1960,6 +2030,48 @@ def _find_segment_index(segments: list[TranscriptSegmentTiming], flag: CaptionRe
     return best_index
 
 
+def _find_segment_indices_for_window(
+    segments: list[TranscriptSegmentTiming],
+    window: CaptionRerunWindow,
+) -> list[int]:
+    matching_indices = []
+    for index, segment in enumerate(segments):
+        if _segment_overlap(segment.start, segment.end, float(window.start), float(window.end)) > 0.0:
+            matching_indices.append(index)
+    return matching_indices
+
+
+def _merge_segments_for_window(segments: list[TranscriptSegmentTiming]) -> TranscriptSegmentTiming:
+    ordered = sorted(segments, key=lambda item: (float(item.start), float(item.end), item.text.lower()))
+    if not ordered:
+        return TranscriptSegmentTiming(text="", start=0.0, end=0.2, average_probability=None)
+    text = " ".join(_clean_caption_text(segment.text) for segment in ordered if _clean_caption_text(segment.text)).strip()
+    probabilities = [segment.average_probability for segment in ordered if segment.average_probability is not None]
+    weighted_probability = None
+    if probabilities:
+        total_duration = 0.0
+        weighted_total = 0.0
+        for segment in ordered:
+            probability = segment.average_probability
+            if probability is None:
+                continue
+            duration = max(0.0, float(segment.end) - float(segment.start))
+            if duration <= 0.0:
+                continue
+            weighted_total += probability * duration
+            total_duration += duration
+        if total_duration > 0.0:
+            weighted_probability = weighted_total / total_duration
+        else:
+            weighted_probability = sum(probabilities) / len(probabilities)
+    return TranscriptSegmentTiming(
+        text=text,
+        start=float(ordered[0].start),
+        end=float(ordered[-1].end),
+        average_probability=weighted_probability,
+    )
+
+
 def _best_overlapping_segment(
     segments: list[TranscriptSegmentTiming],
     flag: CaptionReviewFlag,
@@ -2033,6 +2145,27 @@ def _should_accept_truncation_review_candidate(
     if prefix_overlap < minimum_prefix_overlap and not _contains_token_subsequence(candidate_tokens, flag_tokens):
         return False
     return True
+
+
+def _should_accept_window_review_candidate(
+    *,
+    window: CaptionRerunWindow,
+    current_segment: TranscriptSegmentTiming,
+    candidate_segment: TranscriptSegmentTiming,
+) -> bool:
+    if any(flag.reason.startswith("probable critical term miss:") for flag in window.flags):
+        return True
+    if any(flag.reason == "probable truncation" for flag in window.flags):
+        return _should_accept_truncation_review_candidate(
+            flag=window.flags[0],
+            current_segment=current_segment,
+            candidate_segment=candidate_segment,
+        )
+    current_probability = current_segment.average_probability
+    candidate_probability = candidate_segment.average_probability
+    if current_probability is None or candidate_probability is None:
+        return False
+    return candidate_probability >= current_probability + 0.03
 
 
 def _join_review_segment_texts(segments: list[TranscriptSegmentTiming]) -> str:

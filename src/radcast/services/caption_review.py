@@ -14,6 +14,7 @@ _CAPTION_REVIEW_MAX_FLAGS = 18
 _LOW_CONFIDENCE_THRESHOLD = 0.45
 _CRITICAL_TERM_SHORT_WORD_THRESHOLD = 0.8
 _CRITICAL_TERM_LONG_WORD_THRESHOLD = 0.68
+_CRITICAL_TERM_CONSONANT_THRESHOLD = 0.5
 _FINAL_REVIEW_RESULT_LINE = "this is the final result of the review"
 _REVIEW_SYSTEM_PHRASES = (
     "review low-confidence transcript lines carefully",
@@ -103,6 +104,14 @@ class CaptionAccessibilityAssessment:
     status: CaptionAccessibilityStatus
     warning_segment_count: int
     failure_segment_count: int
+
+
+@dataclass(frozen=True)
+class CaptionRerunWindow:
+    start: float
+    end: float
+    flags: list[CaptionReviewFlag]
+    priority_reason: str
 
 
 def assess_caption_accessibility(report: CaptionQualityReport) -> CaptionAccessibilityAssessment:
@@ -232,6 +241,86 @@ def sanitize_review_candidate_text(text: str, *, reference_text: str | None = No
 
 def _count_probable_low_confidence_flags(flags: Sequence[CaptionReviewFlag]) -> int:
     return sum(1 for flag in flags if flag.reason == "probable low confidence")
+
+
+def build_selective_rerun_plan(
+    report: CaptionQualityReport,
+    *,
+    adjacency_tolerance_seconds: float = 0.35,
+    minimum_window_seconds: float = 1.5,
+) -> list[CaptionRerunWindow]:
+    prioritized_flags = sorted(
+        [flag for flag in report.flagged_segments if _is_rerun_candidate_flag(flag)],
+        key=lambda flag: (_rerun_priority_rank(flag.reason), float(flag.start), float(flag.end), flag.text.lower()),
+    )
+
+    windows: list[CaptionRerunWindow] = []
+    for flag in prioritized_flags:
+        if not windows:
+            windows.append(
+                CaptionRerunWindow(
+                    start=float(flag.start),
+                    end=float(flag.end),
+                    flags=[flag],
+                    priority_reason=flag.reason,
+                )
+            )
+            continue
+
+        current = windows[-1]
+        if float(flag.start) <= float(current.end) + max(0.0, float(adjacency_tolerance_seconds)):
+            merged_flags = [*current.flags, flag]
+            sorted_flags = sorted(
+                merged_flags,
+                key=lambda item: (_rerun_priority_rank(item.reason), float(item.start), float(item.end), item.text.lower()),
+            )
+            windows[-1] = CaptionRerunWindow(
+                start=min(float(current.start), float(flag.start)),
+                end=max(float(current.end), float(flag.end)),
+                flags=sorted_flags,
+                priority_reason=sorted_flags[0].reason,
+            )
+            continue
+
+        windows.append(
+            CaptionRerunWindow(
+                start=float(flag.start),
+                end=float(flag.end),
+                flags=[flag],
+                priority_reason=flag.reason,
+            )
+        )
+
+    filtered: list[CaptionRerunWindow] = []
+    for window in windows:
+        duration = max(0.0, float(window.end) - float(window.start))
+        has_high_priority_flag = any(
+            _rerun_priority_rank(flag.reason) <= _rerun_priority_rank("probable truncation") for flag in window.flags
+        )
+        if duration < max(0.0, float(minimum_window_seconds)) and not has_high_priority_flag:
+            continue
+        filtered.append(window)
+    return filtered
+
+
+def _is_rerun_candidate_flag(flag: CaptionReviewFlag) -> bool:
+    return flag.reason.startswith("probable critical term miss:") or flag.reason in {
+        "probable truncation",
+        "probable duplication",
+        "probable low confidence",
+    }
+
+
+def _rerun_priority_rank(reason: str) -> int:
+    if reason.startswith("probable critical term miss:"):
+        return 0
+    if reason == "probable truncation":
+        return 1
+    if reason == "probable duplication":
+        return 2
+    if reason == "probable low confidence":
+        return 3
+    return 99
 
 
 def build_caption_export_quality_report(
@@ -474,9 +563,20 @@ def _looks_like_critical_term_miss(tokens: Sequence[str], term: str) -> bool:
     term_tokens = term.split()
     if len(term_tokens) == 1:
         target = term_tokens[0]
-        best_ratio = max(SequenceMatcher(None, token, target).ratio() for token in tokens)
+        best_surface_ratio = max(SequenceMatcher(None, token, target).ratio() for token in tokens)
         threshold = _CRITICAL_TERM_LONG_WORD_THRESHOLD if len(target) >= 6 else _CRITICAL_TERM_SHORT_WORD_THRESHOLD
-        return best_ratio >= threshold and best_ratio < 0.999
+        if best_surface_ratio >= threshold and best_surface_ratio < 0.999:
+            return True
+        if len(target) >= 6:
+            target_key = _consonant_key(target)
+            candidate_tokens = [token for token in tokens if token and token[0] == target[0] and len(token) >= 5]
+            if best_surface_ratio >= 0.35 and candidate_tokens:
+                best_phonetic_ratio = max(
+                    SequenceMatcher(None, _consonant_key(token), target_key).ratio()
+                    for token in candidate_tokens
+                )
+                return best_phonetic_ratio >= _CRITICAL_TERM_CONSONANT_THRESHOLD
+        return False
 
     window_size = len(term_tokens)
     best_ratio = 0.0
@@ -486,6 +586,11 @@ def _looks_like_critical_term_miss(tokens: Sequence[str], term: str) -> bool:
         if ratio > best_ratio:
             best_ratio = ratio
     return best_ratio >= 0.75 and best_ratio < 0.999
+
+
+def _consonant_key(text: str) -> str:
+    normalized = _normalize_caption_text(text)
+    return "".join(ch for ch in normalized if ch.isalpha() and ch not in "aeiouy")
 
 
 def format_caption_review_document(

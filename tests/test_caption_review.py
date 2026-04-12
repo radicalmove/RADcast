@@ -6,6 +6,7 @@ from radcast.services.caption_review import (
     assess_caption_accessibility,
     build_caption_export_quality_report,
     build_caption_quality_report,
+    build_selective_rerun_plan,
     format_caption_review_document,
     is_review_system_text,
     sanitize_review_candidate_text,
@@ -146,6 +147,60 @@ def test_build_caption_quality_report_flags_probable_glossary_term_substitution(
     assert report.review_recommended is True
     assert [flag.reason for flag in report.flagged_segments] == ["probable critical term miss: transgression"]
     assert assessment.status.name.lower() == "failed"
+
+
+def test_build_caption_quality_report_flags_probable_manaaki_term_miss():
+    segments = [
+        TranscriptSegmentTiming(
+            text="monarchy those visitors",
+            start=0.0,
+            end=1.2,
+            average_probability=0.95,
+        )
+    ]
+
+    report = build_caption_quality_report(segments, critical_terms=["manaaki"])
+    assessment = assess_caption_accessibility(report)
+
+    assert report.review_recommended is True
+    assert [flag.reason for flag in report.flagged_segments] == ["probable critical term miss: manaaki"]
+    assert assessment.status.name.lower() == "failed"
+
+
+def test_build_selective_rerun_plan_merges_adjacent_flags_and_prioritizes_critical_terms():
+    report = CaptionQualityReport(
+        average_probability=0.71,
+        low_confidence_segment_count=1,
+        total_segment_count=3,
+        flagged_segments=[
+            CaptionReviewFlag(
+                start=0.0,
+                end=1.0,
+                text="Aitikanga Māori space",
+                average_probability=0.93,
+                reason="probable critical term miss: tikanga",
+            ),
+            CaptionReviewFlag(
+                start=1.02,
+                end=1.8,
+                text="This line is low confidence",
+                average_probability=0.39,
+                reason="probable low confidence",
+            ),
+        ],
+        review_recommended=True,
+    )
+
+    plan = build_selective_rerun_plan(report)
+
+    assert len(plan) == 1
+    assert plan[0].start == 0.0
+    assert plan[0].end >= 1.8
+    assert plan[0].priority_reason == "probable critical term miss: tikanga"
+    assert [flag.reason for flag in plan[0].flags] == [
+        "probable critical term miss: tikanga",
+        "probable low confidence",
+    ]
 
 
 def test_targeted_review_selects_only_high_risk_truncations_and_low_confidence_segments():

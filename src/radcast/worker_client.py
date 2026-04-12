@@ -387,6 +387,9 @@ class WorkerClient:
                 caption_average_probability = None
                 caption_low_confidence_segments = 0
                 caption_total_segments = 0
+                caption_accessibility_status = "passed"
+                caption_review_warning_segments = 0
+                caption_review_failure_segments = 0
 
                 def on_stage(stage: str, progress: float, detail: str, eta_seconds: int | None = None) -> None:
                     emit_progress(
@@ -549,6 +552,11 @@ class WorkerClient:
                         caption_average_probability = quality_report.average_probability
                         caption_low_confidence_segments = quality_report.low_confidence_segment_count
                         caption_total_segments = quality_report.total_segment_count
+                    accessibility_assessment = getattr(caption_result, "accessibility_assessment", None)
+                    if accessibility_assessment is not None:
+                        caption_accessibility_status = str(getattr(accessibility_assessment.status, "value", accessibility_assessment.status))
+                        caption_review_warning_segments = int(accessibility_assessment.warning_segment_count or 0)
+                        caption_review_failure_segments = int(accessibility_assessment.failure_segment_count or 0)
                     emit_progress(
                         map_postprocess_stage_progress(
                             0.99,
@@ -587,6 +595,9 @@ class WorkerClient:
                     "caption_average_probability": caption_average_probability,
                     "caption_low_confidence_segments": caption_low_confidence_segments,
                     "caption_total_segments": caption_total_segments,
+                    "caption_accessibility_status": caption_accessibility_status,
+                    "caption_review_warning_segments": caption_review_warning_segments,
+                    "caption_review_failure_segments": caption_review_failure_segments,
                     "stage_durations_seconds": stage_durations_seconds,
                 }
                 if caption_b64 is not None:

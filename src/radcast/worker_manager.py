@@ -8,6 +8,7 @@ import hmac
 import json
 import secrets
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from radcast.manifests import ManifestStore
 from radcast.models import (
+    CaptionAccessibilityStatus,
     EnhancementModel,
     JobRecord,
     JobStatus,
@@ -472,6 +474,10 @@ class WorkerManager:
                         "helper_caption_average_probability": req.caption_average_probability,
                         "helper_caption_low_confidence_segments": req.caption_low_confidence_segments,
                         "helper_caption_total_segments": req.caption_total_segments,
+                        "helper_caption_accessibility_status": req.caption_accessibility_status,
+                        "helper_caption_review_warning_segments": req.caption_review_warning_segments,
+                        "helper_caption_review_failure_segments": req.caption_review_failure_segments,
+                        "helper_runtime_seconds": req.stage_durations_seconds.get("total"),
                     },
                     name=f"radcast-worker-finalize-{job_id}",
                     daemon=True,
@@ -494,6 +500,10 @@ class WorkerManager:
                 helper_caption_average_probability=req.caption_average_probability,
                 helper_caption_low_confidence_segments=req.caption_low_confidence_segments,
                 helper_caption_total_segments=req.caption_total_segments,
+                helper_caption_accessibility_status=req.caption_accessibility_status,
+                helper_caption_review_warning_segments=req.caption_review_warning_segments,
+                helper_caption_review_failure_segments=req.caption_review_failure_segments,
+                helper_runtime_seconds=req.stage_durations_seconds.get("total"),
             )
             return "completed"
         except Exception as exc:
@@ -527,7 +537,12 @@ class WorkerManager:
         helper_caption_average_probability: float | None = None,
         helper_caption_low_confidence_segments: int = 0,
         helper_caption_total_segments: int = 0,
+        helper_caption_accessibility_status: CaptionAccessibilityStatus = CaptionAccessibilityStatus.PASSED,
+        helper_caption_review_warning_segments: int = 0,
+        helper_caption_review_failure_segments: int = 0,
+        helper_runtime_seconds: float | None = None,
     ) -> None:
+        started_at = time.perf_counter()
         try:
             paths = self.project_manager.ensure_project(payload.project_id)
             store = ManifestStore(paths.manifests)
@@ -584,6 +599,9 @@ class WorkerManager:
             caption_average_probability = helper_caption_average_probability
             caption_low_confidence_segments = max(0, int(helper_caption_low_confidence_segments or 0))
             caption_total_segments = max(0, int(helper_caption_total_segments or 0))
+            caption_accessibility_status = CaptionAccessibilityStatus(helper_caption_accessibility_status)
+            caption_review_warning_segments = max(0, int(helper_caption_review_warning_segments or 0))
+            caption_review_failure_segments = max(0, int(helper_caption_review_failure_segments or 0))
             if caption_requested and payload.caption_format is not None:
                 caption_result = speech_cleanup_service.generate_caption_file(
                     audio_path=output_path,
@@ -615,11 +633,21 @@ class WorkerManager:
                     caption_average_probability = quality_report.average_probability
                     caption_low_confidence_segments = quality_report.low_confidence_segment_count
                     caption_total_segments = quality_report.total_segment_count
+                accessibility_assessment = getattr(caption_result, "accessibility_assessment", None)
+                if accessibility_assessment is not None:
+                    caption_accessibility_status = accessibility_assessment.status
+                    caption_review_warning_segments = accessibility_assessment.warning_segment_count
+                    caption_review_failure_segments = accessibility_assessment.failure_segment_count
 
             metadata = OutputMetadata(
                 output_file=output_path,
                 input_file=input_path,
                 duration_seconds=final_duration_seconds,
+                runtime_seconds=(
+                    round(max(0.0, float(helper_runtime_seconds)), 3)
+                    if helper_runtime_seconds is not None
+                    else round(max(0.0, time.perf_counter() - started_at), 3)
+                ),
                 output_format=output_format,
                 caption_file=caption_path,
                 caption_review_file=caption_review_path,
@@ -630,6 +658,9 @@ class WorkerManager:
                 caption_average_probability=caption_average_probability,
                 caption_low_confidence_segments=caption_low_confidence_segments,
                 caption_total_segments=caption_total_segments,
+                caption_accessibility_status=caption_accessibility_status,
+                caption_review_warning_segments=caption_review_warning_segments,
+                caption_review_failure_segments=caption_review_failure_segments,
                 enhancement_model=payload.enhancement_model,
                 audio_tuning_label=current_audio_tuning_label(payload.enhancement_model),
                 max_silence_seconds=payload.max_silence_seconds,
