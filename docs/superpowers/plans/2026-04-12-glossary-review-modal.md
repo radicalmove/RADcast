@@ -58,14 +58,15 @@ Expected: FAIL because the dedicated glossary-review service does not exist yet.
 
 Implement a small service that:
 - parses the review artifact timestamp ranges and reasons
-- maps each glossary-related failure back to overlapping VTT cues by timestamp
-- extracts a suggested term from the flagged cue or surrounding context when the reason is a critical-term miss
+- keeps only flags whose reason starts with `probable critical term miss:`
+- uses the term suffix from that reason as the suggested glossary term
+- maps each candidate back to overlapping VTT cues by timestamp
 - returns a structured candidate list with `candidate_id`, `term`, `normalized_term`, `reason`, `previous_context`, `flagged_context`, `next_context`, and `already_known`
 - dedupes candidates by normalized term and cue span
 
 Normalization rules:
 - use the existing glossary term normalization rules for comparison and dedupe
-- preserve the original display form from the transcript when possible
+- preserve the term string from the review reason as the default display term
 - treat macrons/Unicode variants as the same normalized term for dedupe and already-known checks
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -102,8 +103,7 @@ The GET response should include:
 - `candidates[]` with the fields returned by the extraction service
 
 The POST request should accept:
-- `approved_terms[]` with the selected candidate IDs or normalized terms
-- optional edited display text per approved row
+- `approvals[]` entries containing a `candidate_id` and the approved `term` text
 
 The POST response should include:
 - `saved_terms[]`
@@ -139,6 +139,7 @@ Add API handlers that:
 - call the glossary-review service to build candidates
 - expose the candidate payload with `has_review_artifacts` and `has_candidates`
 - save approved terms into the global glossary store using normalized dedupe
+- accept POST bodies shaped like `{ "approvals": [{ "candidate_id": "...", "term": "edited or original" }] }`
 
 - [ ] **Step 4: Run tests to verify they pass**
 
