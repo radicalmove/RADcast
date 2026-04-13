@@ -84,7 +84,7 @@ class ProjectManager:
         }
         self._write_json(paths.manifests / "project.json", metadata)
 
-        for manifest_file in ("jobs.json", "outputs.json", "source_audio.json"):
+        for manifest_file in ("jobs.json", "outputs.json", "source_audio.json", "caption_reviews.json"):
             path = paths.manifests / manifest_file
             if not path.exists():
                 self._write_json(path, [])

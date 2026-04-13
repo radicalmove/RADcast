@@ -17,8 +17,9 @@ class ManifestStore:
         self.manifests_dir = manifests_dir
         self.jobs_file = manifests_dir / "jobs.json"
         self.outputs_file = manifests_dir / "outputs.json"
+        self.caption_reviews_file = manifests_dir / "caption_reviews.json"
         self.manifests_dir.mkdir(parents=True, exist_ok=True)
-        for path in (self.jobs_file, self.outputs_file):
+        for path in (self.jobs_file, self.outputs_file, self.caption_reviews_file):
             if not path.exists():
                 self._write(path, [])
 
@@ -51,6 +52,12 @@ class ManifestStore:
 
     def list_outputs(self) -> list[dict[str, Any]]:
         return self._read(self.outputs_file)
+
+    def list_caption_reviews(self) -> list[dict[str, Any]]:
+        return self._read(self.caption_reviews_file)
+
+    def write_caption_reviews(self, items: list[dict[str, Any]]) -> None:
+        self._write(self.caption_reviews_file, items)
 
     def write_output_file(self, path: Path, metadata: OutputMetadata) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

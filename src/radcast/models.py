@@ -59,6 +59,16 @@ class CaptionAccessibilityStatus(str, Enum):
     FAILED = "failed"
 
 
+class HumanCaptionReviewStatus(str, Enum):
+    PENDING = "pending"
+    PASSED_AFTER_HUMAN_REVIEW = "passed_after_human_review"
+
+
+class HumanCaptionReviewDecisionType(str, Enum):
+    APPROVED = "approved"
+    CORRECTED = "corrected"
+
+
 class GlossaryScope(str, Enum):
     GLOBAL = "global"
     PROJECT = "project"
@@ -141,6 +151,71 @@ class GlossaryReviewSubmissionResponse(BaseModel):
     has_review_artifacts: bool = False
     saved_terms: list[str] = Field(default_factory=list)
     already_known_terms: list[str] = Field(default_factory=list)
+
+
+class HumanCaptionReviewDecision(BaseModel):
+    id: str = Field(min_length=1)
+    source_audio_hash: str = Field(min_length=16, max_length=128)
+    absolute_start_seconds: float = Field(ge=0.0)
+    absolute_end_seconds: float = Field(gt=0.0)
+    decision_type: HumanCaptionReviewDecisionType
+    reason_category: str = Field(min_length=1)
+    original_text: str = Field(min_length=1)
+    corrected_text: str | None = None
+    corrected_start_seconds: float | None = Field(default=None, ge=0.0)
+    corrected_end_seconds: float | None = Field(default=None, gt=0.0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @model_validator(mode="after")
+    def validate_ranges(self) -> "HumanCaptionReviewDecision":
+        if self.absolute_end_seconds <= self.absolute_start_seconds:
+            raise ValueError("absolute_end_seconds must be greater than absolute_start_seconds")
+        if self.decision_type == HumanCaptionReviewDecisionType.CORRECTED and not self.corrected_text:
+            raise ValueError("corrected_text is required for corrected decisions")
+        if self.corrected_start_seconds is not None and self.corrected_end_seconds is not None:
+            if self.corrected_end_seconds <= self.corrected_start_seconds:
+                raise ValueError("corrected_end_seconds must be greater than corrected_start_seconds")
+        return self
+
+
+class HumanCaptionReviewItemView(BaseModel):
+    item_id: str = Field(min_length=1)
+    cue_index: int = Field(ge=0)
+    reason_category: str = Field(min_length=1)
+    reason_label: str = Field(min_length=1)
+    previous_context: str = ""
+    flagged_context: str = ""
+    next_context: str = ""
+    already_in_glossary: bool = False
+    can_add_to_glossary: bool = False
+    absolute_start_seconds: float = Field(ge=0.0)
+    absolute_end_seconds: float = Field(gt=0.0)
+
+
+class HumanCaptionReviewItemsResponse(BaseModel):
+    project_id: str
+    output_path: str
+    status: HumanCaptionReviewStatus = HumanCaptionReviewStatus.PENDING
+    blocking_items_remaining: int = Field(default=0, ge=0)
+    items: list[HumanCaptionReviewItemView] = Field(default_factory=list)
+
+
+class HumanCaptionCorrectionRequest(BaseModel):
+    item_id: str = Field(min_length=1)
+    corrected_text: str = Field(min_length=1)
+    corrected_start_seconds: float = Field(ge=0.0)
+    corrected_end_seconds: float = Field(gt=0.0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "HumanCaptionCorrectionRequest":
+        if self.corrected_end_seconds <= self.corrected_start_seconds:
+            raise ValueError("corrected_end_seconds must be greater than corrected_start_seconds")
+        return self
+
+
+class HumanCaptionApprovalRequest(BaseModel):
+    item_id: str = Field(min_length=1)
 
 
 class ClipRange(BaseModel):
@@ -239,6 +314,9 @@ class OutputMetadata(BaseModel):
     caption_accessibility_status: CaptionAccessibilityStatus = CaptionAccessibilityStatus.PASSED
     caption_review_warning_segments: int = 0
     caption_review_failure_segments: int = 0
+    caption_human_review_status: HumanCaptionReviewStatus | None = None
+    caption_human_review_resolved_segments: int = 0
+    caption_human_review_remaining_failures: int | None = None
     enhancement_model: EnhancementModel | None = None
     audio_tuning_label: str | None = None
     clip_start_seconds: float | None = None
