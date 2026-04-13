@@ -57,6 +57,25 @@ def run_ffmpeg_trim(
         raise RuntimeError(message)
 
 
+def run_ffmpeg_excerpt(
+    src: Path,
+    dst: Path,
+    *,
+    clip_start_seconds: float,
+    clip_end_seconds: float,
+    padding_seconds: float = 0.35,
+) -> None:
+    safe_padding = max(0.0, float(padding_seconds))
+    safe_start = max(0.0, float(clip_start_seconds) - safe_padding)
+    safe_end = max(safe_start + 0.2, float(clip_end_seconds) + safe_padding)
+    run_ffmpeg_trim(
+        src,
+        dst,
+        clip_start_seconds=safe_start,
+        clip_end_seconds=safe_end,
+    )
+
+
 def probe_duration_seconds(path: Path) -> float:
     cmd = [
         "ffprobe",

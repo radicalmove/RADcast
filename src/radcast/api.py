@@ -9,6 +9,7 @@ import os
 import re
 import threading
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -32,6 +33,11 @@ from radcast.models import (
     GlossaryReviewSubmissionResponse,
     GlossaryScope,
     GlossaryStatus,
+    HumanCaptionApprovalRequest,
+    HumanCaptionCorrectionRequest,
+    HumanCaptionReviewItemView,
+    HumanCaptionReviewItemsResponse,
+    HumanCaptionReviewStatus,
     EnhancementModel,
     FillerRemovalMode,
     JobRecord,
@@ -64,11 +70,14 @@ from radcast.progress import (
     map_local_stage_progress,
     map_postprocess_stage_progress,
 )
+from radcast.services.caption_review import classify_caption_review_reason, summarize_caption_review_document
+from radcast.services.caption_artifacts import CueEdit, apply_cue_edit, load_vtt_cues, save_vtt_cues
 from radcast.services.glossary_review import extract_glossary_review_candidates
 from radcast.services.glossary_store import GlossaryStore, normalize_glossary_term, split_legacy_glossary_terms
+from radcast.services.human_caption_review import HumanCaptionReviewStore
 from radcast.services.enhance import EnhanceService
 from radcast.services.speech_cleanup import SpeechCleanupService
-from radcast.utils.audio import probe_duration_seconds
+from radcast.utils.audio import probe_duration_seconds, run_ffmpeg_excerpt
 from radcast.worker_manager import WorkerManager
 
 try:
@@ -173,6 +182,39 @@ def _runtime_seconds_from_job(manifests_dir: Path, job_id: str) -> float | None:
 _job_update_lock = threading.Lock()
 _cancelled_jobs: set[str] = set()
 _UNSET = object()
+_REVIEW_TIMESTAMP_RE = re.compile(
+    r"^(?P<start>\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(?P<end>\d{2}:\d{2}:\d{2}\.\d{3})(?:\s*\|\s*confidence\s*(?P<confidence>.+))?$"
+)
+
+
+@dataclass(frozen=True)
+class _ParsedReviewFlag:
+    item_id: str
+    cue_index: int
+    start_seconds: float
+    end_seconds: float
+    absolute_start_seconds: float
+    absolute_end_seconds: float
+    cue_text: str
+    reason: str
+    reason_category: str
+    reason_label: str
+    normalized_term: str | None
+    previous_context: str
+    flagged_context: str
+    next_context: str
+    already_in_glossary: bool
+
+
+@dataclass(frozen=True)
+class _HumanReviewState:
+    caption_path: Path
+    review_path: Path
+    source_audio_path: Path
+    source_audio_hash: str
+    clip_start_seconds: float
+    parsed_flags: list[_ParsedReviewFlag]
+    response: HumanCaptionReviewItemsResponse
 
 
 def _infer_psychek_admin_url(login_url: str) -> str:
@@ -1757,6 +1799,7 @@ def list_project_outputs(request: Request, project_id: str):
             encoded_path = quote(output_path, safe="")
             suffix = Path(output_path).suffix.lower().replace(".", "") or "wav"
             folder_path = str(Path(output_path).parent)
+            failure_breakdown, warning_breakdown = _output_caption_review_breakdown(item)
             outputs.append(
                 {
                     "output_name": Path(output_path).name,
@@ -1776,6 +1819,8 @@ def list_project_outputs(request: Request, project_id: str):
                     ),
                     "caption_review_warning_segments": int(item.get("caption_review_warning_segments") or 0),
                     "caption_review_failure_segments": int(item.get("caption_review_failure_segments") or 0),
+                    "caption_review_warning_breakdown": warning_breakdown,
+                    "caption_review_failure_breakdown": failure_breakdown,
                     "caption_low_confidence_segments": int(item.get("caption_low_confidence_segments") or 0),
                     "caption_total_segments": int(item.get("caption_total_segments") or 0),
                     "has_review_artifacts": _output_has_review_artifacts(item),
@@ -1795,6 +1840,360 @@ def list_project_outputs(request: Request, project_id: str):
         "project_id": _display_project_id(scoped_project_id),
         "outputs": outputs,
     }
+
+
+def _human_review_store(scoped_project_id: str) -> HumanCaptionReviewStore:
+    paths = project_manager.ensure_project(scoped_project_id)
+    return HumanCaptionReviewStore(paths.manifests / "caption_reviews.json")
+
+
+def _parse_review_timestamp(value: str) -> float:
+    hours, minutes, seconds_fraction = value.split(":")
+    seconds, fraction = seconds_fraction.split(".")
+    return (
+        (int(hours) * 3600)
+        + (int(minutes) * 60)
+        + int(seconds)
+        + (int(fraction) / 1000.0)
+    )
+
+
+def _review_reason_label(reason_category: str) -> str:
+    mapping = {
+        "terminology": "Term likely misheard",
+        "truncation": "Caption may be cut off",
+        "duplication": "Caption may repeat wording",
+        "low_confidence": "Caption may be unclear",
+    }
+    return mapping.get(reason_category, "Caption needs review")
+
+
+def _resolve_source_audio_lineage(
+    scoped_project_id: str,
+    output_item: dict[str, object],
+) -> tuple[Path, str]:
+    input_path = Path(str(output_item.get("input_file") or "")).resolve()
+    paths = project_manager.ensure_project(scoped_project_id)
+    for entry in _load_source_audio_index(paths):
+        stored_hash = str(entry.get("audio_hash") or "").strip()
+        stored_path = str(entry.get("audio_path") or "").strip()
+        if not stored_hash or not stored_path:
+            continue
+        try:
+            if Path(stored_path).resolve() == input_path:
+                return (input_path, stored_hash)
+        except Exception:
+            continue
+    if not input_path.exists():
+        raise HTTPException(status_code=404, detail="source audio not found")
+    digest = hashlib.sha256()
+    with input_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return (input_path, digest.hexdigest())
+
+
+def _cue_index_for_range(cues, start_seconds: float, end_seconds: float) -> int:
+    if not cues:
+        return 0
+    best_index = 0
+    best_overlap = -1.0
+    midpoint = (start_seconds + end_seconds) / 2.0
+    best_distance = float("inf")
+    for idx, cue in enumerate(cues):
+        overlap = max(0.0, min(cue.end_seconds, end_seconds) - max(cue.start_seconds, start_seconds))
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_index = idx
+            best_distance = abs((((cue.start_seconds + cue.end_seconds) / 2.0) - midpoint))
+            continue
+        if overlap == best_overlap:
+            distance = abs((((cue.start_seconds + cue.end_seconds) / 2.0) - midpoint))
+            if distance < best_distance:
+                best_index = idx
+                best_distance = distance
+    return best_index
+
+
+def _cue_context(cues, cue_index: int) -> tuple[str, str, str]:
+    if not cues:
+        return ("", "", "")
+    safe_index = max(0, min(int(cue_index), len(cues) - 1))
+    previous_text = cues[safe_index - 1].text if safe_index > 0 else ""
+    current_text = cues[safe_index].text
+    next_text = cues[safe_index + 1].text if safe_index + 1 < len(cues) else ""
+    return (previous_text, current_text, next_text)
+
+
+def _parse_human_review_flags(
+    *,
+    caption_path: Path,
+    review_path: Path,
+    clip_start_seconds: float,
+    active_terms: set[str],
+) -> list[_ParsedReviewFlag]:
+    try:
+        lines = review_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    cues = load_vtt_cues(caption_path)
+    flags: list[_ParsedReviewFlag] = []
+    index = 0
+    while index < len(lines):
+        match = _REVIEW_TIMESTAMP_RE.match(lines[index].strip())
+        if not match:
+            index += 1
+            continue
+        start_seconds = _parse_review_timestamp(match.group("start"))
+        end_seconds = _parse_review_timestamp(match.group("end"))
+        index += 1
+        reason = ""
+        cue_lines: list[str] = []
+        while index < len(lines):
+            current = lines[index].strip()
+            if not current:
+                index += 1
+                if cue_lines:
+                    break
+                continue
+            if current.startswith("Reason:"):
+                reason = current.removeprefix("Reason:").strip()
+                index += 1
+                continue
+            cue_lines.append(current)
+            index += 1
+        _, reason_category = classify_caption_review_reason(reason)
+        normalized_term = None
+        if reason.startswith("probable critical term miss:"):
+            normalized_term = normalize_glossary_term(reason.split(":", 1)[1].strip())
+        cue_index = _cue_index_for_range(cues, start_seconds, end_seconds)
+        previous_context, flagged_context, next_context = _cue_context(cues, cue_index)
+        flags.append(
+            _ParsedReviewFlag(
+                item_id=f"{cue_index}:{int(round(start_seconds * 1000))}:{int(round(end_seconds * 1000))}:{reason_category}",
+                cue_index=cue_index,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
+                absolute_start_seconds=start_seconds + max(0.0, clip_start_seconds),
+                absolute_end_seconds=end_seconds + max(0.0, clip_start_seconds),
+                cue_text=" ".join(cue_lines).strip() or flagged_context,
+                reason=reason,
+                reason_category=reason_category,
+                reason_label=_review_reason_label(reason_category),
+                normalized_term=normalized_term,
+                previous_context=previous_context,
+                flagged_context=flagged_context,
+                next_context=next_context,
+                already_in_glossary=bool(normalized_term and normalized_term in active_terms),
+            )
+        )
+    return flags
+
+
+def _flag_to_view(flag: _ParsedReviewFlag) -> HumanCaptionReviewItemView:
+    return HumanCaptionReviewItemView(
+        item_id=flag.item_id,
+        cue_index=flag.cue_index,
+        reason_category=flag.reason_category,
+        reason_label=flag.reason_label,
+        previous_context=flag.previous_context,
+        flagged_context=flag.flagged_context,
+        next_context=flag.next_context,
+        already_in_glossary=flag.already_in_glossary,
+        can_add_to_glossary=(flag.reason_category == "terminology" and not flag.already_in_glossary),
+        absolute_start_seconds=flag.absolute_start_seconds,
+        absolute_end_seconds=flag.absolute_end_seconds,
+    )
+
+
+def _build_human_review_state(scoped_project_id: str, output_item: dict[str, object]) -> _HumanReviewState:
+    caption_file = str(output_item.get("caption_file") or "").strip()
+    review_file = str(output_item.get("caption_review_file") or "").strip()
+    if not caption_file or not review_file:
+        raise HTTPException(status_code=404, detail="review artifacts not found")
+    caption_path = Path(caption_file)
+    review_path = Path(review_file)
+    if not caption_path.exists() or not review_path.exists():
+        raise HTTPException(status_code=404, detail="review artifacts not found")
+
+    clip_start_seconds = float(output_item.get("clip_start_seconds") or 0.0)
+    source_audio_path, source_audio_hash = _resolve_source_audio_lineage(scoped_project_id, output_item)
+    active_terms = {
+        normalize_glossary_term(term)
+        for term in glossary_store.active_terms_for_project(scoped_project_id)
+        if normalize_glossary_term(term)
+    }
+    parsed_flags = _parse_human_review_flags(
+        caption_path=caption_path,
+        review_path=review_path,
+        clip_start_seconds=clip_start_seconds,
+        active_terms=active_terms,
+    )
+    review_store = _human_review_store(scoped_project_id)
+    needs_review: list[HumanCaptionReviewItemView] = []
+    already_in_glossary: list[HumanCaptionReviewItemView] = []
+    resolved_items: list[HumanCaptionReviewItemView] = []
+    automated_blocking_items = 0
+    blocking_items_remaining = 0
+
+    for flag in parsed_flags:
+        is_blocking = flag.reason_category != "low_confidence"
+        if is_blocking:
+            automated_blocking_items += 1
+        matched_decisions = review_store.match_decisions(
+            source_audio_hash=source_audio_hash,
+            cue_start_seconds=flag.start_seconds,
+            cue_end_seconds=flag.end_seconds,
+            clip_start_seconds=clip_start_seconds,
+        )
+        view = _flag_to_view(flag)
+        if matched_decisions:
+            resolved_items.append(view)
+            continue
+        if is_blocking:
+            blocking_items_remaining += 1
+        if flag.already_in_glossary:
+            already_in_glossary.append(view)
+        else:
+            needs_review.append(view)
+
+    response = HumanCaptionReviewItemsResponse(
+        project_id=_display_project_id(scoped_project_id),
+        output_path=str(output_item.get("output_file") or ""),
+        status=(
+            HumanCaptionReviewStatus.PASSED_AFTER_HUMAN_REVIEW
+            if automated_blocking_items > 0 and blocking_items_remaining == 0
+            else HumanCaptionReviewStatus.PENDING
+        ),
+        automated_blocking_items=automated_blocking_items,
+        blocking_items_remaining=blocking_items_remaining,
+        needs_review=needs_review,
+        already_in_glossary=already_in_glossary,
+        resolved_items=resolved_items,
+    )
+    return _HumanReviewState(
+        caption_path=caption_path,
+        review_path=review_path,
+        source_audio_path=source_audio_path,
+        source_audio_hash=source_audio_hash,
+        clip_start_seconds=clip_start_seconds,
+        parsed_flags=parsed_flags,
+        response=response,
+    )
+
+
+def _find_review_flag(state: _HumanReviewState, item_id: str) -> _ParsedReviewFlag:
+    for flag in state.parsed_flags:
+        if flag.item_id == item_id:
+            return flag
+    raise HTTPException(status_code=404, detail="review item not found")
+
+
+@app.get("/projects/{project_id}/outputs/review-items")
+def list_project_output_review_items(
+    request: Request,
+    project_id: str,
+    path: str = Query(..., min_length=1),
+) -> HumanCaptionReviewItemsResponse:
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    output_item = _find_project_output_item(scoped_project_id, path)
+    return _build_human_review_state(scoped_project_id, output_item).response
+
+
+@app.post("/projects/{project_id}/outputs/review-items/correct")
+def correct_project_output_review_item(
+    request: Request,
+    project_id: str,
+    path: str = Query(..., min_length=1),
+    body: HumanCaptionCorrectionRequest | None = None,
+) -> HumanCaptionReviewItemsResponse:
+    _require_auth(request)
+    if body is None:
+        raise HTTPException(status_code=400, detail="request body is required")
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    output_item = _find_project_output_item(scoped_project_id, path)
+    state = _build_human_review_state(scoped_project_id, output_item)
+    flag = _find_review_flag(state, body.item_id)
+    cues = load_vtt_cues(state.caption_path)
+    if flag.cue_index >= len(cues):
+        raise HTTPException(status_code=400, detail="review cue not found")
+    updated_cues = apply_cue_edit(
+        cues,
+        CueEdit(
+            cue_index=flag.cue_index,
+            text=body.corrected_text,
+            start_seconds=body.corrected_start_seconds,
+            end_seconds=body.corrected_end_seconds,
+        ),
+    )
+    save_vtt_cues(state.caption_path, updated_cues)
+    absolute_start_seconds = body.corrected_start_seconds + max(0.0, state.clip_start_seconds)
+    absolute_end_seconds = body.corrected_end_seconds + max(0.0, state.clip_start_seconds)
+    _human_review_store(scoped_project_id).save_correction(
+        source_audio_hash=state.source_audio_hash,
+        absolute_start_seconds=absolute_start_seconds,
+        absolute_end_seconds=absolute_end_seconds,
+        reason_category=flag.reason_category,
+        original_text=flag.cue_text,
+        corrected_text=body.corrected_text,
+        corrected_start_seconds=absolute_start_seconds,
+        corrected_end_seconds=absolute_end_seconds,
+    )
+    return _build_human_review_state(scoped_project_id, output_item).response
+
+
+@app.post("/projects/{project_id}/outputs/review-items/approve")
+def approve_project_output_review_item(
+    request: Request,
+    project_id: str,
+    path: str = Query(..., min_length=1),
+    body: HumanCaptionApprovalRequest | None = None,
+) -> HumanCaptionReviewItemsResponse:
+    _require_auth(request)
+    if body is None:
+        raise HTTPException(status_code=400, detail="request body is required")
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    output_item = _find_project_output_item(scoped_project_id, path)
+    state = _build_human_review_state(scoped_project_id, output_item)
+    flag = _find_review_flag(state, body.item_id)
+    _human_review_store(scoped_project_id).save_approval(
+        source_audio_hash=state.source_audio_hash,
+        absolute_start_seconds=flag.absolute_start_seconds,
+        absolute_end_seconds=flag.absolute_end_seconds,
+        reason_category=flag.reason_category,
+        original_text=flag.cue_text,
+    )
+    return _build_human_review_state(scoped_project_id, output_item).response
+
+
+@app.get("/projects/{project_id}/outputs/review-clip")
+def project_output_review_clip(
+    request: Request,
+    project_id: str,
+    path: str = Query(..., min_length=1),
+    start: float = Query(..., ge=0.0),
+    end: float = Query(..., gt=0.0),
+):
+    _require_auth(request)
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end must be greater than start")
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    output_item = _find_project_output_item(scoped_project_id, path)
+    source_audio_path, _ = _resolve_source_audio_lineage(scoped_project_id, output_item)
+    clip_start_seconds = float(output_item.get("clip_start_seconds") or 0.0)
+    absolute_start = start + max(0.0, clip_start_seconds)
+    absolute_end = end + max(0.0, clip_start_seconds)
+    clip_dir = project_manager.ensure_project(scoped_project_id).manifests / "review_clips"
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    clip_path = clip_dir / f"{Path(path).stem}-review-{uuid.uuid4().hex[:8]}.wav"
+    run_ffmpeg_excerpt(
+        source_audio_path,
+        clip_path,
+        clip_start_seconds=absolute_start,
+        clip_end_seconds=absolute_end,
+    )
+    return FileResponse(path=clip_path, media_type="audio/wav", filename=clip_path.name)
 
 
 @app.get("/projects/{project_id}/outputs/glossary-review-candidates")
@@ -2130,6 +2529,13 @@ def _output_has_review_artifacts(item: dict[str, object]) -> bool:
     if not caption_file or not review_file:
         return False
     return Path(caption_file).exists() and Path(review_file).exists()
+
+
+def _output_caption_review_breakdown(item: dict[str, object]) -> tuple[dict[str, int], dict[str, int]]:
+    review_file = str(item.get("caption_review_file") or "").strip()
+    if not review_file:
+        return ({}, {})
+    return summarize_caption_review_document(review_file)
 
 
 def _glossary_candidate_payload(candidate) -> dict[str, object]:

@@ -197,8 +197,11 @@ class HumanCaptionReviewItemsResponse(BaseModel):
     project_id: str
     output_path: str
     status: HumanCaptionReviewStatus = HumanCaptionReviewStatus.PENDING
+    automated_blocking_items: int = Field(default=0, ge=0)
     blocking_items_remaining: int = Field(default=0, ge=0)
-    items: list[HumanCaptionReviewItemView] = Field(default_factory=list)
+    needs_review: list[HumanCaptionReviewItemView] = Field(default_factory=list)
+    already_in_glossary: list[HumanCaptionReviewItemView] = Field(default_factory=list)
+    resolved_items: list[HumanCaptionReviewItemView] = Field(default_factory=list)
 
 
 class HumanCaptionCorrectionRequest(BaseModel):

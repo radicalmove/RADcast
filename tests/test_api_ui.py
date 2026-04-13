@@ -18,6 +18,7 @@ from radcast.models import (
     OutputFormat,
     OutputMetadata,
 )
+from radcast.services.human_caption_review import HumanCaptionReviewStore
 
 app = radcast_api.app
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -741,7 +742,10 @@ def test_project_outputs_endpoint_includes_output_card_metadata():
         input_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"fake-mp3")
         caption_path.write_text("WEBVTT\n", encoding="utf-8")
-        review_path.write_text("review me\n", encoding="utf-8")
+        review_path.write_text(
+            "RADcast Caption Review\n\nAverage word confidence: 63%\nFlagged caption lines: 3\nTotal caption lines: 12\n\nReview these timestamp ranges:\n\n00:00:01.000 --> 00:00:02.000 | confidence 91%\nReason: probable critical term miss: tikanga\nAitikanga Māori space\n\n00:00:02.000 --> 00:00:03.000 | confidence 88%\nReason: probable truncation\nWe need to\n\n00:00:03.000 --> 00:00:04.000 | confidence 40%\nReason: probable low confidence\nThe next point is important\n",
+            encoding="utf-8",
+        )
         input_path.write_bytes(b"fake-wav")
         metadata = OutputMetadata(
             output_file=output_path,
@@ -780,6 +784,13 @@ def test_project_outputs_endpoint_includes_output_card_metadata():
         assert payload["outputs"][0]["caption_accessibility_status"] == "failed"
         assert payload["outputs"][0]["caption_review_warning_segments"] == 1
         assert payload["outputs"][0]["caption_review_failure_segments"] == 2
+        assert payload["outputs"][0]["caption_review_failure_breakdown"] == {
+            "terminology": 1,
+            "truncation": 1,
+        }
+        assert payload["outputs"][0]["caption_review_warning_breakdown"] == {
+            "low_confidence": 1,
+        }
         assert payload["outputs"][0]["caption_review_download_url"].endswith("sample.vtt.review.txt&download=true")
         assert payload["outputs"][0]["folder_path"].endswith("/assets/enhanced_audio")
     finally:
@@ -938,6 +949,418 @@ def test_project_output_glossary_candidates_save_promotes_terms_to_global_store(
         assert post_payload["saved_terms"] == [glossary_term]
         assert post_payload["already_known_terms"] == []
         assert radcast_api.glossary_store.global_entries()[-1].normalized_term == radcast_api.normalize_glossary_term(glossary_term)
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        if project_root and project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_review_items_endpoint_splits_actionable_and_known_items():
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    project_root: Path | None = None
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+        project_root = Path(created.json()["project_root"])
+
+        manifests = project_root / "manifests"
+        store = ManifestStore(manifests)
+        output_path = project_root / "assets" / "enhanced_audio" / "review.mp3"
+        caption_path = project_root / "assets" / "enhanced_audio" / "review.vtt"
+        review_path = project_root / "assets" / "enhanced_audio" / "review.vtt.review.txt"
+        input_path = project_root / "assets" / "source_audio" / "source.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp3")
+        input_path.write_bytes(b"fake-wav")
+        caption_path.write_text(
+            "WEBVTT\n\n"
+            "00:00:00.000 --> 00:00:01.000\n"
+            "Welcome everyone\n\n"
+            "00:00:01.000 --> 00:00:02.000\n"
+            "Aitikanga Māori space\n\n"
+            "00:00:02.000 --> 00:00:03.000\n"
+            "We need to\n\n"
+            "00:00:03.000 --> 00:00:04.000\n"
+            "Another point follows\n",
+            encoding="utf-8",
+        )
+        review_path.write_text(
+            "RADcast Caption Review\n\n"
+            "Average word confidence: 72%\n"
+            "Flagged caption lines: 2\n"
+            "Total caption lines: 4\n\n"
+            "Review these timestamp ranges:\n\n"
+            "00:00:01.000 --> 00:00:02.000 | confidence 91%\n"
+            "Reason: probable critical term miss: tikanga\n"
+            "Aitikanga Māori space\n\n"
+            "00:00:02.000 --> 00:00:03.000 | confidence 88%\n"
+            "Reason: probable truncation\n"
+            "We need to\n",
+            encoding="utf-8",
+        )
+        radcast_api._write_source_audio_index(
+            radcast_api.project_manager.get_paths(project_id),
+            [
+                {
+                    "audio_hash": "abc123" * 10,
+                    "audio_path": str(input_path),
+                    "source_filename": input_path.name,
+                    "updated_at": "2026-04-13T00:00:00+00:00",
+                    "duration_seconds": 4.0,
+                }
+            ],
+        )
+        radcast_api.glossary_store.upsert_entry(
+            radcast_api.GlossaryEntry(
+                term="tikanga",
+                normalized_term="tikanga",
+                scope=radcast_api.GlossaryScope.GLOBAL,
+                status=radcast_api.GlossaryStatus.ACTIVE,
+            )
+        )
+        store.append_output(
+            OutputMetadata(
+                output_file=output_path,
+                input_file=input_path,
+                duration_seconds=4.0,
+                runtime_seconds=20.0,
+                output_format=OutputFormat.MP3,
+                caption_file=caption_path,
+                caption_review_file=review_path,
+                caption_format=CaptionFormat.VTT,
+                caption_review_required=True,
+                caption_average_probability=0.72,
+                caption_low_confidence_segments=0,
+                caption_total_segments=4,
+                caption_accessibility_status=CaptionAccessibilityStatus.FAILED,
+                caption_review_warning_segments=0,
+                caption_review_failure_segments=2,
+                enhancement_model=EnhancementModel.NONE,
+                audio_tuning_label="Version 1",
+                project_id=project_id,
+                job_id="job_test",
+            )
+        )
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        output_payload = outputs.json()["outputs"][0]
+        response = client.get(
+            f"/projects/{project_id}/outputs/review-items",
+            params={"path": output_payload["output_path"]},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["blocking_items_remaining"] == 2
+        assert len(payload["needs_review"]) == 1
+        assert len(payload["already_in_glossary"]) == 1
+        assert payload["needs_review"][0]["reason_label"] == "Caption may be cut off"
+        assert payload["already_in_glossary"][0]["reason_label"] == "Term likely misheard"
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        if project_root and project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_review_items_correct_updates_vtt_and_persists_decision():
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    project_root: Path | None = None
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+        project_root = Path(created.json()["project_root"])
+
+        manifests = project_root / "manifests"
+        store = ManifestStore(manifests)
+        review_store = HumanCaptionReviewStore(manifests / "caption_reviews.json")
+        output_path = project_root / "assets" / "enhanced_audio" / "review.mp3"
+        caption_path = project_root / "assets" / "enhanced_audio" / "review.vtt"
+        review_path = project_root / "assets" / "enhanced_audio" / "review.vtt.review.txt"
+        input_path = project_root / "assets" / "source_audio" / "source.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp3")
+        input_path.write_bytes(b"fake-wav")
+        caption_path.write_text(
+            "WEBVTT\n\n"
+            "00:00:00.000 --> 00:00:01.000\n"
+            "Welcome everyone\n\n"
+            "00:00:01.000 --> 00:00:02.000\n"
+            "We need to\n",
+            encoding="utf-8",
+        )
+        review_path.write_text(
+            "RADcast Caption Review\n\n"
+            "Average word confidence: 72%\n"
+            "Flagged caption lines: 1\n"
+            "Total caption lines: 2\n\n"
+            "Review these timestamp ranges:\n\n"
+            "00:00:01.000 --> 00:00:02.000 | confidence 88%\n"
+            "Reason: probable truncation\n"
+            "We need to\n",
+            encoding="utf-8",
+        )
+        radcast_api._write_source_audio_index(
+            radcast_api.project_manager.get_paths(project_id),
+            [
+                {
+                    "audio_hash": "def456" * 10,
+                    "audio_path": str(input_path),
+                    "source_filename": input_path.name,
+                    "updated_at": "2026-04-13T00:00:00+00:00",
+                    "duration_seconds": 2.0,
+                }
+            ],
+        )
+        store.append_output(
+            OutputMetadata(
+                output_file=output_path,
+                input_file=input_path,
+                duration_seconds=2.0,
+                runtime_seconds=20.0,
+                output_format=OutputFormat.MP3,
+                caption_file=caption_path,
+                caption_review_file=review_path,
+                caption_format=CaptionFormat.VTT,
+                caption_review_required=True,
+                caption_average_probability=0.72,
+                caption_low_confidence_segments=0,
+                caption_total_segments=2,
+                caption_accessibility_status=CaptionAccessibilityStatus.FAILED,
+                caption_review_warning_segments=0,
+                caption_review_failure_segments=1,
+                enhancement_model=EnhancementModel.NONE,
+                audio_tuning_label="Version 1",
+                project_id=project_id,
+                job_id="job_test",
+            )
+        )
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        output_payload = outputs.json()["outputs"][0]
+        review_items = client.get(
+            f"/projects/{project_id}/outputs/review-items",
+            params={"path": output_payload["output_path"]},
+        ).json()
+
+        item_id = review_items["needs_review"][0]["item_id"]
+        response = client.post(
+            f"/projects/{project_id}/outputs/review-items/correct",
+            params={"path": output_payload["output_path"]},
+            json={
+                "item_id": item_id,
+                "corrected_text": "We need to understand the concept fully.",
+                "corrected_start_seconds": 1.0,
+                "corrected_end_seconds": 2.2,
+            },
+        )
+
+        assert response.status_code == 200
+        updated_vtt = caption_path.read_text(encoding="utf-8")
+        assert "We need to understand the concept fully." in updated_vtt
+        decisions = review_store.match_decisions(
+            source_audio_hash="def456" * 10,
+            cue_start_seconds=1.0,
+            cue_end_seconds=2.2,
+            clip_start_seconds=0.0,
+        )
+        assert len(decisions) == 1
+        assert decisions[0].decision_type == "corrected"
+        assert response.json()["blocking_items_remaining"] == 0
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        if project_root and project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_review_items_approve_clears_current_run_failure_without_rewriting_text():
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    project_root: Path | None = None
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+        project_root = Path(created.json()["project_root"])
+
+        manifests = project_root / "manifests"
+        store = ManifestStore(manifests)
+        review_store = HumanCaptionReviewStore(manifests / "caption_reviews.json")
+        output_path = project_root / "assets" / "enhanced_audio" / "review.mp3"
+        caption_path = project_root / "assets" / "enhanced_audio" / "review.vtt"
+        review_path = project_root / "assets" / "enhanced_audio" / "review.vtt.review.txt"
+        input_path = project_root / "assets" / "source_audio" / "source.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp3")
+        input_path.write_bytes(b"fake-wav")
+        caption_path.write_text(
+            "WEBVTT\n\n"
+            "00:00:00.000 --> 00:00:01.000\n"
+            "Amuru collective remedy\n",
+            encoding="utf-8",
+        )
+        review_path.write_text(
+            "RADcast Caption Review\n\n"
+            "Average word confidence: 72%\n"
+            "Flagged caption lines: 1\n"
+            "Total caption lines: 1\n\n"
+            "Review these timestamp ranges:\n\n"
+            "00:00:00.000 --> 00:00:01.000 | confidence 88%\n"
+            "Reason: probable critical term miss: muru\n"
+            "Amuru collective remedy\n",
+            encoding="utf-8",
+        )
+        radcast_api._write_source_audio_index(
+            radcast_api.project_manager.get_paths(project_id),
+            [
+                {
+                    "audio_hash": "fedcba" * 10,
+                    "audio_path": str(input_path),
+                    "source_filename": input_path.name,
+                    "updated_at": "2026-04-13T00:00:00+00:00",
+                    "duration_seconds": 1.0,
+                }
+            ],
+        )
+        store.append_output(
+            OutputMetadata(
+                output_file=output_path,
+                input_file=input_path,
+                duration_seconds=1.0,
+                runtime_seconds=20.0,
+                output_format=OutputFormat.MP3,
+                caption_file=caption_path,
+                caption_review_file=review_path,
+                caption_format=CaptionFormat.VTT,
+                caption_review_required=True,
+                caption_average_probability=0.72,
+                caption_low_confidence_segments=0,
+                caption_total_segments=1,
+                caption_accessibility_status=CaptionAccessibilityStatus.FAILED,
+                caption_review_warning_segments=0,
+                caption_review_failure_segments=1,
+                enhancement_model=EnhancementModel.NONE,
+                audio_tuning_label="Version 1",
+                project_id=project_id,
+                job_id="job_test",
+            )
+        )
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        output_payload = outputs.json()["outputs"][0]
+        review_items = client.get(
+            f"/projects/{project_id}/outputs/review-items",
+            params={"path": output_payload["output_path"]},
+        ).json()
+
+        item_id = review_items["needs_review"][0]["item_id"]
+        response = client.post(
+            f"/projects/{project_id}/outputs/review-items/approve",
+            params={"path": output_payload["output_path"]},
+            json={"item_id": item_id},
+        )
+
+        assert response.status_code == 200
+        assert "Amuru collective remedy" in caption_path.read_text(encoding="utf-8")
+        decisions = review_store.match_decisions(
+            source_audio_hash="fedcba" * 10,
+            cue_start_seconds=0.0,
+            cue_end_seconds=1.0,
+            clip_start_seconds=0.0,
+        )
+        assert len(decisions) == 1
+        assert decisions[0].decision_type == "approved"
+        assert response.json()["blocking_items_remaining"] == 0
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        if project_root and project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_review_clip_endpoint_returns_short_audio_excerpt(monkeypatch):
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    project_root: Path | None = None
+    captured: dict[str, object] = {}
+
+    def fake_excerpt(src: Path, dst: Path, *, clip_start_seconds: float, clip_end_seconds: float, padding_seconds: float = 0.35):
+        captured["src"] = src
+        captured["dst"] = dst
+        captured["clip_start_seconds"] = clip_start_seconds
+        captured["clip_end_seconds"] = clip_end_seconds
+        captured["padding_seconds"] = padding_seconds
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"clip-bytes")
+
+    monkeypatch.setattr(radcast_api, "run_ffmpeg_excerpt", fake_excerpt)
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+        project_root = Path(created.json()["project_root"])
+
+        manifests = project_root / "manifests"
+        store = ManifestStore(manifests)
+        output_path = project_root / "assets" / "enhanced_audio" / "review.mp3"
+        input_path = project_root / "assets" / "source_audio" / "source.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp3")
+        input_path.write_bytes(b"fake-wav")
+        radcast_api._write_source_audio_index(
+            radcast_api.project_manager.get_paths(project_id),
+            [
+                {
+                    "audio_hash": "9999999999999999aaaaaaaaaaaaaaaa9999999999999999aaaaaaaaaaaaaaaa",
+                    "audio_path": str(input_path),
+                    "source_filename": input_path.name,
+                    "updated_at": "2026-04-13T00:00:00+00:00",
+                    "duration_seconds": 120.0,
+                }
+            ],
+        )
+        store.append_output(
+            OutputMetadata(
+                output_file=output_path,
+                input_file=input_path,
+                duration_seconds=12.0,
+                runtime_seconds=20.0,
+                output_format=OutputFormat.MP3,
+                clip_start_seconds=10.0,
+                clip_end_seconds=22.0,
+                enhancement_model=EnhancementModel.NONE,
+                audio_tuning_label="Version 1",
+                project_id=project_id,
+                job_id="job_test",
+            )
+        )
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        output_payload = outputs.json()["outputs"][0]
+        response = client.get(
+            f"/projects/{project_id}/outputs/review-clip",
+            params={"path": output_payload["output_path"], "start": 1.0, "end": 2.0},
+        )
+
+        assert response.status_code == 200
+        assert response.content == b"clip-bytes"
+        assert captured["src"] == input_path.resolve()
+        assert captured["clip_start_seconds"] == 11.0
+        assert captured["clip_end_seconds"] == 12.0
     finally:
         for path in Path("projects").glob(f"*__{project_id}"):
             if path.exists():
