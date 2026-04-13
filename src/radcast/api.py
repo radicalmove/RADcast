@@ -1800,6 +1800,20 @@ def list_project_outputs(request: Request, project_id: str):
             suffix = Path(output_path).suffix.lower().replace(".", "") or "wav"
             folder_path = str(Path(output_path).parent)
             failure_breakdown, warning_breakdown = _output_caption_review_breakdown(item)
+            human_review_status = item.get("caption_human_review_status")
+            human_review_resolved_segments = int(item.get("caption_human_review_resolved_segments") or 0)
+            human_review_remaining_failures = item.get("caption_human_review_remaining_failures")
+            if _output_has_review_artifacts(item):
+                try:
+                    human_review_state = _build_human_review_state(scoped_project_id, item)
+                    human_review_status = human_review_state.response.status.value
+                    human_review_resolved_segments = (
+                        human_review_state.response.automated_blocking_items
+                        - human_review_state.response.blocking_items_remaining
+                    )
+                    human_review_remaining_failures = human_review_state.response.blocking_items_remaining
+                except Exception:
+                    pass
             outputs.append(
                 {
                     "output_name": Path(output_path).name,
@@ -1819,6 +1833,15 @@ def list_project_outputs(request: Request, project_id: str):
                     ),
                     "caption_review_warning_segments": int(item.get("caption_review_warning_segments") or 0),
                     "caption_review_failure_segments": int(item.get("caption_review_failure_segments") or 0),
+                    "caption_human_review_status": (
+                        str(human_review_status) if human_review_status is not None else None
+                    ),
+                    "caption_human_review_resolved_segments": human_review_resolved_segments,
+                    "caption_human_review_remaining_failures": (
+                        int(human_review_remaining_failures)
+                        if human_review_remaining_failures is not None
+                        else None
+                    ),
                     "caption_review_warning_breakdown": warning_breakdown,
                     "caption_review_failure_breakdown": failure_breakdown,
                     "caption_low_confidence_segments": int(item.get("caption_low_confidence_segments") or 0),

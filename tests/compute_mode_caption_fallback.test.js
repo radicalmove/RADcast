@@ -367,8 +367,11 @@ test("caption accessibility status replaces confidence text with pass-or-warning
       caption_accessibility_status: "passed_with_warnings",
       caption_review_warning_segments: 1,
       caption_review_failure_segments: 0,
+      caption_review_warning_breakdown: {
+        low_confidence: 1,
+      },
     }),
-    "Accessibility review: passed with warnings (1 review warning)."
+    "Accessibility review: passed with warnings (1 review warning: 1 low-confidence warning)."
   );
   assert.equal(context.captionAccessibilityTone({
     caption_accessibility_status: "passed_with_warnings",
@@ -381,12 +384,42 @@ test("caption accessibility status replaces confidence text with pass-or-warning
       caption_accessibility_status: "failed",
       caption_review_warning_segments: 0,
       caption_review_failure_segments: 1,
+      caption_review_failure_breakdown: {
+        terminology: 1,
+      },
     }),
-    "Accessibility review: failed (1 blocking issue)."
+    "Accessibility review: failed (1 blocking issue: 1 terminology issue)."
   );
   assert.equal(context.captionAccessibilityTone({
     caption_accessibility_status: "failed",
     caption_review_warning_segments: 0,
     caption_review_failure_segments: 1,
   }), "failed");
+
+  assert.equal(
+    context.formatCaptionAccessibilityNote({
+      caption_accessibility_status: "failed",
+      caption_review_warning_segments: 0,
+      caption_review_failure_segments: 3,
+      caption_review_failure_breakdown: {
+        terminology: 2,
+        truncation: 1,
+      },
+    }),
+    "Accessibility review: failed (3 blocking issues: 2 terminology issues, 1 truncation issue)."
+  );
+
+  assert.equal(
+    context.formatCaptionAccessibilityNote({
+      caption_accessibility_status: "failed",
+      caption_review_warning_segments: 0,
+      caption_review_failure_segments: 14,
+      caption_review_failure_breakdown: {
+        terminology: 14,
+      },
+      caption_human_review_status: "passed_after_human_review",
+      caption_human_review_remaining_failures: 0,
+    }),
+    "Accessibility review: passed after human review. Automated review originally found 14 terminology issues."
+  );
 });

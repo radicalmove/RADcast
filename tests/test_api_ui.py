@@ -1367,3 +1367,99 @@ def test_review_clip_endpoint_returns_short_audio_excerpt(monkeypatch):
                 shutil.rmtree(path)
         if project_root and project_root.exists():
             shutil.rmtree(project_root)
+
+
+def test_outputs_endpoint_marks_run_passed_after_human_review_when_all_failures_resolved():
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    project_root: Path | None = None
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+        project_root = Path(created.json()["project_root"])
+
+        manifests = project_root / "manifests"
+        store = ManifestStore(manifests)
+        review_store = HumanCaptionReviewStore(manifests / "caption_reviews.json")
+        output_path = project_root / "assets" / "enhanced_audio" / "review.mp3"
+        caption_path = project_root / "assets" / "enhanced_audio" / "review.vtt"
+        review_path = project_root / "assets" / "enhanced_audio" / "review.vtt.review.txt"
+        input_path = project_root / "assets" / "source_audio" / "source.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp3")
+        input_path.write_bytes(b"fake-wav")
+        caption_path.write_text(
+            "WEBVTT\n\n"
+            "00:00:00.000 --> 00:00:01.000\n"
+            "Amuru collective remedy\n",
+            encoding="utf-8",
+        )
+        review_path.write_text(
+            "RADcast Caption Review\n\n"
+            "Average word confidence: 72%\n"
+            "Flagged caption lines: 1\n"
+            "Total caption lines: 1\n\n"
+            "Review these timestamp ranges:\n\n"
+            "00:00:00.000 --> 00:00:01.000 | confidence 88%\n"
+            "Reason: probable critical term miss: muru\n"
+            "Amuru collective remedy\n",
+            encoding="utf-8",
+        )
+        radcast_api._write_source_audio_index(
+            radcast_api.project_manager.get_paths(project_id),
+            [
+                {
+                    "audio_hash": "1212121212121212abababababababab1212121212121212abababababababab",
+                    "audio_path": str(input_path),
+                    "source_filename": input_path.name,
+                    "updated_at": "2026-04-13T00:00:00+00:00",
+                    "duration_seconds": 1.0,
+                }
+            ],
+        )
+        store.append_output(
+            OutputMetadata(
+                output_file=output_path,
+                input_file=input_path,
+                duration_seconds=1.0,
+                runtime_seconds=20.0,
+                output_format=OutputFormat.MP3,
+                caption_file=caption_path,
+                caption_review_file=review_path,
+                caption_format=CaptionFormat.VTT,
+                caption_review_required=True,
+                caption_average_probability=0.72,
+                caption_low_confidence_segments=0,
+                caption_total_segments=1,
+                caption_accessibility_status=CaptionAccessibilityStatus.FAILED,
+                caption_review_warning_segments=0,
+                caption_review_failure_segments=1,
+                enhancement_model=EnhancementModel.NONE,
+                audio_tuning_label="Version 1",
+                project_id=project_id,
+                job_id="job_test",
+            )
+        )
+        review_store.save_approval(
+            source_audio_hash="1212121212121212abababababababab1212121212121212abababababababab",
+            absolute_start_seconds=0.0,
+            absolute_end_seconds=1.0,
+            reason_category="terminology",
+            original_text="Amuru collective remedy",
+        )
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        assert outputs.status_code == 200
+        item = outputs.json()["outputs"][0]
+        assert item["caption_accessibility_status"] == "failed"
+        assert item["caption_human_review_status"] == "passed_after_human_review"
+        assert item["caption_human_review_resolved_segments"] == 1
+        assert item["caption_human_review_remaining_failures"] == 0
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        if project_root and project_root.exists():
+            shutil.rmtree(project_root)

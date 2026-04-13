@@ -1106,7 +1106,7 @@ function renderGlossaryReviewCandidates(data) {
                 <span>Term</span>
                 <input type="text" data-glossary-term value="${term}" ${alreadyKnown ? "disabled" : ""} />
               </label>
-              <div class="glossary-candidate-normalized">Normalized: ${normalizedTerm}</div>
+              <div class="glossary-candidate-normalized">Normalised: ${normalizedTerm}</div>
             </div>
           </div>
           <div class="glossary-candidate-reason">${reason}</div>
@@ -2927,25 +2927,98 @@ function normalizeCaptionAccessibilityStatus(item) {
   return "passed";
 }
 
+function normalizeHumanCaptionReviewStatus(item) {
+  const rawStatus = String(item?.caption_human_review_status || "").trim().toLowerCase();
+  if (rawStatus === "passed_after_human_review") {
+    return rawStatus;
+  }
+  return "";
+}
+
 function captionAccessibilityTone(item) {
+  if (normalizeHumanCaptionReviewStatus(item) === "passed_after_human_review") return "passed";
   const status = normalizeCaptionAccessibilityStatus(item);
   if (status === "failed") return "failed";
   if (status === "passed_with_warnings") return "warning";
   return "passed";
 }
 
+const CAPTION_FAILURE_BREAKDOWN_LABELS = {
+  terminology: ["terminology issue", "terminology issues"],
+  truncation: ["truncation issue", "truncation issues"],
+  duplication: ["duplication issue", "duplication issues"],
+  other: ["other issue", "other issues"],
+};
+
+const CAPTION_WARNING_BREAKDOWN_LABELS = {
+  low_confidence: ["low-confidence warning", "low-confidence warnings"],
+  other: ["other warning", "other warnings"],
+};
+
+function formatCaptionReviewBreakdown(breakdown, labels, fallbackLabels = ["other issue", "other issues"]) {
+  if (!breakdown || typeof breakdown !== "object") return "";
+  const entries = [];
+  const seenKeys = new Set();
+  for (const key of Object.keys(labels)) {
+    const count = Number(breakdown?.[key] || 0);
+    if (count <= 0) continue;
+    const [singular, plural] = labels[key];
+    entries.push(`${count} ${count === 1 ? singular : plural}`);
+    seenKeys.add(key);
+  }
+  for (const [key, rawCount] of Object.entries(breakdown)) {
+    if (seenKeys.has(key)) continue;
+    const count = Number(rawCount || 0);
+    if (count <= 0) continue;
+    entries.push(`${count} ${count === 1 ? fallbackLabels[0] : fallbackLabels[1]}`);
+  }
+  return entries.join(", ");
+}
+
 function formatCaptionAccessibilityNote(item) {
+  const humanReviewStatus = normalizeHumanCaptionReviewStatus(item);
   const status = normalizeCaptionAccessibilityStatus(item);
   const warningCount = Number(item?.caption_review_warning_segments || 0);
   const failureCount = Number(item?.caption_review_failure_segments || 0);
-  if (status === "failed") {
+  const remainingFailures = Number(item?.caption_human_review_remaining_failures || 0);
+  if (humanReviewStatus === "passed_after_human_review" && remainingFailures <= 0) {
+    const failureBreakdown = formatCaptionReviewBreakdown(
+      item?.caption_review_failure_breakdown,
+      CAPTION_FAILURE_BREAKDOWN_LABELS,
+      ["blocking issue", "blocking issues"]
+    );
+    if (failureCount > 0 && failureBreakdown) {
+      return `Accessibility review: passed after human review. Automated review originally found ${failureBreakdown}.`;
+    }
     if (failureCount > 0) {
+      return `Accessibility review: passed after human review. Automated review originally found ${failureCount} blocking issue${failureCount === 1 ? "" : "s"}.`;
+    }
+    return "Accessibility review: passed after human review.";
+  }
+  if (status === "failed") {
+    const failureBreakdown = formatCaptionReviewBreakdown(
+      item?.caption_review_failure_breakdown,
+      CAPTION_FAILURE_BREAKDOWN_LABELS,
+      ["other issue", "other issues"]
+    );
+    if (failureCount > 0) {
+      if (failureBreakdown) {
+        return `Accessibility review: failed (${failureCount} blocking issue${failureCount === 1 ? "" : "s"}: ${failureBreakdown}).`;
+      }
       return `Accessibility review: failed (${failureCount} blocking issue${failureCount === 1 ? "" : "s"}).`;
     }
     return "Accessibility review: failed.";
   }
   if (status === "passed_with_warnings") {
+    const warningBreakdown = formatCaptionReviewBreakdown(
+      item?.caption_review_warning_breakdown,
+      CAPTION_WARNING_BREAKDOWN_LABELS,
+      ["other warning", "other warnings"]
+    );
     if (warningCount > 0) {
+      if (warningBreakdown) {
+        return `Accessibility review: passed with warnings (${warningCount} review warning${warningCount === 1 ? "" : "s"}: ${warningBreakdown}).`;
+      }
       return `Accessibility review: passed with warnings (${warningCount} review warning${warningCount === 1 ? "" : "s"}).`;
     }
     return "Accessibility review: passed with warnings.";
@@ -3018,20 +3091,20 @@ function bindOutputActions() {
     }
 
     const copyButton = target.closest(".copy-folder-btn");
-    if (!(copyButton instanceof HTMLButtonElement)) return;
+    if (copyButton instanceof HTMLButtonElement) {
+      const folderPath = copyButton.dataset.folder || "";
+      if (!folderPath) return;
 
-    const folderPath = copyButton.dataset.folder || "";
-    if (!folderPath) return;
-
-    navigator.clipboard
-      .writeText(folderPath)
-      .then(() => {
-        setGenerateStatus("Folder path copied to clipboard.");
-      })
-      .catch(() => {
-        setGenerateStatus("Could not copy folder path.", true);
-      });
-    return;
+      navigator.clipboard
+        .writeText(folderPath)
+        .then(() => {
+          setGenerateStatus("Folder path copied to clipboard.");
+        })
+        .catch(() => {
+          setGenerateStatus("Could not copy folder path.", true);
+        });
+      return;
+    }
 
     const glossaryReviewButton = target.closest(".glossary-review-btn");
     if (!(glossaryReviewButton instanceof HTMLButtonElement)) return;
