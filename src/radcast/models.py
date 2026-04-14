@@ -184,6 +184,10 @@ class HumanCaptionReviewItemView(BaseModel):
     cue_index: int = Field(ge=0)
     reason_category: str = Field(min_length=1)
     reason_label: str = Field(min_length=1)
+    term: str | None = None
+    normalized_term: str | None = None
+    cue_start_seconds: float = Field(ge=0.0)
+    cue_end_seconds: float = Field(gt=0.0)
     previous_context: str = ""
     flagged_context: str = ""
     next_context: str = ""

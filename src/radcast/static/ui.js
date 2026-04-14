@@ -76,6 +76,9 @@ const glossaryReviewCloseBtn = document.getElementById("glossary-review-close-bt
 const glossaryReviewStatusNode = document.getElementById("glossary-review-status");
 const glossaryReviewSummaryNode = document.getElementById("glossary-review-summary");
 const glossaryReviewListNode = document.getElementById("glossary-review-list");
+const glossaryReviewPlayerWrapNode = document.getElementById("glossary-review-player-wrap");
+const glossaryReviewPlayerLabelNode = document.getElementById("glossary-review-player-label");
+const glossaryReviewPlayerNode = document.getElementById("glossary-review-player");
 const glossaryReviewSaveBtn = document.getElementById("glossary-review-save-btn");
 const helpStorageKey = "radcast-help-last-tab";
 const helpTabOrder = ["overview", "process-audio", "cleanup-pauses", "generate-captions", "trim-clip", "helper-processing", "troubleshooting"];
@@ -166,6 +169,7 @@ const state = {
   helpActiveTab: "overview",
   glossaryReviewActiveProjectRef: null,
   glossaryReviewActiveOutputPath: null,
+  glossaryReviewResponse: null,
   glossaryReviewCandidates: [],
   glossaryReviewLoadToken: 0,
 };
@@ -1060,119 +1064,248 @@ function setGlossaryReviewStatus(message, isError = false) {
   glossaryReviewStatusNode.style.color = isError ? "#a73527" : "#555";
 }
 
+function reviewItemCountLabel(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function reviewItemsTotalCount(data) {
+  const needsReview = Array.isArray(data?.needs_review) ? data.needs_review.length : 0;
+  const alreadyKnown = Array.isArray(data?.already_in_glossary) ? data.already_in_glossary.length : 0;
+  const resolved = Array.isArray(data?.resolved_items) ? data.resolved_items.length : 0;
+  return needsReview + alreadyKnown + resolved;
+}
+
+function reviewItemCandidateId(item) {
+  const normalizedTerm = cleanOptional(item?.normalized_term || item?.term || "");
+  const startMs = Math.max(0, Math.round(Number(item?.cue_start_seconds || 0) * 1000));
+  const endMs = Math.max(0, Math.round(Number(item?.cue_end_seconds || 0) * 1000));
+  if (!normalizedTerm) return null;
+  return `${normalizedTerm}:${startMs}:${endMs}`;
+}
+
+function formatReviewSecondsValue(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric < 0) return "0.0";
+  return numeric.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function findGlossaryReviewItem(itemId) {
+  const targetId = cleanOptional(itemId);
+  if (!targetId) return null;
+  const data = state.glossaryReviewResponse;
+  if (!data || typeof data !== "object") return null;
+  for (const sectionKey of ["needs_review", "already_in_glossary", "resolved_items"]) {
+    const items = Array.isArray(data?.[sectionKey]) ? data[sectionKey] : [];
+    const matched = items.find((item) => cleanOptional(item?.item_id) === targetId);
+    if (matched) return matched;
+  }
+  return null;
+}
+
 function renderGlossaryReviewSummary(data) {
   if (!glossaryReviewSummaryNode) return;
-  const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
-  const total = Number(data?.candidate_count || candidates.length || 0);
-  const known = candidates.filter((candidate) => Boolean(candidate?.already_known)).length;
-  const remaining = Math.max(0, total - known);
+  const automatedBlockingItems = Math.max(0, Number(data?.automated_blocking_items || 0));
+  const remaining = Math.max(0, Number(data?.blocking_items_remaining || 0));
+  const resolved = Array.isArray(data?.resolved_items) ? data.resolved_items.length : 0;
+  const alreadyKnown = Array.isArray(data?.already_in_glossary) ? data.already_in_glossary.length : 0;
+  const passedAfterHumanReview = String(data?.status || "").trim().toLowerCase() === "passed_after_human_review";
   glossaryReviewSummaryNode.innerHTML = `
     <div class="glossary-review-summary-card">
-      <strong>${escapeHtml(String(total))} candidate${total === 1 ? "" : "s"}</strong>
-      <span>${escapeHtml(String(known))} already in glossary</span>
-      <span>${escapeHtml(String(remaining))} ready to review</span>
+      <strong>${escapeHtml(`Automated review found ${reviewItemCountLabel(automatedBlockingItems, "blocking item")}`)}</strong>
+      <span>${escapeHtml(`${remaining} still need review`)}</span>
+      <span>${escapeHtml(`${resolved} resolved in this review`)}</span>
+      ${alreadyKnown > 0 ? `<span>${escapeHtml(`${alreadyKnown} already in glossary`)}</span>` : ""}
+      ${passedAfterHumanReview ? '<span class="glossary-review-summary-chip">Passed after human review</span>' : ""}
     </div>
+  `;
+}
+
+function renderGlossaryReviewItemCard(item, { readOnlyKnown = false, resolved = false } = {}) {
+  const itemId = escapeHtml(item?.item_id || "");
+  const reasonLabel = escapeHtml(item?.reason_label || "Caption needs review");
+  const termValue = escapeHtml(item?.term || item?.normalized_term || "");
+  const normalizedTerm = escapeHtml(item?.normalized_term || "");
+  const previous = escapeHtml(item?.previous_context || "");
+  const flagged = escapeHtml(item?.flagged_context || "");
+  const next = escapeHtml(item?.next_context || "");
+  const startValue = escapeHtml(formatReviewSecondsValue(item?.cue_start_seconds));
+  const endValue = escapeHtml(formatReviewSecondsValue(item?.cue_end_seconds));
+  const disabledAttr = resolved ? "disabled" : "";
+  const canAddToGlossary = Boolean(item?.can_add_to_glossary) && !resolved;
+  const helperCopy = readOnlyKnown
+    ? "This term is already in the shared glossary. No glossary action is needed, but the transcript may still be wrong."
+    : resolved
+      ? "This flagged item has been resolved in this review."
+      : "Review this flagged caption item, then fix it, approve it, or add the term to the shared glossary.";
+  return `
+    <article class="glossary-review-item-card${resolved ? " glossary-review-item-card--resolved" : ""}" data-item-id="${itemId}">
+      <div class="glossary-review-item-header">
+        <div>
+          <h3>${reasonLabel}</h3>
+          <p class="glossary-review-item-copy">${escapeHtml(helperCopy)}</p>
+        </div>
+        <div class="glossary-review-item-timing">${escapeHtml(`${startValue}s to ${endValue}s`)}</div>
+      </div>
+      <div class="glossary-review-item-context-grid">
+        <div class="glossary-review-item-context">
+          <span>Previous</span>
+          <p>${previous || "&nbsp;"}</p>
+        </div>
+        <div class="glossary-review-item-context glossary-review-item-context--flagged">
+          <span>Flagged</span>
+          <p>${flagged || "&nbsp;"}</p>
+        </div>
+        <div class="glossary-review-item-context">
+          <span>Next</span>
+          <p>${next || "&nbsp;"}</p>
+        </div>
+      </div>
+      <div class="glossary-review-item-edit-grid">
+        <label class="glossary-review-item-field glossary-review-item-field--wide">
+          <span>Caption text</span>
+          <textarea data-review-text rows="3" ${disabledAttr}>${flagged}</textarea>
+        </label>
+        <label class="glossary-review-item-field">
+          <span>Start (seconds)</span>
+          <input type="number" step="0.1" data-review-start value="${startValue}" ${disabledAttr} />
+        </label>
+        <label class="glossary-review-item-field">
+          <span>End (seconds)</span>
+          <input type="number" step="0.1" data-review-end value="${endValue}" ${disabledAttr} />
+        </label>
+        <div class="glossary-review-item-field glossary-review-item-field--nudge">
+          <span>Adjust timing</span>
+          <div class="glossary-review-item-nudges">
+            <button type="button" class="worker-mini-btn review-item-nudge-btn" data-item-id="${itemId}" data-target-field="start" data-delta="-0.1" ${disabledAttr}>Start -0.1s</button>
+            <button type="button" class="worker-mini-btn review-item-nudge-btn" data-item-id="${itemId}" data-target-field="start" data-delta="0.1" ${disabledAttr}>Start +0.1s</button>
+            <button type="button" class="worker-mini-btn review-item-nudge-btn" data-item-id="${itemId}" data-target-field="end" data-delta="-0.1" ${disabledAttr}>End -0.1s</button>
+            <button type="button" class="worker-mini-btn review-item-nudge-btn" data-item-id="${itemId}" data-target-field="end" data-delta="0.1" ${disabledAttr}>End +0.1s</button>
+          </div>
+        </div>
+        <label class="glossary-review-item-field">
+          <span>Glossary term</span>
+          <input type="text" data-review-term value="${termValue}" ${readOnlyKnown ? "disabled" : ""} ${resolved ? "disabled" : ""} />
+        </label>
+        <div class="glossary-review-item-normalised">${normalizedTerm ? `Normalised: ${normalizedTerm}` : ""}</div>
+      </div>
+      <div class="glossary-review-item-actions">
+        <button type="button" class="worker-mini-btn review-item-play-btn" data-item-id="${itemId}">Play clip</button>
+        ${resolved ? "" : `<button type="button" class="worker-mini-btn review-item-correct-btn" data-item-id="${itemId}">Save correction</button>`}
+        ${resolved ? "" : `<button type="button" class="worker-mini-btn review-item-approve-btn" data-item-id="${itemId}">Approve as correct</button>`}
+        ${canAddToGlossary ? `<button type="button" class="worker-mini-btn review-item-glossary-btn" data-item-id="${itemId}">Add to shared glossary</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function renderGlossaryReviewSection(title, items, { collapsible = false, open = true, readOnlyKnown = false, resolved = false } = {}) {
+  if (!Array.isArray(items) || !items.length) return "";
+  const renderedItems = items.map((item) => renderGlossaryReviewItemCard(item, { readOnlyKnown, resolved })).join("");
+  const countLabel = reviewItemCountLabel(items.length, "item");
+  if (collapsible) {
+    return `
+      <details class="glossary-review-section glossary-review-section--collapsible" ${open ? "open" : ""}>
+        <summary>${escapeHtml(title)} <span>${escapeHtml(countLabel)}</span></summary>
+        <div class="glossary-review-section-body">${renderedItems}</div>
+      </details>
+    `;
+  }
+  return `
+    <section class="glossary-review-section">
+      <div class="glossary-review-section-header">
+        <h3>${escapeHtml(title)}</h3>
+        <span>${escapeHtml(countLabel)}</span>
+      </div>
+      <div class="glossary-review-section-body">${renderedItems}</div>
+    </section>
   `;
 }
 
 function renderGlossaryReviewCandidates(data) {
   if (!glossaryReviewListNode) return;
-  const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
-  if (!candidates.length) {
-    glossaryReviewListNode.innerHTML = '<p class="glossary-review-empty">No glossary candidates were found for this run.</p>';
-    if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.disabled = true;
+  const needsReview = Array.isArray(data?.needs_review) ? data.needs_review : [];
+  const alreadyKnown = Array.isArray(data?.already_in_glossary) ? data.already_in_glossary : [];
+  const resolvedItems = Array.isArray(data?.resolved_items) ? data.resolved_items : [];
+  const total = reviewItemsTotalCount(data);
+  if (!total) {
+    glossaryReviewListNode.innerHTML = '<p class="glossary-review-empty">No flagged caption items were found for this run.</p>';
+    if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.hidden = true;
     return;
   }
 
-  glossaryReviewListNode.innerHTML = candidates
-    .map((candidate, index) => {
-      const candidateId = escapeHtml(candidate?.candidate_id || `candidate-${index}`);
-      const term = escapeHtml(candidate?.term || "");
-      const normalizedTerm = escapeHtml(candidate?.normalized_term || "");
-      const reason = escapeHtml(candidate?.reason || "");
-      const previous = escapeHtml(candidate?.previous_context || "");
-      const flagged = escapeHtml(candidate?.flagged_context || "");
-      const next = escapeHtml(candidate?.next_context || "");
-      const alreadyKnown = Boolean(candidate?.already_known);
-      return `
-        <article class="glossary-candidate-card" data-candidate-id="${candidateId}">
-          <div class="glossary-candidate-topline">
-            <label class="glossary-candidate-approve">
-              <input type="checkbox" data-glossary-approve ${alreadyKnown ? "" : "checked"} ${alreadyKnown ? "disabled" : ""} />
-              <span>${alreadyKnown ? "Already in glossary" : "Approve for shared glossary"}</span>
-            </label>
-            <div class="glossary-candidate-term-wrap">
-              <label class="glossary-candidate-term-label">
-                <span>Term</span>
-                <input type="text" data-glossary-term value="${term}" ${alreadyKnown ? "disabled" : ""} />
-              </label>
-              <div class="glossary-candidate-normalized">Normalised: ${normalizedTerm}</div>
-            </div>
-          </div>
-          <div class="glossary-candidate-reason">${reason}</div>
-          <div class="glossary-candidate-context-grid">
-            <div class="glossary-candidate-context">
-              <span>Previous</span>
-              <p>${previous || "&nbsp;"}</p>
-            </div>
-            <div class="glossary-candidate-context glossary-candidate-context-flagged">
-              <span>Flagged</span>
-              <p>${flagged || "&nbsp;"}</p>
-            </div>
-            <div class="glossary-candidate-context">
-              <span>Next</span>
-              <p>${next || "&nbsp;"}</p>
-            </div>
-          </div>
-          ${alreadyKnown ? '<p class="glossary-candidate-known">This term is already in the shared glossary.</p>' : ""}
-        </article>
-      `;
-    })
-    .join("");
-
-  if (glossaryReviewSaveBtn) {
-    glossaryReviewSaveBtn.disabled = false;
+  const sections = [];
+  if (needsReview.length) {
+    sections.push(renderGlossaryReviewSection("Needs review", needsReview));
   }
+  if (alreadyKnown.length) {
+    sections.push(
+      renderGlossaryReviewSection("Already in glossary but still misrecognised", alreadyKnown, {
+        collapsible: true,
+        open: false,
+        readOnlyKnown: true,
+      })
+    );
+  }
+  if (resolvedItems.length) {
+    sections.push(
+      renderGlossaryReviewSection("Resolved in this review", resolvedItems, {
+        resolved: true,
+      })
+    );
+  }
+  glossaryReviewListNode.innerHTML = sections.join("");
+  if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.hidden = true;
 }
 
-async function loadGlossaryReviewCandidates(outputPath) {
+function refreshReviewOutputsIfNeeded() {
+  if (typeof window !== "undefined" && window.__RADCAST_DISABLE_AUTOINIT__) return Promise.resolve();
+  if (typeof loadOutputs !== "function") return Promise.resolve();
+  return loadOutputs().catch(() => null);
+}
+
+async function loadReviewItems(outputPath) {
   if (!state.activeProjectRef || !outputPath) return null;
   const requestToken = ++state.glossaryReviewLoadToken;
   state.glossaryReviewActiveOutputPath = outputPath;
   state.glossaryReviewActiveProjectRef = state.activeProjectRef;
-  setGlossaryReviewStatus("Loading glossary candidates...");
+  state.glossaryReviewResponse = null;
+  setGlossaryReviewStatus("Loading flagged items...");
+  if (glossaryReviewPlayerNode) {
+    glossaryReviewPlayerNode.pause();
+    glossaryReviewPlayerNode.removeAttribute("src");
+  }
+  if (glossaryReviewPlayerWrapNode) {
+    glossaryReviewPlayerWrapNode.hidden = true;
+  }
 
   try {
     const data = await requestJSON(
-      `/projects/${encodeURIComponent(state.activeProjectRef)}/outputs/glossary-review-candidates?path=${encodeURIComponent(outputPath)}`,
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/outputs/review-items?path=${encodeURIComponent(outputPath)}`,
       "GET"
     );
     if (requestToken !== state.glossaryReviewLoadToken || state.activeProjectRef !== state.glossaryReviewActiveProjectRef) {
       return null;
     }
-    state.glossaryReviewCandidates = Array.isArray(data?.candidates) ? data.candidates : [];
+    state.glossaryReviewResponse = data;
     renderGlossaryReviewSummary(data);
     renderGlossaryReviewCandidates(data);
-    const candidateCount = Number(data?.candidate_count || state.glossaryReviewCandidates.length || 0);
-    const knownCount = state.glossaryReviewCandidates.filter((candidate) => Boolean(candidate?.already_known)).length;
-    if (candidateCount > 0) {
+    const total = reviewItemsTotalCount(data);
+    if (String(data?.status || "").trim().toLowerCase() === "passed_after_human_review" && Number(data?.blocking_items_remaining || 0) <= 0) {
+      setGlossaryReviewStatus("All blocking items are resolved. This run now passes after human review.");
+    } else if (total > 0) {
       setGlossaryReviewStatus(
-        knownCount > 0
-          ? `${candidateCount} glossary candidate${candidateCount === 1 ? "" : "s"} loaded. ${knownCount} already known.`
-          : `${candidateCount} glossary candidate${candidateCount === 1 ? "" : "s"} loaded.`
+        `Loaded ${reviewItemCountLabel(total, "flagged item")}.`
       );
     } else {
-      setGlossaryReviewStatus("No glossary candidates found for this run.");
+      setGlossaryReviewStatus("No flagged caption items were found for this run.");
     }
-    if (glossaryReviewSaveBtn) {
-      glossaryReviewSaveBtn.disabled = !candidateCount;
-    }
+    if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.disabled = true;
     return data;
   } catch (err) {
     if (requestToken !== state.glossaryReviewLoadToken) return null;
-    setGlossaryReviewStatus(`Could not load glossary candidates: ${String(err)}`, true);
+    setGlossaryReviewStatus(`Could not load flagged items: ${String(err)}`, true);
     if (glossaryReviewListNode) {
-      glossaryReviewListNode.innerHTML = '<p class="glossary-review-empty">Could not load glossary candidates.</p>';
+      glossaryReviewListNode.innerHTML = '<p class="glossary-review-empty">Could not load flagged caption items.</p>';
     }
     if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.disabled = true;
     return null;
@@ -1184,13 +1317,16 @@ function openGlossaryReviewModal(outputPath) {
   glossaryReviewModalReturnFocusNode = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   glossaryReviewModalNode.hidden = false;
   syncModalOpenState();
-  if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.disabled = true;
+  if (glossaryReviewSaveBtn) {
+    glossaryReviewSaveBtn.disabled = true;
+    glossaryReviewSaveBtn.hidden = true;
+  }
   if (glossaryReviewSummaryNode) glossaryReviewSummaryNode.innerHTML = "";
   if (glossaryReviewListNode) {
-    glossaryReviewListNode.innerHTML = '<p class="glossary-review-empty">Loading glossary candidates...</p>';
+    glossaryReviewListNode.innerHTML = '<p class="glossary-review-empty">Loading flagged caption items...</p>';
   }
-  setGlossaryReviewStatus("Loading glossary candidates...");
-  void loadGlossaryReviewCandidates(outputPath).then(() => {
+  setGlossaryReviewStatus("Loading flagged items...");
+  void loadReviewItems(outputPath).then(() => {
     const focusableNodes = getGlossaryReviewModalFocusableNodes();
     const firstFocusable = focusableNodes[0];
     if (firstFocusable instanceof HTMLElement && typeof firstFocusable.focus === "function") {
@@ -1201,6 +1337,12 @@ function openGlossaryReviewModal(outputPath) {
 
 function closeGlossaryReviewModal() {
   if (!glossaryReviewModalNode) return;
+  if (glossaryReviewPlayerNode) {
+    glossaryReviewPlayerNode.pause();
+  }
+  if (glossaryReviewPlayerWrapNode) {
+    glossaryReviewPlayerWrapNode.hidden = true;
+  }
   glossaryReviewModalNode.hidden = true;
   syncModalOpenState();
   const returnFocusNode = glossaryReviewModalReturnFocusNode;
@@ -1210,50 +1352,129 @@ function closeGlossaryReviewModal() {
   }
 }
 
-async function submitGlossaryReviewApprovals() {
+async function submitReviewItemCorrection({
+  itemId,
+  correctedText,
+  correctedStartSeconds,
+  correctedEndSeconds,
+} = {}) {
   if (!state.activeProjectRef || !state.glossaryReviewActiveOutputPath) return;
-  const cards = Array.from(glossaryReviewListNode?.querySelectorAll(".glossary-candidate-card") || []);
-  const approvals = cards
-    .map((card) => {
-      if (!(card instanceof HTMLElement)) return null;
-      const candidateId = cleanOptional(card.dataset.candidateId);
-      if (!candidateId) return null;
-      const checkbox = card.querySelector("[data-glossary-approve]");
-      if (!(checkbox instanceof HTMLInputElement) || !checkbox.checked || checkbox.disabled) return null;
-      const termInput = card.querySelector("[data-glossary-term]");
-      const term = cleanOptional(termInput?.value || termInput?.textContent || "");
-      if (!term) return null;
-      return { candidate_id: candidateId, term };
-    })
-    .filter(Boolean);
-
-  if (!approvals.length) {
-    setGlossaryReviewStatus("Select at least one glossary candidate to approve.", true);
-    return;
+  const safeItemId = cleanOptional(itemId);
+  const safeText = cleanOptional(correctedText);
+  const safeStart = Number(correctedStartSeconds);
+  const safeEnd = Number(correctedEndSeconds);
+  if (!safeItemId || !safeText || !Number.isFinite(safeStart) || !Number.isFinite(safeEnd) || safeEnd <= safeStart) {
+    setGlossaryReviewStatus("Enter valid caption text and timing before saving the correction.", true);
+    return null;
   }
 
-  if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.disabled = true;
-  setGlossaryReviewStatus("Saving approved glossary terms...");
+  setGlossaryReviewStatus("Saving correction...");
 
   try {
     const data = await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/outputs/review-items/correct?path=${encodeURIComponent(state.glossaryReviewActiveOutputPath)}`,
+      "POST",
+      {
+        item_id: safeItemId,
+        corrected_text: safeText,
+        corrected_start_seconds: safeStart,
+        corrected_end_seconds: safeEnd,
+      }
+    );
+    state.glossaryReviewResponse = data;
+    renderGlossaryReviewSummary(data);
+    renderGlossaryReviewCandidates(data);
+    if (String(data?.status || "").trim().toLowerCase() === "passed_after_human_review" && Number(data?.blocking_items_remaining || 0) <= 0) {
+      setGlossaryReviewStatus("Saved correction. All blocking items are now resolved, so this run passes after human review.");
+    } else {
+      setGlossaryReviewStatus("Saved correction for this flagged item.");
+    }
+    await refreshReviewOutputsIfNeeded();
+    return data;
+  } catch (err) {
+    setGlossaryReviewStatus(`Could not save the correction: ${String(err)}`, true);
+    return null;
+  }
+}
+
+async function submitReviewItemApproval({ itemId } = {}) {
+  if (!state.activeProjectRef || !state.glossaryReviewActiveOutputPath) return null;
+  const safeItemId = cleanOptional(itemId);
+  if (!safeItemId) return null;
+  setGlossaryReviewStatus("Saving approval...");
+  try {
+    const data = await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/outputs/review-items/approve?path=${encodeURIComponent(state.glossaryReviewActiveOutputPath)}`,
+      "POST",
+      { item_id: safeItemId }
+    );
+    state.glossaryReviewResponse = data;
+    renderGlossaryReviewSummary(data);
+    renderGlossaryReviewCandidates(data);
+    if (String(data?.status || "").trim().toLowerCase() === "passed_after_human_review" && Number(data?.blocking_items_remaining || 0) <= 0) {
+      setGlossaryReviewStatus("Approved as correct. All blocking items are now resolved, so this run passes after human review.");
+    } else {
+      setGlossaryReviewStatus("Approved as correct for this source audio.");
+    }
+    await refreshReviewOutputsIfNeeded();
+    return data;
+  } catch (err) {
+    setGlossaryReviewStatus(`Could not save the approval: ${String(err)}`, true);
+    return null;
+  }
+}
+
+async function submitReviewItemGlossaryAddition({ itemId, term } = {}) {
+  if (!state.activeProjectRef || !state.glossaryReviewActiveOutputPath) return null;
+  const item = findGlossaryReviewItem(itemId);
+  const approvedTerm = cleanOptional(term || item?.term || item?.normalized_term || "");
+  const candidateId = reviewItemCandidateId(item);
+  if (!candidateId || !approvedTerm) {
+    setGlossaryReviewStatus("Choose a valid glossary term before adding it to the shared glossary.", true);
+    return null;
+  }
+  setGlossaryReviewStatus("Adding term to shared glossary...");
+  try {
+    await requestJSON(
       `/projects/${encodeURIComponent(state.activeProjectRef)}/outputs/glossary-review-candidates?path=${encodeURIComponent(state.glossaryReviewActiveOutputPath)}`,
       "POST",
-      { approvals }
+      { approvals: [{ candidate_id: candidateId, term: approvedTerm }] }
     );
-    const savedTerms = Array.isArray(data?.saved_terms) ? data.saved_terms : [];
-    const alreadyKnownTerms = Array.isArray(data?.already_known_terms) ? data.already_known_terms : [];
-    const summaryParts = [];
-    if (savedTerms.length) summaryParts.push(`${savedTerms.length} term${savedTerms.length === 1 ? "" : "s"} saved`);
-    if (alreadyKnownTerms.length) summaryParts.push(`${alreadyKnownTerms.length} already known`);
-    setGlossaryReviewStatus(summaryParts.length ? `Glossary updated: ${summaryParts.join(", ")}.` : "No new glossary terms were added.");
-    await loadOutputs();
-    closeGlossaryReviewModal();
+    setGlossaryReviewStatus("Added the selected term to the shared glossary.");
+    return loadReviewItems(state.glossaryReviewActiveOutputPath);
   } catch (err) {
-    setGlossaryReviewStatus(`Could not save glossary terms: ${String(err)}`, true);
-  } finally {
-    if (glossaryReviewSaveBtn) glossaryReviewSaveBtn.disabled = false;
+    setGlossaryReviewStatus(`Could not add the glossary term: ${String(err)}`, true);
+    return null;
   }
+}
+
+async function playReviewItemClip(itemId) {
+  if (!state.activeProjectRef || !state.glossaryReviewActiveOutputPath || !glossaryReviewPlayerNode || !glossaryReviewPlayerWrapNode) {
+    return null;
+  }
+  const item = findGlossaryReviewItem(itemId);
+  if (!item) return null;
+  const start = Math.max(0, Number(item?.cue_start_seconds || 0) - 0.4);
+  const end = Math.max(start + 0.2, Number(item?.cue_end_seconds || 0) + 0.4);
+  const clipUrl = `/projects/${encodeURIComponent(state.activeProjectRef)}/outputs/review-clip?path=${encodeURIComponent(state.glossaryReviewActiveOutputPath)}&start=${encodeURIComponent(String(start))}&end=${encodeURIComponent(String(end))}`;
+  glossaryReviewPlayerNode.src = clipUrl;
+  glossaryReviewPlayerWrapNode.hidden = false;
+  if (glossaryReviewPlayerLabelNode) {
+    glossaryReviewPlayerLabelNode.textContent = item?.term
+      ? `Review clip for ${item.term}`
+      : "Review clip";
+  }
+  glossaryReviewPlayerNode.load();
+  const playPromise = glossaryReviewPlayerNode.play();
+  if (playPromise && typeof playPromise.catch === "function") {
+    playPromise.catch(() => {});
+  }
+  setGlossaryReviewStatus("Loaded review clip.");
+  return clipUrl;
+}
+
+async function submitGlossaryReviewApprovals() {
+  return null;
 }
 
 function openWorkerSetupModal() {
@@ -1491,14 +1712,63 @@ function bindGlossaryReviewModal() {
     });
   }
 
-  if (glossaryReviewSaveBtn) {
-    glossaryReviewSaveBtn.addEventListener("click", () => {
-      void submitGlossaryReviewApprovals();
-    });
-  }
-
   if (glossaryReviewModalNode) {
     glossaryReviewModalNode.addEventListener("click", (event) => {
+      const target = event.target;
+      if (target instanceof HTMLElement) {
+        const playButton = target.closest(".review-item-play-btn");
+        if (playButton instanceof HTMLButtonElement) {
+          void playReviewItemClip(playButton.dataset.itemId);
+          return;
+        }
+
+        const correctionButton = target.closest(".review-item-correct-btn");
+        if (correctionButton instanceof HTMLButtonElement) {
+          const itemCard = correctionButton.closest(".glossary-review-item-card");
+          const textInput = itemCard?.querySelector?.("[data-review-text]");
+          const startInput = itemCard?.querySelector?.("[data-review-start]");
+          const endInput = itemCard?.querySelector?.("[data-review-end]");
+          const correctedText = typeof textInput?.value === "string" ? textInput.value : textInput?.textContent || "";
+          const correctedStartSeconds = Number(startInput?.value);
+          const correctedEndSeconds = Number(endInput?.value);
+          void submitReviewItemCorrection({
+            itemId: correctionButton.dataset.itemId,
+            correctedText,
+            correctedStartSeconds,
+            correctedEndSeconds,
+          });
+          return;
+        }
+
+        const approveButton = target.closest(".review-item-approve-btn");
+        if (approveButton instanceof HTMLButtonElement) {
+          void submitReviewItemApproval({ itemId: approveButton.dataset.itemId });
+          return;
+        }
+
+        const glossaryButton = target.closest(".review-item-glossary-btn");
+        if (glossaryButton instanceof HTMLButtonElement) {
+          const itemCard = glossaryButton.closest(".glossary-review-item-card");
+          const termInput = itemCard?.querySelector?.("[data-review-term]");
+          const term = typeof termInput?.value === "string" ? termInput.value : termInput?.textContent || "";
+          void submitReviewItemGlossaryAddition({ itemId: glossaryButton.dataset.itemId, term });
+          return;
+        }
+
+        const nudgeButton = target.closest(".review-item-nudge-btn");
+        if (nudgeButton instanceof HTMLButtonElement) {
+          const itemCard = nudgeButton.closest(".glossary-review-item-card");
+          const fieldName = cleanOptional(nudgeButton.dataset.targetField);
+          const delta = Number(nudgeButton.dataset.delta || 0);
+          const fieldSelector = fieldName === "end" ? "[data-review-end]" : "[data-review-start]";
+          const inputNode = itemCard?.querySelector?.(fieldSelector);
+          if (typeof inputNode?.value === "string") {
+            const nextValue = Math.max(0, Number(inputNode.value || 0) + delta);
+            inputNode.value = formatReviewSecondsValue(nextValue);
+          }
+          return;
+        }
+      }
       if (event.target === glossaryReviewModalNode) {
         closeGlossaryReviewModal();
       }
@@ -1564,10 +1834,14 @@ if (typeof window !== "undefined") {
     closeGlossaryReviewModal,
     getGlossaryReviewModalFocusableNodes,
     handleGlossaryReviewModalKeydown,
-    loadGlossaryReviewCandidates,
+    loadGlossaryReviewCandidates: loadReviewItems,
+    loadReviewItems,
     openGlossaryReviewModal,
     renderGlossaryReviewCandidates,
     renderGlossaryReviewSummary,
+    submitReviewItemApproval,
+    submitReviewItemCorrection,
+    submitReviewItemGlossaryAddition,
     submitGlossaryReviewApprovals,
   };
 }
@@ -2853,7 +3127,7 @@ async function loadOutputs() {
       }
       if (item.has_review_artifacts) {
         actions.push(
-          `<button class="glossary-review-btn" data-output-path="${escapeHtml(item.output_path || "")}" type="button">Review glossary candidates</button>`
+          `<button class="glossary-review-btn" data-output-path="${escapeHtml(item.output_path || "")}" type="button">Review flagged items</button>`
         );
       }
       if (item.caption_review_download_url) {

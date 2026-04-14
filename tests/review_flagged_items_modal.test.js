@@ -181,13 +181,13 @@ function buildContext(fetchHandler) {
   return { context, nodes };
 }
 
-function makeReviewPayload(outputPath) {
+function makePendingResponse(outputPath) {
   return {
     project_id: "demo",
     output_path: outputPath,
     status: "pending",
-    automated_blocking_items: 2,
-    blocking_items_remaining: 2,
+    automated_blocking_items: 1,
+    blocking_items_remaining: 1,
     needs_review: [
       {
         item_id: "flag-1",
@@ -207,77 +207,44 @@ function makeReviewPayload(outputPath) {
         absolute_end_seconds: 2.2,
       },
     ],
-    already_in_glossary: [
-      {
-        item_id: "flag-2",
-        cue_index: 1,
-        reason_category: "terminology",
-        reason_label: "Term likely misheard",
-        term: "tikanga",
-        normalized_term: "tikanga",
-        cue_start_seconds: 2.4,
-        cue_end_seconds: 3.4,
-        previous_context: "This lecture covers Murray as collective remedy",
-        flagged_context: "Aitikanga concepts still matter here",
-        next_context: "The lecturer discusses reciprocity",
-        already_in_glossary: true,
-        can_add_to_glossary: false,
-        absolute_start_seconds: 2.4,
-        absolute_end_seconds: 3.4,
-      },
-    ],
+    already_in_glossary: [],
     resolved_items: [],
   };
 }
 
-test("completed output cards show review flagged items action when review artefacts exist", async () => {
-  const fetchCalls = [];
-  const { context, nodes } = buildContext(async (url) => {
-    fetchCalls.push(String(url));
-    if (String(url).endsWith("/outputs")) {
-      return {
-        ok: true,
-        status: 200,
-        async json() {
-          return {
-            project_id: "demo",
-            outputs: [
-              {
-                output_name: "sample.mp3",
-                output_path: "projects/demo/assets/enhanced_audio/sample.mp3",
-                folder_path: "projects/demo/assets/enhanced_audio",
-                created_at: "2026-04-12T00:00:00.000Z",
-                duration_seconds: 5,
-                runtime_seconds: 10,
-                caption_format: "vtt",
-                caption_review_required: true,
-                caption_review_warning_segments: 0,
-                caption_review_failure_segments: 1,
-                has_review_artifacts: true,
-                caption_review_download_url: "download",
-                caption_download_url: "caption",
-                download_url: "audio",
-                play_url: "play",
-              },
-            ],
-          };
-        },
-      };
-    }
-    throw new Error(`unexpected request: ${url}`);
-  });
+function makeResolvedResponse(outputPath) {
+  return {
+    project_id: "demo",
+    output_path: outputPath,
+    status: "passed_after_human_review",
+    automated_blocking_items: 1,
+    blocking_items_remaining: 0,
+    needs_review: [],
+    already_in_glossary: [],
+    resolved_items: [
+      {
+        item_id: "flag-1",
+        cue_index: 0,
+        reason_category: "terminology",
+        reason_label: "Term likely misheard",
+        term: "muru",
+        normalized_term: "muru",
+        cue_start_seconds: 1.0,
+        cue_end_seconds: 2.2,
+        previous_context: "Welcome back",
+        flagged_context: "muru as collective remedy",
+        next_context: "The lecturer discusses reciprocity",
+        already_in_glossary: false,
+        can_add_to_glossary: false,
+        absolute_start_seconds: 1.0,
+        absolute_end_seconds: 2.2,
+      },
+    ],
+  };
+}
 
-  context.window.__radcastTestState.activeProjectRef = "demo";
-  await context.loadOutputs();
-
-  const outputListNode = nodes.get("output-list");
-  assert.match(outputListNode.innerHTML, /Review flagged items/);
-  assert.equal(fetchCalls.length, 1);
-});
-
-test("review modal groups needs review and already in glossary sections", async () => {
+test("saving a correction updates the row state immediately", async () => {
   const outputPath = "projects/demo/assets/enhanced_audio/sample.mp3";
-  const payload = makeReviewPayload(outputPath);
   const fetchCalls = [];
   const { context, nodes } = buildContext(async (url, options = {}) => {
     fetchCalls.push({ url: String(url), options });
@@ -286,7 +253,16 @@ test("review modal groups needs review and already in glossary sections", async 
         ok: true,
         status: 200,
         async json() {
-          return payload;
+          return makePendingResponse(outputPath);
+        },
+      };
+    }
+    if (String(url).includes("/review-items/correct") && String(options.method || "POST") === "POST") {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return makeResolvedResponse(outputPath);
         },
       };
     }
@@ -295,69 +271,46 @@ test("review modal groups needs review and already in glossary sections", async 
 
   context.window.__radcastTestState.activeProjectRef = "demo";
   await context.window.__radcastGlossaryReview.loadReviewItems(outputPath);
+  await context.window.__radcastGlossaryReview.submitReviewItemCorrection({
+    itemId: "flag-1",
+    correctedText: "muru as collective remedy",
+    correctedStartSeconds: 1.1,
+    correctedEndSeconds: 2.3,
+  });
 
   const statusNode = nodes.get("glossary-review-status");
-  const listNode = nodes.get("glossary-review-list");
   const summaryNode = nodes.get("glossary-review-summary");
+  const listNode = nodes.get("glossary-review-list");
 
-  assert.match(statusNode.textContent, /2 flagged item/);
-  assert.match(summaryNode.innerHTML, /Automated review found 2 blocking items/);
-  assert.match(summaryNode.innerHTML, /2 still need review/);
-  assert.match(listNode.innerHTML, /Needs review/);
-  assert.match(listNode.innerHTML, /Already in glossary but still misrecognised/);
-  assert.match(listNode.innerHTML, /Term likely misheard/);
-  assert.match(listNode.innerHTML, /Save correction/);
-  assert.match(listNode.innerHTML, /Approve as correct/);
-  assert.match(listNode.innerHTML, /Add to shared glossary/);
-  assert.match(listNode.innerHTML, /Normalised:/);
-  assert.equal(fetchCalls[0].url, `/projects/demo/outputs/review-items?path=${encodeURIComponent(outputPath)}`);
-  assert.equal(fetchCalls[0].options.method, "GET");
+  assert.equal(fetchCalls[1].url, `/projects/demo/outputs/review-items/correct?path=${encodeURIComponent(outputPath)}`);
+  assert.equal(fetchCalls[1].options.method, "POST");
+  assert.match(String(fetchCalls[1].options.body || ""), /muru as collective remedy/);
+  assert.match(statusNode.textContent, /Saved correction/);
+  assert.match(statusNode.textContent, /passes after human review/i);
+  assert.match(summaryNode.innerHTML, /0 still need review/);
+  assert.match(listNode.innerHTML, /Resolved in this review/);
 });
 
-test("clicking the review flagged items action opens the modal and loads review items", async () => {
+test("approving an item marks it resolved and updates remaining failure count", async () => {
   const outputPath = "projects/demo/assets/enhanced_audio/sample.mp3";
-  const reviewPayload = makeReviewPayload(outputPath);
-  const outputsPayload = {
-    project_id: "demo",
-    outputs: [
-      {
-        output_name: "sample.mp3",
-        output_path: outputPath,
-        folder_path: "projects/demo/assets/enhanced_audio",
-        created_at: "2026-04-12T00:00:00.000Z",
-        duration_seconds: 5,
-        runtime_seconds: 10,
-        caption_format: "vtt",
-        caption_review_required: true,
-        caption_review_warning_segments: 0,
-        caption_review_failure_segments: 2,
-        has_review_artifacts: true,
-        caption_review_download_url: "download",
-        caption_download_url: "caption",
-        download_url: "audio",
-        play_url: "play",
-      },
-    ],
-  };
-
   const fetchCalls = [];
   const { context, nodes } = buildContext(async (url, options = {}) => {
     fetchCalls.push({ url: String(url), options });
-    if (String(url).endsWith("/outputs")) {
-      return {
-        ok: true,
-        status: 200,
-        async json() {
-          return outputsPayload;
-        },
-      };
-    }
     if (String(url).includes("/review-items") && String(options.method || "GET") === "GET") {
       return {
         ok: true,
         status: 200,
         async json() {
-          return reviewPayload;
+          return makePendingResponse(outputPath);
+        },
+      };
+    }
+    if (String(url).includes("/review-items/approve") && String(options.method || "POST") === "POST") {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return makeResolvedResponse(outputPath);
         },
       };
     }
@@ -365,22 +318,17 @@ test("clicking the review flagged items action opens the modal and loads review 
   });
 
   context.window.__radcastTestState.activeProjectRef = "demo";
-  context.bindOutputActions();
-  await context.loadOutputs();
+  await context.window.__radcastGlossaryReview.loadReviewItems(outputPath);
+  await context.window.__radcastGlossaryReview.submitReviewItemApproval({ itemId: "flag-1" });
 
-  const reviewButton = makeNode("review-flagged-action", FakeHTMLButtonElement);
-  reviewButton.dataset.outputPath = outputPath;
-  reviewButton.closest = (selector) => (selector === ".glossary-review-btn" ? reviewButton : null);
-
-  const outputListNode = nodes.get("output-list");
-  outputListNode.dispatch("click", { target: reviewButton });
-  await new Promise((resolve) => setImmediate(resolve));
-
-  const modalNode = nodes.get("glossary-review-modal");
   const statusNode = nodes.get("glossary-review-status");
+  const summaryNode = nodes.get("glossary-review-summary");
+  const listNode = nodes.get("glossary-review-list");
 
-  assert.equal(modalNode.hidden, false);
-  assert.match(statusNode.textContent, /2 flagged item/);
-  assert.equal(fetchCalls[1].url, `/projects/demo/outputs/review-items?path=${encodeURIComponent(outputPath)}`);
-  assert.equal(fetchCalls[1].options.method, "GET");
+  assert.equal(fetchCalls[1].url, `/projects/demo/outputs/review-items/approve?path=${encodeURIComponent(outputPath)}`);
+  assert.equal(fetchCalls[1].options.method, "POST");
+  assert.match(String(fetchCalls[1].options.body || ""), /flag-1/);
+  assert.match(statusNode.textContent, /Approved as correct/);
+  assert.match(summaryNode.innerHTML, /0 still need review/);
+  assert.match(listNode.innerHTML, /Resolved in this review/);
 });

@@ -324,18 +324,22 @@
       <section class="modal-card glossary-review-modal-card" role="dialog" aria-modal="true" aria-labelledby="glossary-review-modal-title">
         <header class="modal-header glossary-review-header">
           <div>
-            <h2 id="glossary-review-modal-title">Review glossary candidates</h2>
-            <p class="modal-copy">Approve the terms you want RADcast to remember for future projects.</p>
+            <h2 id="glossary-review-modal-title">Review flagged items</h2>
+            <p class="modal-copy">Review each flagged caption item. Fix it, approve it, or add the term to the shared glossary.</p>
           </div>
           <button id="glossary-review-close-btn" type="button" class="worker-mini-btn">Close</button>
         </header>
-        <p id="glossary-review-status" class="modal-status">Loading glossary candidates...</p>
+        <p id="glossary-review-status" class="modal-status">Loading flagged items...</p>
         <div id="glossary-review-summary" class="glossary-review-summary"></div>
+        <div id="glossary-review-player-wrap" class="glossary-review-player" hidden>
+          <div id="glossary-review-player-label" class="glossary-review-player-label">Review clip</div>
+          <audio id="glossary-review-player" controls preload="metadata"></audio>
+        </div>
         <div id="glossary-review-list" class="glossary-review-list">
-          <p class="glossary-review-empty">Open a completed version to load glossary candidates.</p>
+          <p class="glossary-review-empty">Open a completed version to load flagged caption items.</p>
         </div>
         <div class="glossary-review-actions">
-          <button id="glossary-review-save-btn" type="button" class="worker-mini-btn">Add approved terms</button>
+          <button id="glossary-review-save-btn" type="button" class="worker-mini-btn" hidden>Unused</button>
         </div>
       </section>
     </div>

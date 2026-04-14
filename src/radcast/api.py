@@ -199,6 +199,7 @@ class _ParsedReviewFlag:
     reason: str
     reason_category: str
     reason_label: str
+    term: str | None
     normalized_term: str | None
     previous_context: str
     flagged_context: str
@@ -2003,6 +2004,7 @@ def _parse_human_review_flags(
                 reason=reason,
                 reason_category=reason_category,
                 reason_label=_review_reason_label(reason_category),
+                term=(reason.split(":", 1)[1].strip() if reason.startswith("probable critical term miss:") else None),
                 normalized_term=normalized_term,
                 previous_context=previous_context,
                 flagged_context=flagged_context,
@@ -2019,6 +2021,10 @@ def _flag_to_view(flag: _ParsedReviewFlag) -> HumanCaptionReviewItemView:
         cue_index=flag.cue_index,
         reason_category=flag.reason_category,
         reason_label=flag.reason_label,
+        term=flag.term,
+        normalized_term=flag.normalized_term,
+        cue_start_seconds=flag.start_seconds,
+        cue_end_seconds=flag.end_seconds,
         previous_context=flag.previous_context,
         flagged_context=flag.flagged_context,
         next_context=flag.next_context,
