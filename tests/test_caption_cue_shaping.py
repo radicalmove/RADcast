@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from radcast.services.caption_cue_shaping import shape_lecture_caption_cues
 from radcast.services.speech_cleanup import TranscriptSegmentTiming
 
@@ -386,6 +388,35 @@ def test_shape_lecture_caption_cues_merges_one_word_continuation_orphan_after_lo
         "The key to discovering entanglement lies",
         "in creating non-separable systems in real-world scenarios.",
     ]
+
+
+def test_shape_lecture_caption_cues_rechunks_long_one_word_fragment_run_into_phrase_chunks():
+    segments = [
+        TranscriptSegmentTiming(text="Don't", start=18.320, end=26.509, average_probability=0.98),
+        TranscriptSegmentTiming(text="buy", start=26.509, end=34.698, average_probability=0.98),
+        TranscriptSegmentTiming(text="cheap", start=34.698, end=42.888, average_probability=0.98),
+        TranscriptSegmentTiming(text="bulbs", start=42.888, end=51.077, average_probability=0.98),
+        TranscriptSegmentTiming(text="and", start=51.077, end=59.266, average_probability=0.98),
+        TranscriptSegmentTiming(text="don't", start=59.266, end=67.455, average_probability=0.98),
+        TranscriptSegmentTiming(text="screw", start=67.455, end=75.645, average_probability=0.98),
+        TranscriptSegmentTiming(text="them", start=75.645, end=83.834, average_probability=0.98),
+        TranscriptSegmentTiming(text="too", start=83.834, end=92.023, average_probability=0.98),
+        TranscriptSegmentTiming(text="tight,", start=92.023, end=100.212, average_probability=0.98),
+        TranscriptSegmentTiming(text="otherwise", start=100.212, end=108.402, average_probability=0.98),
+        TranscriptSegmentTiming(text="they'll", start=108.402, end=116.591, average_probability=0.98),
+        TranscriptSegmentTiming(text="break.", start=116.591, end=124.780, average_probability=0.98),
+    ]
+
+    shaped = shape_lecture_caption_cues(segments)
+
+    assert [cue.text for cue in shaped] == [
+        "Don't buy cheap bulbs",
+        "and don't screw",
+        "them too tight,",
+        "otherwise they'll break.",
+    ]
+    assert [cue.start for cue in shaped] == pytest.approx([18.32, 51.077, 75.645, 100.212], abs=0.01)
+    assert [cue.end for cue in shaped] == pytest.approx([51.077, 75.645, 100.212, 124.78], abs=0.01)
 
 
 def test_shape_lecture_caption_cues_merges_medium_continuation_after_weak_boundary():

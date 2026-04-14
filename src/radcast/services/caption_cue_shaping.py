@@ -206,7 +206,131 @@ def _repair_shaped_caption_cues(segments: list[TranscriptSegmentTiming]) -> list
                 break
             candidate = trimmed
         repaired.append(candidate)
-    return _repair_preposition_boundary_bridges(repaired)
+    repaired = _repair_preposition_boundary_bridges(repaired)
+    return _repair_fragmented_caption_runs(repaired)
+
+
+def _repair_fragmented_caption_runs(
+    segments: list[TranscriptSegmentTiming],
+) -> list[TranscriptSegmentTiming]:
+    if len(segments) < 2:
+        return segments
+
+    repaired: list[TranscriptSegmentTiming] = []
+    index = 0
+    while index < len(segments):
+        fragment_run = _collect_fragmented_caption_run(segments, index)
+        if fragment_run is None:
+            repaired.append(segments[index])
+            index += 1
+            continue
+
+        run_segments, next_index = fragment_run
+        repaired.extend(_rechunk_fragment_run(run_segments))
+        index = next_index
+
+    return repaired
+
+
+def _collect_fragmented_caption_run(
+    segments: list[TranscriptSegmentTiming],
+    start_index: int,
+) -> tuple[list[TranscriptSegmentTiming], int] | None:
+    first = segments[start_index]
+    first_text = _clean_caption_text(first.text)
+    if not first_text:
+        return None
+
+    first_words = first_text.split()
+    if len(first_words) > 3:
+        return None
+
+    run: list[TranscriptSegmentTiming] = [first]
+    total_words = len(first_words)
+    total_duration = max(0.2, float(first.end) - float(first.start))
+    index = start_index + 1
+    while index < len(segments):
+        candidate = segments[index]
+        candidate_text = _clean_caption_text(candidate.text)
+        if not candidate_text:
+            break
+
+        candidate_words = candidate_text.split()
+        if len(candidate_words) > 3:
+            break
+        if float(candidate.start) - float(run[-1].end) > 0.6:
+            break
+
+        run.append(candidate)
+        total_words += len(candidate_words)
+        total_duration = max(0.2, float(candidate.end) - float(run[0].start))
+        index += 1
+
+    if len(run) < 4:
+        return None
+    if total_words < 6 or total_duration < 8.0:
+        return None
+    if sum(len(_clean_caption_text(segment.text).split()) for segment in run) < 6:
+        return None
+
+    return run, index
+
+
+def _rechunk_fragment_run(
+    run: list[TranscriptSegmentTiming],
+) -> list[TranscriptSegmentTiming]:
+    if not run:
+        return []
+
+    combined_tokens: list[str] = []
+    for segment in run:
+        combined_tokens.extend(_clean_caption_text(segment.text).split())
+    if not combined_tokens:
+        return []
+
+    combined_start = float(run[0].start)
+    combined_end = float(run[-1].end)
+    combined_duration = max(0.2, combined_end - combined_start)
+    target_chunks = max(1, math.ceil(len(combined_tokens) / 4))
+    grouped_tokens = _split_caption_tokens_into_cues(combined_tokens, target_chunks=target_chunks)
+    if not grouped_tokens:
+        return []
+
+    weighted_probability = _merge_run_average_probability(run)
+    total_tokens = max(1, len(combined_tokens))
+    consumed_tokens = 0
+    rechunked: list[TranscriptSegmentTiming] = []
+    for group_index, group in enumerate(grouped_tokens):
+        if not group:
+            continue
+        cue_start = combined_start + (combined_duration * (consumed_tokens / total_tokens))
+        consumed_tokens += len(group)
+        cue_end = combined_start + (combined_duration * (consumed_tokens / total_tokens))
+        if group_index == len(grouped_tokens) - 1:
+            cue_end = max(cue_end, combined_end)
+        rechunked.append(
+            _build_transcript_segment_timing(
+                text=" ".join(group).strip(),
+                start=cue_start,
+                end=max(cue_end, cue_start + 0.2),
+                average_probability=weighted_probability,
+            )
+        )
+    return rechunked
+
+
+def _merge_run_average_probability(run: list[TranscriptSegmentTiming]) -> float | None:
+    weighted_total = 0.0
+    weight = 0.0
+    for segment in run:
+        if segment.average_probability is None:
+            continue
+        duration = max(0.2, float(segment.end) - float(segment.start))
+        weighted_total += float(segment.average_probability) * duration
+        weight += duration
+    if weight <= 0.0:
+        return run[0].average_probability if run else None
+    return weighted_total / weight
 
 
 def _repair_preposition_boundary_bridges(
