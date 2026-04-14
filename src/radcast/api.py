@@ -71,7 +71,7 @@ from radcast.progress import (
     map_postprocess_stage_progress,
 )
 from radcast.services.caption_review import classify_caption_review_reason, summarize_caption_review_document
-from radcast.services.caption_artifacts import CueEdit, apply_cue_edit, load_vtt_cues, save_vtt_cues
+from radcast.services.caption_artifacts import CueEdit, apply_cue_edit, load_vtt_cues, relative_cue_times, save_vtt_cues
 from radcast.services.glossary_review import extract_glossary_review_candidates
 from radcast.services.glossary_store import GlossaryStore, normalize_glossary_term, split_legacy_glossary_terms
 from radcast.services.human_caption_review import HumanCaptionReviewStore
@@ -2059,6 +2059,59 @@ def _build_human_review_state(scoped_project_id: str, output_item: dict[str, obj
         active_terms=active_terms,
     )
     review_store = _human_review_store(scoped_project_id)
+    cues = load_vtt_cues(caption_path)
+    cues_changed = False
+    for flag in parsed_flags:
+        decision = review_store.latest_matching_decision(
+            source_audio_hash=source_audio_hash,
+            cue_start_seconds=flag.start_seconds,
+            cue_end_seconds=flag.end_seconds,
+            clip_start_seconds=clip_start_seconds,
+        )
+        if decision is None or decision.decision_type != "corrected":
+            continue
+        if flag.cue_index >= len(cues):
+            continue
+        corrected_start_seconds = (
+            decision.corrected_start_seconds
+            if decision.corrected_start_seconds is not None
+            else decision.absolute_start_seconds
+        )
+        corrected_end_seconds = (
+            decision.corrected_end_seconds
+            if decision.corrected_end_seconds is not None
+            else decision.absolute_end_seconds
+        )
+        relative_start_seconds, relative_end_seconds = relative_cue_times(
+            absolute_start_seconds=corrected_start_seconds,
+            absolute_end_seconds=corrected_end_seconds,
+            clip_start_seconds=clip_start_seconds,
+        )
+        cue = cues[flag.cue_index]
+        if (
+            cue.text == decision.corrected_text
+            and abs(cue.start_seconds - relative_start_seconds) <= 0.01
+            and abs(cue.end_seconds - relative_end_seconds) <= 0.01
+        ):
+            continue
+        cues = apply_cue_edit(
+            cues,
+            CueEdit(
+                cue_index=flag.cue_index,
+                text=decision.corrected_text,
+                start_seconds=relative_start_seconds,
+                end_seconds=relative_end_seconds,
+            ),
+        )
+        cues_changed = True
+    if cues_changed:
+        save_vtt_cues(caption_path, cues)
+        parsed_flags = _parse_human_review_flags(
+            caption_path=caption_path,
+            review_path=review_path,
+            clip_start_seconds=clip_start_seconds,
+            active_terms=active_terms,
+        )
     needs_review: list[HumanCaptionReviewItemView] = []
     already_in_glossary: list[HumanCaptionReviewItemView] = []
     resolved_items: list[HumanCaptionReviewItemView] = []
@@ -2069,14 +2122,14 @@ def _build_human_review_state(scoped_project_id: str, output_item: dict[str, obj
         is_blocking = flag.reason_category != "low_confidence"
         if is_blocking:
             automated_blocking_items += 1
-        matched_decisions = review_store.match_decisions(
+        matched_decision = review_store.latest_matching_decision(
             source_audio_hash=source_audio_hash,
             cue_start_seconds=flag.start_seconds,
             cue_end_seconds=flag.end_seconds,
             clip_start_seconds=clip_start_seconds,
         )
         view = _flag_to_view(flag)
-        if matched_decisions:
+        if matched_decision is not None:
             resolved_items.append(view)
             continue
         if is_blocking:

@@ -102,6 +102,24 @@ class HumanCaptionReviewStore:
             matched.append(decision)
         return matched
 
+    def latest_matching_decision(
+        self,
+        *,
+        source_audio_hash: str,
+        cue_start_seconds: float,
+        cue_end_seconds: float,
+        clip_start_seconds: float | None = None,
+    ) -> HumanCaptionReviewDecision | None:
+        matched = self.match_decisions(
+            source_audio_hash=source_audio_hash,
+            cue_start_seconds=cue_start_seconds,
+            cue_end_seconds=cue_end_seconds,
+            clip_start_seconds=clip_start_seconds,
+        )
+        if not matched:
+            return None
+        return max(matched, key=lambda decision: decision.updated_at)
+
     def _save_decision(self, new_decision: HumanCaptionReviewDecision) -> HumanCaptionReviewDecision:
         existing = self.list_decisions()
         replaced = False

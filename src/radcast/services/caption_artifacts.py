@@ -108,6 +108,18 @@ def absolute_cue_times(*, cue_start_seconds: float, cue_end_seconds: float, clip
     return (offset + float(cue_start_seconds), offset + float(cue_end_seconds))
 
 
+def relative_cue_times(
+    *,
+    absolute_start_seconds: float,
+    absolute_end_seconds: float,
+    clip_start_seconds: float | None = None,
+) -> tuple[float, float]:
+    offset = float(clip_start_seconds or 0.0)
+    start_seconds = max(0.0, float(absolute_start_seconds) - offset)
+    end_seconds = max(start_seconds, float(absolute_end_seconds) - offset)
+    return (start_seconds, end_seconds)
+
+
 def _timestamp_to_seconds(raw_value: str) -> float:
     value = raw_value.strip().replace(",", ".")
     hours, minutes, seconds_fraction = value.split(":")

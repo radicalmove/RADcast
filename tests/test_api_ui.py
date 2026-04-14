@@ -1291,6 +1291,114 @@ def test_review_items_approve_clears_current_run_failure_without_rewriting_text(
             shutil.rmtree(project_root)
 
 
+def test_rerun_of_same_trimmed_source_reapplies_saved_correction_before_final_status():
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    project_root: Path | None = None
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+        project_root = Path(created.json()["project_root"])
+
+        manifests = project_root / "manifests"
+        store = ManifestStore(manifests)
+        review_store = HumanCaptionReviewStore(manifests / "caption_reviews.json")
+        output_path = project_root / "assets" / "enhanced_audio" / "rerun.mp3"
+        caption_path = project_root / "assets" / "enhanced_audio" / "rerun.vtt"
+        review_path = project_root / "assets" / "enhanced_audio" / "rerun.vtt.review.txt"
+        input_path = project_root / "assets" / "source_audio" / "source.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp3")
+        input_path.write_bytes(b"fake-wav")
+        caption_path.write_text(
+            "WEBVTT\n\n"
+            "00:00:02.400 --> 00:00:04.100\n"
+            "Corresponding transcription\n",
+            encoding="utf-8",
+        )
+        review_path.write_text(
+            "RADcast Caption Review\n\n"
+            "Average word confidence: 72%\n"
+            "Flagged caption lines: 1\n"
+            "Total caption lines: 1\n\n"
+            "Review these timestamp ranges:\n\n"
+            "00:00:02.400 --> 00:00:04.100 | confidence 88%\n"
+            "Reason: probable critical term miss: transgression\n"
+            "Corresponding transcription\n",
+            encoding="utf-8",
+        )
+        radcast_api._write_source_audio_index(
+            radcast_api.project_manager.get_paths(project_id),
+            [
+                {
+                    "audio_hash": "abab1234" * 8,
+                    "audio_path": str(input_path),
+                    "source_filename": input_path.name,
+                    "updated_at": "2026-04-13T00:00:00+00:00",
+                    "duration_seconds": 4.0,
+                }
+            ],
+        )
+        store.append_output(
+            OutputMetadata(
+                output_file=output_path,
+                input_file=input_path,
+                duration_seconds=1.7,
+                runtime_seconds=18.0,
+                output_format=OutputFormat.MP3,
+                caption_file=caption_path,
+                caption_review_file=review_path,
+                caption_format=CaptionFormat.VTT,
+                caption_review_required=True,
+                caption_average_probability=0.72,
+                caption_low_confidence_segments=0,
+                caption_total_segments=1,
+                caption_accessibility_status=CaptionAccessibilityStatus.FAILED,
+                caption_review_warning_segments=0,
+                caption_review_failure_segments=1,
+                enhancement_model=EnhancementModel.NONE,
+                audio_tuning_label="Version 1",
+                project_id=project_id,
+                job_id="job_test",
+                clip_start_seconds=10.0,
+                clip_end_seconds=11.7,
+            )
+        )
+        review_store.save_correction(
+            source_audio_hash="abab1234" * 8,
+            absolute_start_seconds=12.4,
+            absolute_end_seconds=14.1,
+            reason_category="terminology",
+            original_text="Corresponding transcription",
+            corrected_text="Corresponding transgression",
+            corrected_start_seconds=12.4,
+            corrected_end_seconds=14.1,
+        )
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        assert outputs.status_code == 200
+        output_payload = outputs.json()["outputs"][0]
+        review_items = client.get(
+            f"/projects/{project_id}/outputs/review-items",
+            params={"path": output_payload["output_path"]},
+        )
+
+        assert review_items.status_code == 200
+        assert output_payload["caption_human_review_status"] == "passed_after_human_review"
+        assert review_items.json()["blocking_items_remaining"] == 0
+        updated_vtt = caption_path.read_text(encoding="utf-8")
+        assert "Corresponding transgression" in updated_vtt
+        assert "Corresponding transcription" not in updated_vtt
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        if project_root and project_root.exists():
+            shutil.rmtree(project_root)
+
+
 def test_review_clip_endpoint_returns_short_audio_excerpt(monkeypatch):
     client = TestClient(app)
     project_id = f"radcast-{uuid.uuid4().hex[:8]}"
