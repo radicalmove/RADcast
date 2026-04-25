@@ -73,6 +73,68 @@ def load_vtt_cues(caption_path: Path) -> list[VttCue]:
     return cues
 
 
+def load_caption_cues(caption_path: Path) -> list[VttCue]:
+    suffix = caption_path.suffix.lower()
+    if suffix == ".vtt":
+        return load_vtt_cues(caption_path)
+    if suffix == ".srt":
+        return load_srt_cues(caption_path)
+    raise ValueError(f"unsupported caption format: {suffix or caption_path.name}")
+
+
+def load_srt_cues(caption_path: Path) -> list[VttCue]:
+    lines = caption_path.read_text(encoding="utf-8").splitlines()
+    cues: list[VttCue] = []
+    index = 0
+    cue_index = 0
+
+    while index < len(lines):
+        while index < len(lines) and not lines[index].strip():
+            index += 1
+        if index >= len(lines):
+            break
+
+        identifier: str | None = None
+        line = lines[index].strip()
+        timestamp_line = line
+        if "-->" not in timestamp_line and index + 1 < len(lines):
+            identifier = line
+            timestamp_line = lines[index + 1].strip()
+            index += 1
+        if "-->" not in timestamp_line:
+            index += 1
+            continue
+
+        start_raw, end_raw = [part.strip() for part in timestamp_line.split("-->", 1)]
+        start_seconds = _timestamp_to_seconds(start_raw)
+        end_seconds = _timestamp_to_seconds(end_raw)
+        index += 1
+
+        text_lines: list[str] = []
+        while index < len(lines):
+            cue_line = lines[index]
+            if not cue_line.strip():
+                break
+            if "-->" in cue_line:
+                break
+            text_lines.append(cue_line.strip())
+            index += 1
+
+        cues.append(
+            VttCue(
+                cue_index=cue_index,
+                identifier=identifier,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
+                text=" ".join(text_lines).strip(),
+            )
+        )
+        cue_index += 1
+        while index < len(lines) and not lines[index].strip():
+            index += 1
+    return cues
+
+
 def apply_cue_edit(cues: list[VttCue], edit: CueEdit) -> list[VttCue]:
     updated = list(cues)
     cue = next((item for item in updated if item.cue_index == edit.cue_index), None)

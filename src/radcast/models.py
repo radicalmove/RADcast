@@ -153,6 +153,23 @@ class GlossaryReviewSubmissionResponse(BaseModel):
     already_known_terms: list[str] = Field(default_factory=list)
 
 
+class TranscriptCueView(BaseModel):
+    index: int = Field(ge=0)
+    start: float = Field(ge=0.0)
+    end: float = Field(gt=0.0)
+    text: str = Field(default="")
+    identifier: str | None = None
+
+
+class TranscriptViewResponse(BaseModel):
+    project_id: str
+    output_path: str
+    caption_path: str | None = None
+    caption_format: str | None = None
+    cue_count: int = Field(default=0, ge=0)
+    cues: list[TranscriptCueView] = Field(default_factory=list)
+
+
 class HumanCaptionReviewDecision(BaseModel):
     id: str = Field(min_length=1)
     source_audio_hash: str = Field(min_length=16, max_length=128)
@@ -408,6 +425,7 @@ class WorkerEnhanceEnqueueRequest(BaseModel):
     caption_format: CaptionFormat | None = None
     caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED
     caption_glossary: str | None = Field(default=None, max_length=4000)
+    caption_review_terms: str | None = Field(default=None, max_length=4000)
     enhancement_model: EnhancementModel = EnhancementModel.STUDIO_V18
     clip_start_seconds: float | None = Field(default=None, ge=0.0)
     clip_end_seconds: float | None = Field(default=None, ge=0.0)

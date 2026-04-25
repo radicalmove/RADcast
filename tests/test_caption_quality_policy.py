@@ -1,26 +1,26 @@
 from __future__ import annotations
 
 
-def test_reviewed_mode_uses_quality_local_lecture_on_macos_helper():
+def test_reviewed_mode_preserves_fast_first_pass_on_macos_helper():
     from radcast.services.caption_quality_policy import resolve_caption_quality_policy
 
     policy = resolve_caption_quality_policy(
         quality_mode="reviewed",
         runtime_context="local_helper",
         platform_name="Darwin",
-        backend_id="mlx_whisper",
-        first_pass_model_size="medium",
-        first_pass_beam_size=3,
-        review_model_size="medium",
+        backend_id="whispercpp",
+        first_pass_model_size="small",
+        first_pass_beam_size=1,
+        review_model_size="large-v3",
         review_beam_size=5,
     )
 
     assert policy.policy_id == "quality_local_lecture"
-    assert policy.first_pass_backend_id == "mlx_whisper"
-    assert policy.first_pass_model_size == "medium"
-    assert policy.first_pass_beam_size == 3
-    assert policy.review_backend_id == "mlx_whisper"
-    assert policy.review_model_size == "medium"
+    assert policy.first_pass_backend_id == "whispercpp"
+    assert policy.first_pass_model_size == "small"
+    assert policy.first_pass_beam_size == 1
+    assert policy.review_backend_id == "whispercpp"
+    assert policy.review_model_size == "large-v3"
     assert policy.review_beam_size == 5
     assert policy.review_strategy_id == "targeted_review"
     assert policy.cue_shaping_strategy_id == "lecture_friendly"

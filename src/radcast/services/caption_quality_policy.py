@@ -101,19 +101,21 @@ def resolve_caption_quality_policy(
         )
 
     if is_quality_local_lecture:
-        resolved_quality_model_size = normalized_review_model_size
-        if normalized_backend == "mlx_whisper" and not _supports_mlx_model_size(resolved_quality_model_size):
-            if _supports_mlx_model_size(normalized_first_pass_model_size):
-                resolved_quality_model_size = normalized_first_pass_model_size
+        resolved_review_model_size = normalized_review_model_size
+        if normalized_backend == "mlx_whisper" and not _supports_mlx_model_size(resolved_review_model_size):
+            if _supports_mlx_model_size("medium"):
+                resolved_review_model_size = "medium"
+            elif _supports_mlx_model_size(normalized_first_pass_model_size):
+                resolved_review_model_size = normalized_first_pass_model_size
             else:
-                resolved_quality_model_size = "medium"
+                resolved_review_model_size = "medium"
         return CaptionQualityPolicy(
             policy_id="quality_local_lecture",
             first_pass_backend_id=normalized_backend,
-            first_pass_model_size=resolved_quality_model_size,
+            first_pass_model_size=normalized_first_pass_model_size,
             first_pass_beam_size=normalized_first_pass_beam_size,
             review_backend_id=normalized_backend,
-            review_model_size=resolved_quality_model_size,
+            review_model_size=resolved_review_model_size,
             review_beam_size=normalized_review_beam_size,
             review_strategy_id="targeted_review",
             cue_shaping_strategy_id="lecture_friendly",

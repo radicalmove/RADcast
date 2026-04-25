@@ -608,6 +608,7 @@ class WorkerManager:
                     caption_format=payload.caption_format,
                     caption_quality_mode=payload.caption_quality_mode,
                     caption_glossary=(str(payload.caption_glossary or "").strip() or None),
+                    caption_review_terms=(str(payload.caption_review_terms or "").strip() or None),
                     on_stage=lambda progress, detail, eta_seconds: self._update_job_manifest(
                         project_id=payload.project_id,
                         job_id=job_id,

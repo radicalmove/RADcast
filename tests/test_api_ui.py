@@ -510,6 +510,7 @@ def test_enhance_simple_falls_back_to_saved_project_glossary(monkeypatch):
         assert response.status_code == 200
         worker_req = captured["req"]
         assert worker_req.caption_glossary == "utu, reciprocity, transgression, manaaki, manuhiri, haukāinga, tikanga, Aotearoa"
+        assert worker_req.caption_review_terms is None
     finally:
         for path in Path("projects").glob(f"*__{project_id}"):
             if path.exists():
@@ -1469,6 +1470,80 @@ def test_review_clip_endpoint_returns_short_audio_excerpt(monkeypatch):
         assert captured["src"] == input_path.resolve()
         assert captured["clip_start_seconds"] == 11.0
         assert captured["clip_end_seconds"] == 12.0
+    finally:
+        for path in Path("projects").glob(f"*__{project_id}"):
+            if path.exists():
+                shutil.rmtree(path)
+        if project_root and project_root.exists():
+            shutil.rmtree(project_root)
+
+
+def test_transcript_view_endpoint_returns_timestamped_cues():
+    client = TestClient(app)
+    project_id = f"radcast-{uuid.uuid4().hex[:8]}"
+    project_root: Path | None = None
+
+    try:
+        created = client.post("/projects", json={"project_id": project_id})
+        assert created.status_code == 200
+        project_root = Path(created.json()["project_root"])
+
+        manifests = project_root / "manifests"
+        store = ManifestStore(manifests)
+        output_path = project_root / "assets" / "enhanced_audio" / "transcript.mp3"
+        caption_path = project_root / "assets" / "enhanced_audio" / "transcript.vtt"
+        input_path = project_root / "assets" / "source_audio" / "source.wav"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        input_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp3")
+        input_path.write_bytes(b"fake-wav")
+        caption_path.write_text(
+            "WEBVTT\n\n"
+            "1\n"
+            "00:00:03.700 --> 00:00:05.574\n"
+            "Hi! Replacing the lightbulb\n"
+            "is one of the simple\n\n"
+            "2\n"
+            "00:00:05.574 --> 00:00:09.020\n"
+            "things to do. The first thing you need\n"
+            "to do is to remove the broken bulb.\n",
+            encoding="utf-8",
+        )
+        store.append_output(
+            OutputMetadata(
+                output_file=output_path,
+                input_file=input_path,
+                duration_seconds=9.0,
+                runtime_seconds=18.0,
+                output_format=OutputFormat.MP3,
+                caption_file=caption_path,
+                caption_format=CaptionFormat.VTT,
+                caption_review_required=True,
+                caption_average_probability=0.95,
+                caption_low_confidence_segments=0,
+                caption_total_segments=2,
+                caption_accessibility_status=CaptionAccessibilityStatus.PASSED,
+                enhancement_model=EnhancementModel.NONE,
+                audio_tuning_label="Version 1",
+                project_id=project_id,
+                job_id="job_test",
+            )
+        )
+
+        outputs = client.get(f"/projects/{project_id}/outputs")
+        output_payload = outputs.json()["outputs"][0]
+        response = client.get(
+            f"/projects/{project_id}/outputs/transcript",
+            params={"path": output_payload["output_path"]},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["caption_format"] == "vtt"
+        assert body["cues"][0]["start"] == 3.7
+        assert body["cues"][0]["end"] == 5.574
+        assert body["cues"][0]["text"] == "Hi! Replacing the lightbulb is one of the simple"
+        assert body["cues"][1]["text"] == "things to do. The first thing you need to do is to remove the broken bulb."
     finally:
         for path in Path("projects").glob(f"*__{project_id}"):
             if path.exists():

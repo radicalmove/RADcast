@@ -65,6 +65,11 @@ const shareProjectGrantBtn = document.getElementById("share-project-grant-btn");
 const shareProjectStatusNode = document.getElementById("share-project-status");
 const shareProjectOwnerNode = document.getElementById("share-project-owner");
 const shareProjectMembersNode = document.getElementById("share-project-members");
+const transcriptViewModalNode = document.getElementById("transcript-view-modal");
+const transcriptViewCloseBtn = document.getElementById("transcript-view-close-btn");
+const transcriptViewStatusNode = document.getElementById("transcript-view-status");
+const transcriptViewMetaNode = document.getElementById("transcript-view-meta");
+const transcriptViewListNode = document.getElementById("transcript-view-list");
 const helpModalNode = document.getElementById("help-modal");
 const helpTabListNode = document.getElementById("help-modal-tabs");
 const helpModalBodyNode = document.getElementById("help-modal-body");
@@ -167,6 +172,10 @@ const state = {
   shareProjectCollaborators: [],
   shareProjectOwner: null,
   helpActiveTab: "overview",
+  transcriptViewActiveProjectRef: null,
+  transcriptViewActiveOutputPath: null,
+  transcriptViewResponse: null,
+  transcriptViewLoadToken: 0,
   glossaryReviewActiveProjectRef: null,
   glossaryReviewActiveOutputPath: null,
   glossaryReviewResponse: null,
@@ -174,6 +183,7 @@ const state = {
   glossaryReviewLoadToken: 0,
 };
 let helpModalReturnFocusNode = null;
+let transcriptViewModalReturnFocusNode = null;
 let glossaryReviewModalReturnFocusNode = null;
 
 function escapeHtml(value) {
@@ -829,7 +839,7 @@ function workerAvailabilitySummary() {
 }
 
 function syncModalOpenState() {
-  const anyModalOpen = [workerSetupModalNode, shareProjectModalNode, helpModalNode, glossaryReviewModalNode].some(
+  const anyModalOpen = [workerSetupModalNode, shareProjectModalNode, transcriptViewModalNode, helpModalNode, glossaryReviewModalNode].some(
     (node) => node && !node.hidden
   );
   document.body.classList.toggle("modal-open", anyModalOpen);
@@ -998,6 +1008,200 @@ function closeHelpModal() {
   } else if (helpBtn) {
     helpBtn.focus();
   }
+}
+
+function transcriptViewModalElementHidden(node) {
+  let currentNode = node;
+  while (currentNode instanceof HTMLElement && currentNode !== transcriptViewModalNode) {
+    if (currentNode.hidden) return true;
+    if (typeof currentNode.getAttribute === "function" && currentNode.getAttribute("aria-hidden") === "true") return true;
+    currentNode = currentNode.parentNode;
+  }
+  return false;
+}
+
+function isTranscriptViewModalFocusable(node) {
+  if (!(node instanceof HTMLElement)) return false;
+  if (transcriptViewModalElementHidden(node)) return false;
+  if ("disabled" in node && node.disabled) return false;
+  if (node.tabIndex < 0) return false;
+  const tagName = String(node.tagName || "").toLowerCase();
+  if (tagName === "button" || tagName === "input" || tagName === "select" || tagName === "textarea" || tagName === "summary") {
+    return true;
+  }
+  if (tagName === "a") {
+    return typeof node.getAttribute === "function" && node.getAttribute("href") !== null;
+  }
+  return typeof node.getAttribute === "function" && node.getAttribute("tabindex") !== null;
+}
+
+function getTranscriptViewModalFocusableNodes() {
+  if (!(transcriptViewModalNode instanceof HTMLElement)) return [];
+  const focusableNodes = [];
+  const stack = Array.from(transcriptViewModalNode.children || []);
+  while (stack.length) {
+    const node = stack.shift();
+    if (!(node instanceof HTMLElement)) continue;
+    if (isTranscriptViewModalFocusable(node)) {
+      focusableNodes.push(node);
+    }
+    stack.unshift(...Array.from(node.children || []));
+  }
+  return focusableNodes;
+}
+
+function handleTranscriptViewModalKeydown(event) {
+  if (event.key !== "Tab" || !transcriptViewModalNode || transcriptViewModalNode.hidden) return;
+  const focusableNodes = getTranscriptViewModalFocusableNodes();
+  if (focusableNodes.length < 2) return;
+  const firstNode = focusableNodes[0];
+  const lastNode = focusableNodes[focusableNodes.length - 1];
+  const activeNode = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (event.shiftKey) {
+    if (activeNode !== firstNode) return;
+    event.preventDefault();
+    lastNode.focus();
+    return;
+  }
+  if (activeNode !== lastNode) return;
+  event.preventDefault();
+  firstNode.focus();
+}
+
+function setTranscriptViewStatus(message, isError = false) {
+  if (!transcriptViewStatusNode) return;
+  transcriptViewStatusNode.textContent = message || "";
+  transcriptViewStatusNode.style.color = isError ? "#a73527" : "#555";
+}
+
+function formatTranscriptTimestamp(seconds) {
+  const totalMilliseconds = Math.max(0, Math.round(Number(seconds || 0) * 1000));
+  const hours = Math.floor(totalMilliseconds / 3_600_000);
+  const minutes = Math.floor((totalMilliseconds % 3_600_000) / 60_000);
+  const wholeSeconds = Math.floor((totalMilliseconds % 60_000) / 1000);
+  const milliseconds = totalMilliseconds % 1000;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
+}
+
+function renderTranscriptView(data) {
+  if (!transcriptViewMetaNode || !transcriptViewListNode) return;
+  const cues = Array.isArray(data?.cues) ? data.cues : [];
+  const captionPath = cleanOptional(data?.caption_path || "");
+  const captionFormat = cleanOptional(String(data?.caption_format || "").toUpperCase()) || "CAPTIONS";
+  const cueCount = Number(data?.cue_count || cues.length || 0);
+  const metaParts = [];
+  metaParts.push(`${cueCount} cue${cueCount === 1 ? "" : "s"}`);
+  metaParts.push(captionFormat);
+  if (captionPath) {
+    metaParts.push(String(captionPath).split(/[\\/]/).filter(Boolean).pop() || captionPath);
+  }
+  transcriptViewMetaNode.textContent = metaParts.join(" | ");
+
+  if (!cues.length) {
+    transcriptViewListNode.innerHTML = '<p class="transcript-view-empty">No transcript cues were found for this file.</p>';
+    return;
+  }
+
+  transcriptViewListNode.innerHTML = cues
+    .map((cue) => {
+      const index = Number(cue?.index ?? 0);
+      const start = Number(cue?.start ?? cue?.start_seconds ?? 0);
+      const end = Number(cue?.end ?? cue?.end_seconds ?? 0);
+      return `
+        <article class="transcript-view-cue">
+          <div class="transcript-view-cue-header">
+            <div class="transcript-view-cue-index">Cue ${escapeHtml(index + 1)}</div>
+            <div class="transcript-view-cue-timing">${escapeHtml(`${formatTranscriptTimestamp(start)} \u2192 ${formatTranscriptTimestamp(end)}`)}</div>
+          </div>
+          <p class="transcript-view-cue-text">${escapeHtml(cue?.text || "") || "&nbsp;"}</p>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+async function loadTranscriptView(outputPath) {
+  if (!state.activeProjectRef || !outputPath) return null;
+  const requestToken = ++state.transcriptViewLoadToken;
+  state.transcriptViewActiveOutputPath = outputPath;
+  state.transcriptViewActiveProjectRef = state.activeProjectRef;
+  state.transcriptViewResponse = null;
+  setTranscriptViewStatus("Loading transcript...");
+
+  try {
+    const data = await requestJSON(
+      `/projects/${encodeURIComponent(state.activeProjectRef)}/outputs/transcript?path=${encodeURIComponent(outputPath)}`,
+      "GET"
+    );
+    if (requestToken !== state.transcriptViewLoadToken || state.activeProjectRef !== state.transcriptViewActiveProjectRef) {
+      return null;
+    }
+    state.transcriptViewResponse = data;
+    renderTranscriptView(data);
+    setTranscriptViewStatus(
+      `Loaded ${reviewItemCountLabel(Number(data?.cue_count || (Array.isArray(data?.cues) ? data.cues.length : 0)), "cue")}.`
+    );
+    return data;
+  } catch (err) {
+    if (requestToken !== state.transcriptViewLoadToken) return null;
+    setTranscriptViewStatus(`Could not load transcript: ${String(err)}`, true);
+    if (transcriptViewMetaNode) transcriptViewMetaNode.textContent = "";
+    if (transcriptViewListNode) {
+      transcriptViewListNode.innerHTML = '<p class="transcript-view-empty">Could not load transcript.</p>';
+    }
+    return null;
+  }
+}
+
+function openTranscriptViewModal(outputPath) {
+  if (!transcriptViewModalNode || !outputPath) return;
+  transcriptViewModalReturnFocusNode = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  transcriptViewModalNode.hidden = false;
+  syncModalOpenState();
+  if (transcriptViewMetaNode) transcriptViewMetaNode.textContent = "";
+  if (transcriptViewListNode) {
+    transcriptViewListNode.innerHTML = '<p class="transcript-view-empty">Loading transcript...</p>';
+  }
+  setTranscriptViewStatus("Loading transcript...");
+  void loadTranscriptView(outputPath).then(() => {
+    const focusableNodes = getTranscriptViewModalFocusableNodes();
+    const firstFocusable = focusableNodes[0];
+    if (firstFocusable instanceof HTMLElement && typeof firstFocusable.focus === "function") {
+      firstFocusable.focus();
+    }
+  });
+}
+
+function closeTranscriptViewModal() {
+  if (!transcriptViewModalNode) return;
+  transcriptViewModalNode.hidden = true;
+  syncModalOpenState();
+  const returnFocusNode = transcriptViewModalReturnFocusNode;
+  transcriptViewModalReturnFocusNode = null;
+  if (returnFocusNode instanceof HTMLElement && typeof returnFocusNode.focus === "function") {
+    returnFocusNode.focus();
+  }
+}
+
+function bindTranscriptViewModal() {
+  if (transcriptViewCloseBtn) {
+    transcriptViewCloseBtn.addEventListener("click", closeTranscriptViewModal);
+  }
+
+  if (transcriptViewModalNode) {
+    transcriptViewModalNode.addEventListener("click", (event) => {
+      if (event.target === transcriptViewModalNode) {
+        closeTranscriptViewModal();
+      }
+    });
+    transcriptViewModalNode.addEventListener("keydown", handleTranscriptViewModalKeydown);
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && transcriptViewModalNode && !transcriptViewModalNode.hidden) {
+      closeTranscriptViewModal();
+    }
+  });
 }
 
 function glossaryReviewModalElementHidden(node) {
@@ -1828,6 +2032,17 @@ if (typeof window !== "undefined") {
     helpTabNavigationTarget,
     normalizeHelpTab,
     setHelpTab,
+  };
+  window.__radcastTranscript = {
+    bindTranscriptViewModal,
+    closeTranscriptViewModal,
+    formatTranscriptTimestamp,
+    getTranscriptViewModalFocusableNodes,
+    handleTranscriptViewModalKeydown,
+    loadTranscriptView,
+    openTranscriptViewModal,
+    renderTranscriptView,
+    setTranscriptViewStatus,
   };
   window.__radcastGlossaryReview = {
     bindGlossaryReviewModal,
@@ -3124,6 +3339,9 @@ async function loadOutputs() {
       if (item.caption_download_url) {
         const captionLabel = captionFormat === "vtt" ? "Save VTT captions" : "Save SRT captions";
         actions.push(`<a href="${escapeHtml(item.caption_download_url)}" download>${escapeHtml(captionLabel)}</a>`);
+        actions.push(
+          `<button class="transcript-view-btn" data-output-path="${escapeHtml(item.output_path || "")}" type="button">View transcript</button>`
+        );
       }
       if (item.has_review_artifacts) {
         actions.push(
@@ -3221,6 +3439,7 @@ const CAPTION_FAILURE_BREAKDOWN_LABELS = {
   terminology: ["terminology issue", "terminology issues"],
   truncation: ["truncation issue", "truncation issues"],
   duplication: ["duplication issue", "duplication issues"],
+  sparse_caption: ["sparse caption issue", "sparse caption issues"],
   other: ["other issue", "other issues"],
 };
 
@@ -3380,6 +3599,14 @@ function bindOutputActions() {
       return;
     }
 
+    const transcriptButton = target.closest(".transcript-view-btn");
+    if (transcriptButton instanceof HTMLButtonElement) {
+      const outputPath = cleanOptional(transcriptButton.dataset.outputPath);
+      if (!outputPath) return;
+      openTranscriptViewModal(outputPath);
+      return;
+    }
+
     const glossaryReviewButton = target.closest(".glossary-review-btn");
     if (!(glossaryReviewButton instanceof HTMLButtonElement)) return;
     const outputPath = cleanOptional(glossaryReviewButton.dataset.outputPath);
@@ -3505,6 +3732,7 @@ function wireTrimRail() {
 async function init() {
   setupThemeToggle();
   setHelpTab(normalizeHelpTab(readStoredHelpTab()), { persist: false });
+  bindTranscriptViewModal();
   bindHelpModal();
   showProjectGateway();
   await loadProjects();

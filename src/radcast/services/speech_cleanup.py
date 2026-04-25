@@ -42,6 +42,7 @@ from radcast.services.caption_review import (
     format_caption_review_document,
     sanitize_review_candidate_text,
     is_review_system_text,
+    should_accept_sparse_review_candidate,
 )
 from radcast.services.caption_backends import (
     CaptionBackend,
@@ -80,6 +81,7 @@ _CAPTION_ACCURATE_OVERLAP_SECONDS = 2.5
 _CAPTION_REVIEWED_WINDOW_SECONDS = 16.0
 _CAPTION_REVIEWED_OVERLAP_SECONDS = 3.0
 _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS = 1.8
+_CAPTION_REVIEW_SPARSE_CONTEXT_SECONDS = 3.2
 _CAPTION_MAX_CUE_DURATION_SECONDS = 6.0
 _CAPTION_MAX_CUE_CHARACTERS = 84
 _CAPTION_MAX_CUE_WORDS = 14
@@ -453,18 +455,11 @@ class SpeechCleanupService:
             review_model_size = self.caption_reviewed_model_size
             review_beam_size = self.caption_reviewed_beam_size
         else:
-            first_pass_model_size = self.caption_accurate_model_size
-            first_pass_beam_size = self.caption_accurate_beam_size
+            first_pass_model_size = self.caption_fast_model_size
+            first_pass_beam_size = self.caption_fast_beam_size
             review_model_size = self.caption_reviewed_model_size
             review_beam_size = self.caption_reviewed_beam_size
         policy_backend_id = self.caption_backend_id
-        if (
-            normalized_quality == CaptionQualityMode.REVIEWED
-            and self.runtime_context == "local_helper"
-            and self.platform_name.lower() == "darwin"
-            and self._mlx_whisper_backend.capability_status()[0]
-        ):
-            policy_backend_id = self._mlx_whisper_backend.id
         return resolve_caption_quality_policy(
             quality_mode=normalized_quality,
             runtime_context=self.runtime_context,
@@ -654,6 +649,7 @@ class SpeechCleanupService:
         caption_format: CaptionFormat,
         caption_quality_mode: CaptionQualityMode = CaptionQualityMode.REVIEWED,
         caption_glossary: str | None = None,
+        caption_review_terms: str | None = None,
         on_stage: CleanupStageCallback | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> CaptionExportResult:
@@ -699,7 +695,7 @@ class SpeechCleanupService:
             tmp_path = Path(tmp)
             analysis_wav = tmp_path / "analysis.wav"
             run_ffmpeg_convert(audio_path, analysis_wav)
-            critical_terms = _critical_caption_terms(caption_glossary)
+            critical_terms = _critical_caption_terms(caption_review_terms)
             _words, segments = self._transcribe_timeline(
                 analysis_wav,
                 total_duration=input_duration,
@@ -748,6 +744,7 @@ class SpeechCleanupService:
                     analysis_wav=analysis_wav,
                     base_segments=segments,
                     quality_report=review_report,
+                    critical_terms=critical_terms,
                     prompt_text=caption_prompt,
                     on_stage=on_stage,
                     started_at=started_at,
@@ -1094,6 +1091,7 @@ class SpeechCleanupService:
         analysis_wav: Path,
         base_segments: list[TranscriptSegmentTiming],
         quality_report: CaptionQualityReport,
+        critical_terms: list[str] | None,
         prompt_text: str | None,
         on_stage: CleanupStageCallback | None = None,
         started_at: float | None = None,
@@ -1103,9 +1101,6 @@ class SpeechCleanupService:
         progress_label: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[TranscriptSegmentTiming]:
-        rerun_plan = build_selective_rerun_plan(quality_report)
-        if not rerun_plan:
-            return base_segments
         selected_backend = review_backend or self._faster_whisper_backend
         resolved_review_model_size = str(review_model_size or self.caption_reviewed_model_size).strip() or self.caption_reviewed_model_size
         if selected_backend.id == "whispercpp":
@@ -1114,8 +1109,67 @@ class SpeechCleanupService:
             model = self._load_model(resolved_review_model_size, backend=selected_backend)
         waveform, sample_rate = _read_pcm16_wav(analysis_wav)
         corrected = list(base_segments)
-        total_windows = len(rerun_plan)
         review_started_at = time.monotonic()
+
+        if _quality_report_has_sparse_or_truncation_issues(quality_report):
+            if on_stage:
+                review_detail = _caption_stage_detail(
+                    action="Rechecking full transcript",
+                    backend=selected_backend,
+                    model_size=resolved_review_model_size,
+                )
+                if progress_label:
+                    review_detail = f"{progress_label}: {review_detail}"
+                on_stage(
+                    0.82,
+                    review_detail,
+                    None,
+                )
+            full_file_candidate = self._review_full_caption_pass(
+                analysis_wav=analysis_wav,
+                waveform=waveform,
+                sample_rate=sample_rate,
+                prompt_text=prompt_text,
+                review_backend=selected_backend,
+                review_model_size=resolved_review_model_size,
+                cancel_check=cancel_check,
+            )
+            if full_file_candidate is not None:
+                candidate_report = build_caption_quality_report(
+                    full_file_candidate,
+                    critical_terms=critical_terms,
+                )
+                if _should_accept_full_file_review_candidate(
+                    current_segments=corrected,
+                    candidate_segments=full_file_candidate,
+                    current_report=quality_report,
+                    candidate_report=candidate_report,
+                ):
+                    if on_stage:
+                        elapsed = max(0.0, time.monotonic() - review_started_at)
+                        overall_elapsed = max(0.0, time.monotonic() - float(started_at or review_started_at))
+                        review_detail = _caption_stage_detail(
+                            action="Rechecking full transcript",
+                            backend=selected_backend,
+                            model_size=resolved_review_model_size,
+                        )
+                        if progress_label:
+                            review_detail = f"{progress_label}: {review_detail}"
+                        on_stage(
+                            0.9,
+                            review_detail,
+                            _remaining_cleanup_eta(
+                                float(started_at or review_started_at),
+                                int(caption_eta_seconds or max(30, int(overall_elapsed + 8))),
+                                floor_seconds=4,
+                            ),
+                        )
+                    return full_file_candidate
+
+        rerun_plan = build_selective_rerun_plan(quality_report)
+        if not rerun_plan:
+            return corrected
+        total_windows = len(rerun_plan)
         with tempfile.TemporaryDirectory(prefix="radcast_caption_review_") as tmp:
             tmp_path = Path(tmp)
             for window_index, window in enumerate(rerun_plan, start=1):
@@ -1198,6 +1252,46 @@ class SpeechCleanupService:
                     )
         return corrected
 
+    def _review_full_caption_pass(
+        self,
+        *,
+        analysis_wav: Path,
+        waveform: np.ndarray,
+        sample_rate: int,
+        prompt_text: str | None,
+        review_backend: CaptionBackend | None = None,
+        review_model_size: str | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> list[TranscriptSegmentTiming] | None:
+        total_duration = waveform.shape[0] / float(sample_rate) if sample_rate else 0.0
+        if total_duration <= 0.0:
+            return None
+        selected_backend = review_backend or self._faster_whisper_backend
+        resolved_review_model_size = str(review_model_size or self.caption_reviewed_model_size).strip() or self.caption_reviewed_model_size
+        if cancel_check and cancel_check():
+            raise JobCancelledError("job cancelled")
+        review_prompt = _combine_prompt_parts(prompt_text, _CAPTION_REVIEW_PROMPT)
+        _, candidate_segments = self._transcribe_timeline(
+            analysis_wav,
+            total_duration=total_duration,
+            started_at=time.monotonic(),
+            cleanup_eta_seconds=max(30, int(round(total_duration * 2.0))),
+            on_stage=None,
+            remove_filler_words=False,
+            filler_removal_mode=FillerRemovalMode.AGGRESSIVE,
+            transcribe_detail="Rechecking full transcript.",
+            cancel_check=cancel_check,
+            force_windowed=False,
+            preserve_fillers=False,
+            backend=selected_backend,
+            model_size=resolved_review_model_size,
+            beam_size=self.caption_reviewed_beam_size,
+            condition_on_previous_text=True,
+            initial_prompt=review_prompt,
+        )
+        candidate_segments = _dedupe_caption_segments(candidate_segments)
+        return candidate_segments or None
+
     def _review_caption_flag(
         self,
         *,
@@ -1239,8 +1333,13 @@ class SpeechCleanupService:
         review_backend: CaptionBackend | None = None,
         review_model_size: str | None = None,
     ) -> TranscriptSegmentTiming | None:
-        snippet_start = max(0.0, float(window.start) - _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS)
-        snippet_end = max(snippet_start + 0.5, float(window.end) + _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS)
+        sparse_window = any(
+            str(getattr(flag, "reason", "") or "") in {"probable sparse caption run", "probable sparse caption gap"}
+            for flag in window.flags
+        ) or window.priority_reason in {"probable sparse caption run", "probable sparse caption gap"}
+        review_context_seconds = _CAPTION_REVIEW_SPARSE_CONTEXT_SECONDS if sparse_window else _CAPTION_REVIEW_SWEEP_CONTEXT_SECONDS
+        snippet_start = max(0.0, float(window.start) - review_context_seconds)
+        snippet_end = max(snippet_start + 0.5, float(window.end) + review_context_seconds)
         total_duration = waveform.shape[0] / float(sample_rate) if sample_rate else 0.0
         snippet_end = min(total_duration, snippet_end)
         start_idx = max(0, min(len(waveform), int(round(snippet_start * sample_rate))))
@@ -1423,6 +1522,74 @@ class SpeechCleanupService:
         return "Applying speech cleanup: " + ", ".join(parts) + "."
 
 
+def _quality_report_has_sparse_or_truncation_issues(report: CaptionQualityReport) -> bool:
+    return any(
+        flag.reason in {"probable truncation", "probable sparse caption run", "probable sparse caption gap"}
+        for flag in report.flagged_segments
+    )
+
+
+def _should_accept_full_file_review_candidate(
+    *,
+    current_segments: list[TranscriptSegmentTiming],
+    candidate_segments: list[TranscriptSegmentTiming],
+    current_report: CaptionQualityReport,
+    candidate_report: CaptionQualityReport,
+) -> bool:
+    current_failure_count = len(current_report.flagged_segments)
+    candidate_failure_count = len(candidate_report.flagged_segments)
+    current_sparse_failure_count = sum(
+        1
+        for flag in current_report.flagged_segments
+        if flag.reason in {"probable truncation", "probable sparse caption run", "probable sparse caption gap"}
+    )
+    candidate_sparse_failure_count = sum(
+        1
+        for flag in candidate_report.flagged_segments
+        if flag.reason in {"probable truncation", "probable sparse caption run", "probable sparse caption gap"}
+    )
+    current_critical_failure_count = sum(
+        1 for flag in current_report.flagged_segments if flag.reason.startswith("probable critical term miss:")
+    )
+    candidate_critical_failure_count = sum(
+        1 for flag in candidate_report.flagged_segments if flag.reason.startswith("probable critical term miss:")
+    )
+    current_words = sum(len(_caption_tokens(segment.text)) for segment in current_segments)
+    candidate_words = sum(len(_caption_tokens(segment.text)) for segment in candidate_segments)
+    current_duration = sum(max(0.0, float(segment.end) - float(segment.start)) for segment in current_segments)
+    candidate_duration = sum(max(0.0, float(segment.end) - float(segment.start)) for segment in candidate_segments)
+    current_density = current_words / max(1.0, current_duration)
+    candidate_density = candidate_words / max(1.0, candidate_duration)
+    if current_words > 0:
+        word_ratio = candidate_words / max(1, current_words)
+        if word_ratio < 0.7:
+            return False
+    if current_density > 0.0 and candidate_density < (current_density * 0.75):
+        return False
+
+    if (
+        candidate_sparse_failure_count < current_sparse_failure_count
+        and candidate_failure_count <= current_failure_count
+        and candidate_critical_failure_count <= current_critical_failure_count
+    ):
+        return True
+    if (
+        candidate_failure_count < current_failure_count
+        and candidate_critical_failure_count <= current_critical_failure_count
+        and candidate_words >= current_words + 4
+    ):
+        return True
+    if (
+        candidate_sparse_failure_count <= current_sparse_failure_count
+        and candidate_failure_count <= current_failure_count
+        and candidate_critical_failure_count <= current_critical_failure_count
+        and candidate_words >= current_words + max(6, int(round(current_words * 0.18)))
+        and candidate_density >= current_density + 0.05
+    ):
+        return True
+    return False
+
+
 def _normalize_token(text: str) -> str:
     cleaned = _TOKEN_RE.sub("", str(text or "").strip().lower())
     return cleaned.strip("'")
@@ -1462,7 +1629,7 @@ def _critical_caption_terms(custom_glossary: str | None) -> list[str]:
     glossary_terms = _normalize_custom_glossary(custom_glossary)
     combined: list[str] = []
     seen: set[str] = set()
-    for term in [*glossary_terms, *_COMMON_MAORI_TERMS]:
+    for term in glossary_terms:
         normalized = " ".join(str(term or "").split()).strip()
         if not normalized:
             continue
@@ -2155,6 +2322,11 @@ def _should_accept_window_review_candidate(
 ) -> bool:
     if any(flag.reason.startswith("probable critical term miss:") for flag in window.flags):
         return True
+    if any(flag.reason in {"probable sparse caption run", "probable sparse caption gap"} for flag in window.flags):
+        return should_accept_sparse_review_candidate(
+            current_segment=current_segment,
+            candidate_segment=candidate_segment,
+        )
     if any(flag.reason == "probable truncation" for flag in window.flags):
         return _should_accept_truncation_review_candidate(
             flag=window.flags[0],

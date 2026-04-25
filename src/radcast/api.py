@@ -51,6 +51,8 @@ from radcast.models import (
     ProjectSourceAudioUploadRequest,
     ProjectUiSettings,
     SimpleEnhanceRequest,
+    TranscriptCueView,
+    TranscriptViewResponse,
     WorkerEnhanceEnqueueRequest,
     WorkerInviteRequest,
     WorkerInviteResponse,
@@ -71,7 +73,14 @@ from radcast.progress import (
     map_postprocess_stage_progress,
 )
 from radcast.services.caption_review import classify_caption_review_reason, summarize_caption_review_document
-from radcast.services.caption_artifacts import CueEdit, apply_cue_edit, load_vtt_cues, relative_cue_times, save_vtt_cues
+from radcast.services.caption_artifacts import (
+    CueEdit,
+    apply_cue_edit,
+    load_caption_cues,
+    load_vtt_cues,
+    relative_cue_times,
+    save_vtt_cues,
+)
 from radcast.services.glossary_review import extract_glossary_review_candidates
 from radcast.services.glossary_store import GlossaryStore, normalize_glossary_term, split_legacy_glossary_terms
 from radcast.services.human_caption_review import HumanCaptionReviewStore
@@ -440,6 +449,11 @@ def _effective_caption_glossary(scoped_project_id: str, *, caption_glossary: str
         pass
 
     return ", ".join(merged_terms) if merged_terms else None
+
+
+def _effective_caption_review_terms(*, caption_glossary: str | None) -> str | None:
+    review_terms = split_legacy_glossary_terms(caption_glossary)
+    return ", ".join(review_terms) if review_terms else None
 
 
 def _inferred_owner_key_from_project_id(scoped_project_id: str) -> str:
@@ -1688,6 +1702,9 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         scoped_project_id,
         caption_glossary=req.caption_glossary if req.caption_glossary is not None else settings.caption_glossary,
     )
+    resolved_caption_review_terms = _effective_caption_review_terms(
+        caption_glossary=req.caption_glossary,
+    )
 
     output_name = _build_output_name(input_audio_filename, req.output_name)
     cancelled_jobs = worker_manager.cancel_project_jobs(scoped_project_id, reason="superseded by a newer request")
@@ -1700,6 +1717,7 @@ def enhance_simple(request: Request, req: SimpleEnhanceRequest):
         caption_format=req.caption_format,
         caption_quality_mode=req.caption_quality_mode,
         caption_glossary=resolved_caption_glossary,
+        caption_review_terms=resolved_caption_review_terms,
         enhancement_model=selected_model,
         clip_start_seconds=resolved_clip_start_seconds,
         clip_end_seconds=resolved_clip_end_seconds,
@@ -2276,6 +2294,47 @@ def project_output_review_clip(
         clip_end_seconds=absolute_end,
     )
     return FileResponse(path=clip_path, media_type="audio/wav", filename=clip_path.name)
+
+
+@app.get("/projects/{project_id}/outputs/transcript", response_model=TranscriptViewResponse)
+def project_output_transcript(
+    request: Request,
+    project_id: str,
+    path: str = Query(..., min_length=1),
+) -> TranscriptViewResponse:
+    _require_auth(request)
+    scoped_project_id = _resolve_project_id_for_request(request, project_id)
+    item = _find_project_output_item(scoped_project_id, path)
+    caption_file = str(item.get("caption_file") or "").strip()
+    if not caption_file:
+        raise HTTPException(status_code=404, detail="caption file not found")
+
+    caption_path = Path(caption_file)
+    if not caption_path.exists() or not caption_path.is_file():
+        raise HTTPException(status_code=404, detail="caption file not found")
+
+    try:
+        cues = load_caption_cues(caption_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return TranscriptViewResponse(
+        project_id=_display_project_id(scoped_project_id),
+        output_path=str(item.get("output_file") or ""),
+        caption_path=caption_file,
+        caption_format=str(item.get("caption_format") or caption_path.suffix.lstrip(".") or "").lower() or None,
+        cue_count=len(cues),
+        cues=[
+            TranscriptCueView(
+                index=cue.cue_index,
+                start=cue.start_seconds,
+                end=cue.end_seconds,
+                text=cue.text,
+                identifier=cue.identifier,
+            )
+            for cue in cues
+        ],
+    )
 
 
 @app.get("/projects/{project_id}/outputs/glossary-review-candidates")

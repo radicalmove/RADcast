@@ -527,6 +527,7 @@ class WorkerClient:
                         caption_format=req.caption_format,
                         caption_quality_mode=req.caption_quality_mode,
                         caption_glossary=(str(req.caption_glossary or "").strip() or None),
+                        caption_review_terms=(str(req.caption_review_terms or "").strip() or None),
                         on_stage=lambda progress, detail, eta_seconds: emit_progress(
                             map_postprocess_stage_progress(
                                 progress,

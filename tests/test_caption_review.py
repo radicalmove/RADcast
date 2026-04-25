@@ -11,6 +11,7 @@ from radcast.services.caption_review import (
     is_review_system_text,
     sanitize_review_candidate_text,
     select_review_candidates,
+    should_accept_sparse_review_candidate,
 )
 from radcast.services.speech_cleanup import TranscriptSegmentTiming
 
@@ -167,6 +168,232 @@ def test_build_caption_quality_report_flags_probable_manaaki_term_miss():
     assert assessment.status.name.lower() == "failed"
 
 
+def test_build_caption_quality_report_does_not_flag_short_glossary_terms_on_unrelated_short_words():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Hi!",
+            start=0.0,
+            end=14.5,
+            average_probability=0.91,
+        ),
+        TranscriptSegmentTiming(
+            text="Have to make sure",
+            start=14.5,
+            end=19.227,
+            average_probability=0.92,
+        ),
+    ]
+
+    report = build_caption_quality_report(segments, critical_terms=["hui", "rangatahi"])
+
+    assert all(
+        not flag.reason.startswith("probable critical term miss:")
+        for flag in report.flagged_segments
+    )
+
+
+def test_build_caption_quality_report_flags_sparse_lightbulb_style_runs_for_rerun():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Hi!",
+            start=0.0,
+            end=14.5,
+            average_probability=0.91,
+        ),
+        TranscriptSegmentTiming(
+            text="Have to make sure",
+            start=14.5,
+            end=19.227,
+            average_probability=0.92,
+        ),
+        TranscriptSegmentTiming(
+            text="that the bulb is not too hot.",
+            start=19.227,
+            end=27.5,
+            average_probability=0.93,
+        ),
+        TranscriptSegmentTiming(
+            text="Okay, it's time",
+            start=66.5,
+            end=78.688,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="to select a proper lightbulb.",
+            start=78.688,
+            end=99.0,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="Always make sure",
+            start=99.0,
+            end=111.188,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="that the power rating of",
+            start=111.188,
+            end=131.5,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="It's already out, so always use a",
+            start=131.5,
+            end=137.14,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="tool to get this screw part out.",
+            start=137.14,
+            end=142.78,
+            average_probability=0.95,
+        ),
+    ]
+
+    report = build_caption_quality_report(segments)
+
+    assert any(flag.reason == "probable sparse caption run" for flag in report.flagged_segments)
+
+
+def test_build_caption_quality_report_flags_sparse_caption_gaps_for_rerun():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Hi!",
+            start=0.0,
+            end=14.5,
+            average_probability=0.91,
+        ),
+        TranscriptSegmentTiming(
+            text="Have to make sure",
+            start=14.5,
+            end=19.227,
+            average_probability=0.92,
+        ),
+        TranscriptSegmentTiming(
+            text="that the bulb is not too hot.",
+            start=19.227,
+            end=27.5,
+            average_probability=0.93,
+        ),
+        TranscriptSegmentTiming(
+            text="They have temperature cycles and screw",
+            start=27.5,
+            end=32.088,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="part is rusted, when you try",
+            start=32.088,
+            end=36.676,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="to unscrew it from the",
+            start=36.676,
+            end=40.5,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="Okay, it's time",
+            start=66.5,
+            end=78.688,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="to select a proper lightbulb.",
+            start=78.688,
+            end=99.0,
+            average_probability=0.95,
+        ),
+    ]
+
+    report = build_caption_quality_report(segments)
+    plan = build_selective_rerun_plan(report)
+
+    assert any(flag.reason == "probable sparse caption gap" for flag in report.flagged_segments)
+    assert any(
+        any(flag.reason == "probable sparse caption gap" for flag in window.flags)
+        for window in plan
+    )
+
+
+def test_build_selective_rerun_plan_keeps_sparse_gaps_separate_from_sparse_runs():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Hi!",
+            start=0.0,
+            end=14.5,
+            average_probability=0.91,
+        ),
+        TranscriptSegmentTiming(
+            text="Have to make sure",
+            start=14.5,
+            end=19.227,
+            average_probability=0.92,
+        ),
+        TranscriptSegmentTiming(
+            text="that the bulb is not too hot.",
+            start=19.227,
+            end=27.5,
+            average_probability=0.93,
+        ),
+        TranscriptSegmentTiming(
+            text="They have temperature cycles and screw",
+            start=27.5,
+            end=32.088,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="part is rusted, when you try",
+            start=32.088,
+            end=36.676,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="to unscrew it from the",
+            start=36.676,
+            end=40.5,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="Okay, it's time",
+            start=66.5,
+            end=78.688,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="to select a proper lightbulb.",
+            start=78.688,
+            end=99.0,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="Always make sure",
+            start=99.0,
+            end=111.188,
+            average_probability=0.95,
+        ),
+        TranscriptSegmentTiming(
+            text="that the power rating of",
+            start=111.188,
+            end=131.5,
+            average_probability=0.95,
+        ),
+    ]
+
+    report = build_caption_quality_report(segments)
+    plan = build_selective_rerun_plan(report)
+
+    mixed_window_reasons = [
+        {flag.reason for flag in window.flags}
+        for window in plan
+        if any(flag.reason == "probable sparse caption gap" for flag in window.flags)
+    ]
+
+    assert mixed_window_reasons
+    assert all("probable sparse caption run" not in reasons for reasons in mixed_window_reasons)
+
+
 def test_build_selective_rerun_plan_merges_adjacent_flags_and_prioritizes_critical_terms():
     report = CaptionQualityReport(
         average_probability=0.71,
@@ -201,6 +428,74 @@ def test_build_selective_rerun_plan_merges_adjacent_flags_and_prioritizes_critic
         "probable critical term miss: tikanga",
         "probable low confidence",
     ]
+
+
+def test_build_caption_quality_report_flags_sparse_caption_runs_for_rerun():
+    segments = [
+        TranscriptSegmentTiming(
+            text="Don't buy cheap bulbs",
+            start=18.320,
+            end=51.077,
+            average_probability=0.98,
+        ),
+        TranscriptSegmentTiming(
+            text="and don't screw",
+            start=51.077,
+            end=75.645,
+            average_probability=0.98,
+        ),
+        TranscriptSegmentTiming(
+            text="them too tight,",
+            start=75.645,
+            end=100.212,
+            average_probability=0.98,
+        ),
+        TranscriptSegmentTiming(
+            text="otherwise they'll break.",
+            start=100.212,
+            end=124.780,
+            average_probability=0.98,
+        ),
+    ]
+
+    report = build_caption_quality_report(segments)
+    plan = build_selective_rerun_plan(report)
+
+    assert [flag.reason for flag in report.flagged_segments] == ["probable sparse caption run"]
+    assert len(plan) == 1
+    assert plan[0].start == 18.32
+    assert plan[0].end == 124.78
+    assert plan[0].priority_reason == "probable sparse caption run"
+
+
+def test_sparse_review_candidate_acceptance_prefers_materially_denser_replacement():
+    current_segment = TranscriptSegmentTiming(
+        text="Don't buy cheap bulbs",
+        start=18.32,
+        end=51.077,
+        average_probability=0.98,
+    )
+    candidate_segment = TranscriptSegmentTiming(
+        text="Don't buy cheap bulbs unless you also want to replace them again tomorrow",
+        start=18.32,
+        end=51.077,
+        average_probability=0.985,
+    )
+    similar_probability_sparse_candidate = TranscriptSegmentTiming(
+        text="Don't buy cheap bulbs",
+        start=18.32,
+        end=51.077,
+        average_probability=0.989,
+    )
+
+    assert should_accept_sparse_review_candidate(
+        current_segment=current_segment,
+        candidate_segment=candidate_segment,
+    ) is True
+    assert should_accept_sparse_review_candidate(
+        current_segment=current_segment,
+        candidate_segment=similar_probability_sparse_candidate,
+    ) is False
 
 
 def test_targeted_review_selects_only_high_risk_truncations_and_low_confidence_segments():

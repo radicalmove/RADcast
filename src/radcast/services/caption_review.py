@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from difflib import SequenceMatcher
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, Sequence
 
 from radcast.models import CaptionAccessibilityStatus
@@ -134,6 +136,46 @@ def assess_caption_accessibility(report: CaptionQualityReport) -> CaptionAccessi
         warning_segment_count=0,
         failure_segment_count=0,
     )
+
+
+def classify_caption_review_reason(reason: str) -> tuple[str, str]:
+    normalized_reason = str(reason or "").strip()
+    if normalized_reason.startswith("probable critical term miss:"):
+        return ("failure", "terminology")
+    if normalized_reason == "probable truncation":
+        return ("failure", "truncation")
+    if normalized_reason == "probable duplication":
+        return ("failure", "duplication")
+    if normalized_reason in {"probable sparse caption run", "probable sparse caption gap"}:
+        return ("failure", "sparse_caption")
+    if normalized_reason == "probable low confidence":
+        return ("warning", "low_confidence")
+    return ("failure", "other")
+
+
+def summarize_caption_review_document(review_path: str | Path | None) -> tuple[dict[str, int], dict[str, int]]:
+    if review_path is None:
+        return ({}, {})
+    try:
+        lines = Path(review_path).read_text(encoding="utf-8").splitlines()
+    except (FileNotFoundError, IsADirectoryError, OSError):
+        return ({}, {})
+
+    failure_counts: Counter[str] = Counter()
+    warning_counts: Counter[str] = Counter()
+    for raw_line in lines:
+        line = str(raw_line or "").strip()
+        if not line.startswith("Reason:"):
+            continue
+        reason = line.removeprefix("Reason:").strip()
+        if not reason:
+            continue
+        severity, category = classify_caption_review_reason(reason)
+        if severity == "warning":
+            warning_counts[category] += 1
+        else:
+            failure_counts[category] += 1
+    return (dict(failure_counts), dict(warning_counts))
 
 
 def _clean_caption_text(text: str) -> str:
@@ -268,7 +310,11 @@ def build_selective_rerun_plan(
             continue
 
         current = windows[-1]
-        if float(flag.start) <= float(current.end) + max(0.0, float(adjacency_tolerance_seconds)):
+        if _should_merge_rerun_windows(
+            current=current,
+            incoming_flag=flag,
+            adjacency_tolerance_seconds=adjacency_tolerance_seconds,
+        ):
             merged_flags = [*current.flags, flag]
             sorted_flags = sorted(
                 merged_flags,
@@ -303,10 +349,52 @@ def build_selective_rerun_plan(
     return filtered
 
 
+def _should_merge_rerun_windows(
+    *,
+    current: CaptionRerunWindow,
+    incoming_flag: CaptionReviewFlag,
+    adjacency_tolerance_seconds: float,
+) -> bool:
+    if current.priority_reason == "probable sparse caption gap":
+        return False
+    if incoming_flag.reason == "probable sparse caption gap":
+        return False
+    return float(incoming_flag.start) <= float(current.end) + max(0.0, float(adjacency_tolerance_seconds))
+
+
+def should_accept_sparse_review_candidate(
+    *,
+    current_segment: CaptionSegmentLike,
+    candidate_segment: CaptionSegmentLike,
+    minimum_added_words: int = 2,
+    minimum_density_gain: float = 0.08,
+    relative_word_gain: float = 1.35,
+) -> bool:
+    current_words = len(_caption_tokens(current_segment.text))
+    candidate_words = len(_caption_tokens(candidate_segment.text))
+    if current_words <= 0 or candidate_words <= current_words:
+        return False
+
+    current_duration = max(0.2, float(current_segment.end) - float(current_segment.start))
+    candidate_duration = max(0.2, float(candidate_segment.end) - float(candidate_segment.start))
+    current_density = current_words / current_duration
+    candidate_density = candidate_words / candidate_duration
+
+    if candidate_words >= current_words + max(1, int(minimum_added_words)) and candidate_density >= current_density + float(minimum_density_gain):
+        return True
+
+    if candidate_words >= max(current_words + 3, int(round(current_words * max(1.0, float(relative_word_gain))))) and candidate_density >= current_density + 0.04:
+        return True
+
+    return False
+
+
 def _is_rerun_candidate_flag(flag: CaptionReviewFlag) -> bool:
     return flag.reason.startswith("probable critical term miss:") or flag.reason in {
         "probable truncation",
         "probable duplication",
+        "probable sparse caption run",
+        "probable sparse caption gap",
         "probable low confidence",
     }
 
@@ -316,10 +404,14 @@ def _rerun_priority_rank(reason: str) -> int:
         return 0
     if reason == "probable truncation":
         return 1
-    if reason == "probable duplication":
+    if reason == "probable sparse caption gap":
         return 2
-    if reason == "probable low confidence":
+    if reason == "probable sparse caption run":
         return 3
+    if reason == "probable duplication":
+        return 4
+    if reason == "probable low confidence":
+        return 5
     return 99
 
 
@@ -488,9 +580,11 @@ def build_caption_quality_report(
     average_probability = (sum(probabilities) / len(probabilities)) if probabilities else None
     all_flagged_segments = _select_review_candidates(clean_segments, limit=None, strategy_id=strategy_id)
     critical_term_flags = _select_critical_term_miss_candidates(clean_segments, critical_terms=critical_terms)
+    sparse_run_flags = _select_sparse_caption_run_candidates(clean_segments)
+    sparse_gap_flags = _select_sparse_caption_gap_candidates(clean_segments)
     flagged_segments = []
     seen_keys: set[tuple[float, float, str, str]] = set()
-    for flag in [*all_flagged_segments, *critical_term_flags]:
+    for flag in [*all_flagged_segments, *critical_term_flags, *sparse_run_flags, *sparse_gap_flags]:
         key = (float(flag.start), float(flag.end), str(flag.text), str(flag.reason))
         if key in seen_keys:
             continue
@@ -545,6 +639,125 @@ def _select_critical_term_miss_candidates(
     return flags
 
 
+def _select_sparse_caption_run_candidates(
+    segments: Sequence[CaptionSegmentLike],
+    *,
+    minimum_run_duration_seconds: float = 12.0,
+    minimum_segment_duration_seconds: float = 4.0,
+    maximum_segment_word_count: int = 7,
+    maximum_word_density: float = 0.4,
+    maximum_inter_segment_gap_seconds: float = 0.6,
+) -> list[CaptionReviewFlag]:
+    flags: list[CaptionReviewFlag] = []
+    index = 0
+    while index < len(segments):
+        segment = segments[index]
+        text = _clean_caption_text(segment.text)
+        if not text:
+            index += 1
+            continue
+        duration = max(0.0, float(segment.end) - float(segment.start))
+        words = _caption_tokens(text)
+        if (
+            duration < minimum_segment_duration_seconds
+            or not words
+            or len(words) > maximum_segment_word_count
+            or (len(words) / max(duration, 0.2)) > maximum_word_density
+        ):
+            index += 1
+            continue
+
+        run_segments = [segment]
+        run_word_count = len(words)
+        run_start = float(segment.start)
+        run_end = float(segment.end)
+        next_index = index + 1
+        while next_index < len(segments):
+            candidate = segments[next_index]
+            candidate_text = _clean_caption_text(candidate.text)
+            if not candidate_text:
+                break
+            candidate_duration = max(0.0, float(candidate.end) - float(candidate.start))
+            candidate_words = _caption_tokens(candidate_text)
+            if (
+                candidate_duration < minimum_segment_duration_seconds
+                or not candidate_words
+                or len(candidate_words) > maximum_segment_word_count
+                or (len(candidate_words) / max(candidate_duration, 0.2)) > maximum_word_density
+                or float(candidate.start) - run_end > maximum_inter_segment_gap_seconds
+            ):
+                break
+            run_segments.append(candidate)
+            run_word_count += len(candidate_words)
+            run_end = float(candidate.end)
+            next_index += 1
+
+        run_duration = max(0.0, run_end - run_start)
+        if len(run_segments) >= 2 and run_duration >= minimum_run_duration_seconds and (run_word_count / max(run_duration, 0.2)) <= maximum_word_density:
+            run_text = " ".join(_clean_caption_text(item.text) for item in run_segments).strip()
+            average_probability_values = [item.average_probability for item in run_segments if item.average_probability is not None]
+            average_probability = (
+                (sum(float(value) for value in average_probability_values) / len(average_probability_values))
+                if average_probability_values
+                else None
+            )
+            flags.append(
+                CaptionReviewFlag(
+                    start=run_start,
+                    end=run_end,
+                    text=run_text,
+                    average_probability=average_probability,
+                    reason="probable sparse caption run",
+                )
+            )
+            index = next_index
+            continue
+
+        index += 1
+    return flags
+
+
+def _select_sparse_caption_gap_candidates(
+    segments: Sequence[CaptionSegmentLike],
+    *,
+    minimum_gap_seconds: float = 8.0,
+    minimum_adjacent_word_count: int = 5,
+) -> list[CaptionReviewFlag]:
+    flags: list[CaptionReviewFlag] = []
+    for previous, current in zip(segments, segments[1:]):
+        previous_text = _clean_caption_text(previous.text)
+        current_text = _clean_caption_text(current.text)
+        if not previous_text or not current_text:
+            continue
+        gap_seconds = max(0.0, float(current.start) - float(previous.end))
+        if gap_seconds < minimum_gap_seconds:
+            continue
+        previous_words = _caption_tokens(previous_text)
+        current_words = _caption_tokens(current_text)
+        if len(previous_words) >= minimum_adjacent_word_count and len(current_words) >= minimum_adjacent_word_count:
+            continue
+        average_probability_values = [
+            value
+            for value in (previous.average_probability, current.average_probability)
+            if value is not None
+        ]
+        average_probability = (
+            sum(float(value) for value in average_probability_values) / len(average_probability_values)
+            if average_probability_values
+            else None
+        )
+        flags.append(
+            CaptionReviewFlag(
+                start=float(previous.end),
+                end=float(current.start),
+                text=f"{previous_text} … {current_text}",
+                average_probability=average_probability,
+                reason="probable sparse caption gap",
+            )
+        )
+    return flags
+
+
 def _normalize_critical_term(text: str) -> str:
     return _normalize_caption_text(text)
 
@@ -563,19 +776,28 @@ def _looks_like_critical_term_miss(tokens: Sequence[str], term: str) -> bool:
     term_tokens = term.split()
     if len(term_tokens) == 1:
         target = term_tokens[0]
+        if len(target) <= 4:
+            candidate_tokens = [token for token in tokens if len(token) == len(target)]
+            if not candidate_tokens:
+                return False
+            best_surface_ratio = max(SequenceMatcher(None, token, target).ratio() for token in candidate_tokens)
+            return best_surface_ratio >= 0.85 and best_surface_ratio < 0.999
+
         best_surface_ratio = max(SequenceMatcher(None, token, target).ratio() for token in tokens)
-        threshold = _CRITICAL_TERM_LONG_WORD_THRESHOLD if len(target) >= 6 else _CRITICAL_TERM_SHORT_WORD_THRESHOLD
-        if best_surface_ratio >= threshold and best_surface_ratio < 0.999:
+        if best_surface_ratio >= _CRITICAL_TERM_LONG_WORD_THRESHOLD and best_surface_ratio < 0.999:
             return True
-        if len(target) >= 6:
-            target_key = _consonant_key(target)
-            candidate_tokens = [token for token in tokens if token and token[0] == target[0] and len(token) >= 5]
-            if best_surface_ratio >= 0.35 and candidate_tokens:
-                best_phonetic_ratio = max(
-                    SequenceMatcher(None, _consonant_key(token), target_key).ratio()
-                    for token in candidate_tokens
-                )
-                return best_phonetic_ratio >= _CRITICAL_TERM_CONSONANT_THRESHOLD
+        target_key = _consonant_key(target)
+        candidate_tokens = [
+            token
+            for token in tokens
+            if token and token[0] == target[0] and len(token) >= 5 and abs(len(token) - len(target)) <= 2
+        ]
+        if best_surface_ratio >= 0.35 and candidate_tokens:
+            best_phonetic_ratio = max(
+                SequenceMatcher(None, _consonant_key(token), target_key).ratio()
+                for token in candidate_tokens
+            )
+            return best_phonetic_ratio >= _CRITICAL_TERM_CONSONANT_THRESHOLD
         return False
 
     window_size = len(term_tokens)

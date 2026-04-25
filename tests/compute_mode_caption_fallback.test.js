@@ -240,7 +240,7 @@ test("caption stage keeps estimating during the first caption windows", () => {
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 1 of 27. On your local helper device."],
+    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (small). Window 1 of 27. On your local helper device."],
     progress: 0.26,
     eta_seconds: 700,
     status: "running",
@@ -250,7 +250,7 @@ test("caption stage keeps estimating during the first caption windows", () => {
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 2 of 27. On your local helper device."],
+    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (small). Window 2 of 27. On your local helper device."],
     progress: 0.32,
     eta_seconds: 620,
     status: "running",
@@ -259,26 +259,23 @@ test("caption stage keeps estimating during the first caption windows", () => {
   assert.equal(progressEtaNode.textContent, "Time left to process: estimating...");
 });
 
-test("mlx lecture captions show a warm-up notice during the first window only", () => {
+test("whispercpp lecture captions do not trigger the MLX-only warm-up notice", () => {
   const context = buildContext();
   const generateStatusNode = context.document.getElementById("generate-status");
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 1 of 27. On your local helper device."],
+    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (small). Window 1 of 27. On your local helper device."],
     progress: 0.26,
     eta_seconds: null,
     status: "running",
   });
 
-  assert.equal(
-    generateStatusNode.textContent,
-    "Helper connected. Generating captions on your local helper device. The first caption window can take longer while the model warms up."
-  );
+  assert.equal(generateStatusNode.textContent, "Helper connected. Generating captions on your local helper device.");
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 2 of 27. On your local helper device."],
+    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (small). Window 2 of 27. On your local helper device."],
     progress: 0.32,
     eta_seconds: 470,
     status: "running",
@@ -296,7 +293,7 @@ test("caption review keeps estimating during the first review item", () => {
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Reviewing low-confidence caption lines with mlx-whisper (medium). 1 of 12. On your local helper device."],
+    logs: ["lecture-quality captions: Reviewing low-confidence caption lines with whisper.cpp (medium). 1 of 12. On your local helper device."],
     progress: 0.84,
     eta_seconds: 14,
     status: "running",
@@ -312,7 +309,7 @@ test("caption eta smoothing avoids snapping to a larger raw value mid-run", () =
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 4 of 27. On your local helper device."],
+    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (small). Window 4 of 27. On your local helper device."],
     progress: 0.38,
     eta_seconds: 150,
     status: "running",
@@ -322,7 +319,7 @@ test("caption eta smoothing avoids snapping to a larger raw value mid-run", () =
 
   context.updateFromJob({
     stage: "captions",
-    logs: ["lecture-quality captions: Transcribing speech for captions with mlx-whisper (medium). Window 5 of 27. On your local helper device."],
+    logs: ["lecture-quality captions: Transcribing speech for captions with whisper.cpp (small). Window 5 of 27. On your local helper device."],
     progress: 0.4,
     eta_seconds: 240,
     status: "running",
