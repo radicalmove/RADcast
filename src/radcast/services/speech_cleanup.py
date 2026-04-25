@@ -659,6 +659,35 @@ class SpeechCleanupService:
             self._models.pop(key, None)
         gc.collect()
 
+    def _transcribe_file_with_info(
+        self,
+        model,
+        audio_path: Path,
+        *,
+        preserve_fillers: bool,
+        beam_size: int | None = None,
+        condition_on_previous_text: bool = False,
+        initial_prompt: str | None = None,
+        language_override: str | None = None,
+        vad_filter_override: bool | None = None,
+    ) -> tuple[list[object], object | None]:
+        kwargs = {
+            "beam_size": max(1, int(beam_size or self.beam_size)),
+            "word_timestamps": True,
+            "vad_filter": (not preserve_fillers) if vad_filter_override is None else bool(vad_filter_override),
+            "condition_on_previous_text": condition_on_previous_text,
+        }
+        prompt_text = initial_prompt
+        if preserve_fillers and not prompt_text:
+            prompt_text = _AGGRESSIVE_FILLER_PROMPT
+        if prompt_text:
+            kwargs["initial_prompt"] = prompt_text
+        language = self.transcribe_language if language_override is None else language_override
+        if language and language != "auto":
+            kwargs["language"] = language
+        segment_iter, info = model.transcribe(str(audio_path), **kwargs)
+        return list(segment_iter), info
+
     def _transcribe_file(
         self,
         model,

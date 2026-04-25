@@ -2707,4 +2707,6 @@ async function init() {
   wireTrimRail();
 }
 
-void init();
+if (!(typeof window !== "undefined" && window.__RADCAST_DISABLE_AUTOINIT__)) {
+  void init();
+}
